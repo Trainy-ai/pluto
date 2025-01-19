@@ -7,9 +7,11 @@ import sys
 import time
 
 from . import sets
+from .log import ColorFormatter, StreamHandler, input_hook
 from .ops import Ops
 from .sets import Settings
-from .log import ColorFormatter, StreamHandler, input_hook
+from .sys import System
+from .util import to_json
 
 logger = logging.getLogger(f"{__name__.split('.')[0]}")
 tag = "Init"
@@ -83,6 +85,8 @@ class OpsInit:
         if self.settings.mode == "debug":
             builtins.input = lambda prompt="": input_hook(prompt, logger=console)
 
+        to_json([System().info()], f"{self.settings.work_dir()}/sys.json")
+
 
 def init(
     dir: str | None = None,
@@ -112,11 +116,11 @@ def init(
         raise e
 
 
-def gen_ulid(base="0123456789ABCDEFGHJKMNPQRSTVWXYZ") -> str:
+def gen_ulid(base="0123456789ABCDEFGHJKMNPQRSTVWXYZ") -> str:  # py-ulid
     ulid = (int(time.time() * 1000) << 80) | random.getrandbits(80)
 
     encoded = []
     while ulid > 0:
         ulid, remainder = divmod(ulid, 32)
         encoded.append(base[remainder])
-    return "".join(encoded).rjust(26, base[0])
+    return "".join(encoded[::-1]).rjust(26, base[0])

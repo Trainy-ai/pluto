@@ -1,6 +1,10 @@
-__pycache__
 .DS_Store
 ._*
+__pycache__
+dist/
+build/
+*.egg-info/
+.venv/*
 
 *.log
 *.db
@@ -9,3 +13,4 @@ __pycache__
 
 .mlop
 .obsidian
+util/.*
