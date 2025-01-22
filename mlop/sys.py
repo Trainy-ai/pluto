@@ -30,7 +30,7 @@ class System:
     def __getattr__(self, name):
         return self.get_psutil(name)
 
-    def get_psutil(self, name):  # os specific
+    def get_psutil(self, name):  # handling os specific methods
         if hasattr(psutil, name):
             return getattr(psutil, name)
         else:

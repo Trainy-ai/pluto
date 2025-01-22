@@ -132,4 +132,4 @@ class DataStore:
                 self.conn.commit()
             except Exception as e:
                 self.conn.rollback()
-                logger.error("%s: failed to insert batch with error: %s", tag, e)
+                logger.error("%s: failed to insert batch: %s", tag, e)

@@ -3,9 +3,11 @@ import logging
 import queue
 import threading
 import time
+import _io
 
 import httpx
 
+from .file import File
 from .sets import Settings
 
 logger = logging.getLogger(f"{__name__.split('.')[0]}")
@@ -54,9 +56,11 @@ class ServerInterface:
         self._wait = settings.x_internal_check_process
         self._stop_event = threading.Event()
         self._queue_data = queue.Queue()
+        self._buffer_data = None
         self._thread_data = None
 
         self._queue_storage = queue.Queue()
+        self._buffer_storage = None
         self._queue_file = queue.Queue()
 
     def start(self) -> None:
@@ -67,6 +71,7 @@ class ServerInterface:
                     self.url_data,
                     self.headers_data,
                     self._queue_data,
+                    self._buffer_data,
                     self._stop_event.is_set,
                 ),
                 daemon=True,
@@ -92,6 +97,7 @@ class ServerInterface:
                 self.url_file,
                 self.headers,
                 self._queue_storage,
+                self._buffer_storage,
                 client=self.client,
             )
             try:
@@ -100,6 +106,7 @@ class ServerInterface:
                         if e["name"] == f"{f._name}{f._ext}":
                             f._url = e["url"]
                             self._queue_file.put(open(f._path, "rb"), block=False)
+                            # self._queue_file.put(f, block=False)
                             s = self._put_v1(
                                 f._url,
                                 {
@@ -119,25 +126,26 @@ class ServerInterface:
             self._thread_data = None
         logger.info(f"{tag}: find uploaded data at {self.url_view_op}")
 
-    def _worker_publish(self, e, h, q, stop):
+    def _worker_publish(self, e, h, q, b, stop):
         while not q.empty() or not stop():
             if not q.empty():
                 _ = self._post_v1(
                     e,
                     h,
                     q,
+                    b,
                     client=self.client,
                 )
 
-    def _queue_iter(self, q):
+    def _queue_iter(self, q, b):
         s = time.time()
         while (
-            len(self._queue_buffer) < self.max_size
+            len(b) < self.max_size
             and (time.time() - s) < self.transmit_interval
         ):
             try:
                 v = q.get(block=False)
-                self._queue_buffer.append(v)
+                b.append(v)
                 yield v
             except queue.Empty:
                 break
@@ -158,38 +166,38 @@ class ServerInterface:
         except Exception as e:
             logger.error("%s: no response received: %s", tag, e)
 
-    def _post_v1(self, url, headers, q, client=None, retry=0):
-        self._queue_buffer = []
+    def _post_v1(self, url, headers, q, b, client=None, retry=0):
+        b = []
         try:
             s = time.time()
             r = client.post(
                 url,
-                content=self._queue_iter(q),  # self._queue_iter(q) # iter(q.get, None),
+                content=self._queue_iter(q, b),  # iter(q.get, None),
                 headers=headers,
             )
             if r.status_code in [200, 201]:
                 logger.info(
-                    f"{tag}: sent {len(self._queue_buffer)} item(s) at {len(self._queue_buffer) / (time.time() - s):.2f} items/s"
+                    f"{tag}: sent {len(b)} item(s) at {len(b) / (time.time() - s):.2f} items/s"
                 )
                 return r
             else:
                 logger.error(
-                    f"{tag}: server responded error {r.status_code} for {len(self._queue_buffer)} item(s) during POST: {r.text}"
+                    f"{tag}: server responded error {r.status_code} for {len(b)} item(s) during POST: {r.text}"
                 )
         except Exception as e:
-            logger.error("%s: no response received: %s", tag, e)
+            logger.error("%s: no response received during POST: %s", tag, e)
 
         retry += 1
         if retry < self.retry_max:
             logger.warning(
-                f"{tag}: retry {retry}/{self.retry_max} for {len(self._queue_buffer)} item(s)"
+                f"{tag}: retry {retry}/{self.retry_max} for {len(b)} item(s)"
             )
             time.sleep(min(self.retry_wait_min * (2**retry), self.retry_wait_max))
-            for i in self._queue_buffer:
+            for i in b:
                 q.put(i, block=False)
-            return self._post_v1(url, headers, q, client=client, retry=retry)
+            return self._post_v1(url, headers, q, b, client=client, retry=retry)
         else:
-            logger.critical(f"{tag}: failed to send {len(self._queue_buffer)} item(s)")
+            logger.critical(f"{tag}: failed to send {len(b)} item(s)")
             return None
 
 
