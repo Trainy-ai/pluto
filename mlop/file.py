@@ -32,9 +32,9 @@ class File:
             name = re.sub(r"[^a-zA-Z0-9_\-.]", "-", name)  # raise e
         self._name = name
         self._type = self._mimetype()
-        self._size = os.path.getsize(self._path)
-        self._ext = os.path.splitext(self._path)[-1]
         self._stat = os.stat(self._path)
+        self._size = self._stat.st_size  # os.path.getsize(self._path)
+        self._ext = os.path.splitext(self._path)[-1]
         self._url = None
 
     def _mimetype(self) -> str:
@@ -59,31 +59,32 @@ class Image(File):
         data: any,  # Union[PILImage.Image, np.ndarray],
         caption: str | None = None,
     ) -> None:
-        if isinstance(data, PILImage.Image):
-            logger.debug("Image: used PILImage")
-            self._image = data
-        elif isinstance(data, str):
+        if isinstance(data, str):
             logger.debug("Image: used PILImage from path")
-            self._image = PILImage.open(data)
+            self._image = "file"  # self._image = PILImage.open(data)
+            path = os.path.abspath(data)
         else:
-            class_name = get_class(data)
-            if class_name.startswith("matplotlib."):
-                logger.debug("Image: attempted conversion from matplotlib")
-                self._image = make_compat_matplotlib(data)
-            elif class_name.startswith("torch.") and (
-                "Tensor" in class_name or "Variable" in class_name
-            ):
-                logger.debug("Image: attempted conversion from torch")
-                self._image = make_compat_torch(data)
+            if isinstance(data, PILImage.Image):
+                logger.debug("Image: used PILImage")
+                self._image = data
             else:
-                logger.debug("Image: attempted conversion from array")
-                self._image = make_compat_numpy(data)
+                class_name = get_class(data)
+                if class_name.startswith("matplotlib."):
+                    logger.debug("Image: attempted conversion from matplotlib")
+                    self._image = make_compat_matplotlib(data)
+                elif class_name.startswith("torch.") and (
+                    "Tensor" in class_name or "Variable" in class_name
+                ):
+                    logger.debug("Image: attempted conversion from torch")
+                    self._image = make_compat_torch(data)
+                else:
+                    logger.debug("Image: attempted conversion from array")
+                    self._image = make_compat_numpy(data)
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".PNG") as tmp:
+                self._image.save(tmp.name, format="PNG")
+                path = os.path.abspath(tmp.name)
 
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".PNG") as tmp:
-            self._image.save(tmp.name, format="PNG")
-            path = os.path.abspath(tmp.name)
-
-        super().__init__(path, caption)
+        super().__init__(path=path, name=caption)
         if not self._type.startswith("image/"):
             logger.error(
                 f"Image: proceeding with potentially incompatible mime type: {self._type}"

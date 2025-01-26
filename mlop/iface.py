@@ -3,11 +3,9 @@ import logging
 import queue
 import threading
 import time
-import _io
 
 import httpx
 
-from .file import File
 from .sets import Settings
 
 logger = logging.getLogger(f"{__name__.split('.')[0]}")
@@ -47,6 +45,12 @@ class ServerInterface:
             ),
         )
 
+        self.client_storage = httpx.Client(
+            # http1=False, # fix
+            verify=False,  # fix
+            proxy=settings.http_proxy or settings.https_proxy or None,
+        )
+
         self.max_size = settings.x_file_stream_max_size
         self.retry_max = settings.x_file_stream_retry_max
         self.retry_wait_min = settings.x_file_stream_retry_wait_min_seconds
@@ -58,10 +62,8 @@ class ServerInterface:
         self._queue_data = queue.Queue()
         self._buffer_data = None
         self._thread_data = None
-
-        self._queue_storage = queue.Queue()
-        self._buffer_storage = None
-        self._queue_file = queue.Queue()
+        self._thread_file = None
+        self._thread_storage = None
 
     def start(self) -> None:
         if self._thread_data is None:
@@ -90,45 +92,22 @@ class ServerInterface:
                 make_compat_data_v1(data, timestamp, step), block=False
             )
         if file:
-            self._queue_storage.put(
-                make_compat_file_v1(file, timestamp, step), block=False
+            self._thread_file = threading.Thread(
+                target=self._worker_file, args=(file,make_compat_file_v1(file, timestamp, step)), daemon=True
             )
-            r = self._post_v1(
-                self.url_file,
-                self.headers,
-                self._queue_storage,
-                self._buffer_storage,
-                client=self.client,
-            )
-            try:
-                d = r.json()
-                logger.info(f"{tag}: file api responded {len(d)} key(s)")
-                for k, fel in file.items():
-                    for f in fel:
-                        f._url = make_compat_storage_v1(f, d[k])
-                        if not f._url:
-                            logger.critical(
-                                f"{tag}: file api did not provide storage url"
-                            )
-                        else:
-                            self._queue_file.put(open(f._path, "rb"), block=False)
-                            # self._queue_file.put(f, block=False)
-                            _ = self._put_v1(
-                                f._url,
-                                {
-                                    "Content-Type": f._type,  # "application/octet-stream"
-                                },
-                                self._queue_file,
-                                client=self.client,
-                            )
-            except Exception as e:
-                logger.critical("%s: failed to send files: %s", tag, e)
+            self._thread_file.start()
 
     def stop(self) -> None:
         self._stop_event.set()
         if self._thread_data is not None:
             self._thread_data.join(timeout=self._wait)
             self._thread_data = None
+        if self._thread_file is not None:
+            self._thread_file.join(timeout=self._wait)
+            self._thread_file = None
+        if self._thread_storage is not None:
+            self._thread_storage.join(timeout=self._wait)
+            self._thread_storage = None
         logger.info(f"{tag}: find uploaded data at {self.url_view_op}")
 
     def _worker_publish(self, e, h, q, b, stop):
@@ -142,6 +121,39 @@ class ServerInterface:
                     client=self.client,
                 )
 
+    def _worker_storage(self, f):
+        _ = self._put_v1(
+            f._url,
+            {
+                "Content-Type": f._type,  # "application/octet-stream"
+            },
+            open(f._path, "rb"),
+            client=self.client_storage,
+        )
+
+    def _worker_file(self, file, q):
+        r = self._post_v1(
+            self.url_file,
+            self.headers,
+            q,
+            client=self.client,
+        )
+        try:
+            d = r.json()
+            logger.info(f"{tag}: file api responded {len(d)} key(s)")
+            for k, fel in file.items():
+                for f in fel:
+                    f._url = make_compat_storage_v1(f, d[k])
+                    if not f._url:
+                        logger.critical(f"{tag}: file api did not provide storage url")
+                    else:
+                        self._thread_storage = threading.Thread(
+                            target=self._worker_storage, args=(f,), daemon=True
+                        )
+                        self._thread_storage.start()
+        except Exception as e:
+            logger.critical("%s: failed to send files: %s", tag, e)
+
     def _queue_iter(self, q, b):
         s = time.time()
         while len(b) < self.max_size and (time.time() - s) < self.transmit_interval:
@@ -152,15 +164,15 @@ class ServerInterface:
             except queue.Empty:
                 break
 
-    def _put_v1(self, url, headers, q, client=None):
+    def _put_v1(self, url, headers, content, client=None, retry=0):
         try:
             r = client.put(
                 url,
-                content=q.get(),  # fix: add retry
+                content=content,
                 headers=headers,
             )
             if r.status_code in [200, 201]:
-                logger.info(f"{tag}: sent 1 file to storage")
+                # logger.info(f"{tag}: put a file in storage")
                 return r
             else:
                 logger.error(
@@ -168,20 +180,26 @@ class ServerInterface:
                 )
         except Exception as e:
             logger.error("%s: no response received: %s", tag, e)
+        retry += 1
+        self._put_v1(
+            url, headers, content, client=client, retry=retry
+        ) if retry < self.retry_max else logger.critical(f"{tag}: failed to put file in storage after {retry} retries")
 
-    def _post_v1(self, url, headers, q, b, client=None, retry=0):
+    def _post_v1(self, url, headers, q, b=[], client=None, retry=0):
         b = []
         try:
             s = time.time()
+            content = self._queue_iter(q, b) if isinstance(q, queue.Queue) else q
             r = client.post(
                 url,
-                content=self._queue_iter(q, b),  # iter(q.get, None),
+                # content=iter(q.get, None),
+                content=content,
                 headers=headers,
             )
             if r.status_code in [200, 201]:
                 logger.info(
                     f"{tag}: sent {len(b)} line(s) at {len(b) / (time.time() - s):.2f} lines/s"
-                )
+                ) if isinstance(q, queue.Queue) else None
                 return r
             else:
                 logger.error(
@@ -196,9 +214,11 @@ class ServerInterface:
                 f"{tag}: retry {retry}/{self.retry_max} for {len(b)} line(s)"
             )
             time.sleep(min(self.retry_wait_min * (2**retry), self.retry_wait_max))
-            for i in b:
+            for i in b:  # if isinstance(q, queue.Queue)
                 q.put(i, block=False)
-            return self._post_v1(url, headers, q, b, client=client, retry=retry)
+            return self._post_v1(
+                url, headers, q, b, client=client, retry=retry
+            )  # kwargs
         else:
             logger.critical(f"{tag}: failed to send {len(b)} line(s)")
             return None

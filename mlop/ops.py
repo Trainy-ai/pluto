@@ -75,8 +75,7 @@ class Ops:
     def _worker(self) -> None:
         while not self._monitor._stop_event.is_set() or not self._queue.empty():
             try:
-                data, step = self._queue.get(block=False)
-                self._log(data=data, step=step)
+                self._log(*self._queue.get(block=False))
             except queue.Empty:
                 continue
             except Exception as e:
