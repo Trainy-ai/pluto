@@ -59,18 +59,6 @@ class ServerInterface:
         self._buffer_message = None
         self._thread_message = None
 
-        r = self._post_v1(
-            self.settings.url_status,
-            self.headers,
-            make_compat_status_v1("INIT", self.settings.system.info(), settings),
-            client=self.client,
-        )
-        _ = self.settings.system.monitor()
-        try:
-            logger.info(f"{tag}: started: {r.json()['message']}")
-        except Exception as e:
-            logger.critical("%s: failed to start: %s", tag, e)
-
     def start(self) -> None:
         if self._thread_data is None:
             self._thread_data = threading.Thread(
@@ -100,6 +88,17 @@ class ServerInterface:
                 daemon=True,
             )
             self._thread_message.start()
+        
+        r = self._post_v1(
+            self.settings.url_status,
+            self.headers,
+            make_compat_status_v1("INIT", self.settings.system.info(), self.settings),
+            client=self.client,
+        )
+        try:
+            logger.info(f"{tag}: started: {r.json()['message']}")
+        except Exception as e:
+            logger.critical("%s: failed to start: %s", tag, e)
 
     def publish(
         self,
