@@ -11,7 +11,7 @@ class Settings:
     tag: str = f"{__name__.split('.')[0]}"
     dir: str = str(os.path.abspath(os.getcwd()))
 
-    auth: str = "test"
+    auth: str = "api_125248de6bac17f1106e122902a30207"
     user: str = "test"
     project: str = "default"
     mode: str = "perf"  # noop | debug | perf
@@ -47,7 +47,7 @@ class Settings:
     url_data: str = f"{url}/ingest/metrics"
     url_file: str = f"{url}/files"
     url_message: str = f"{url}/ingest/logs"
-    url_status: str = f"{url}/status"
+    url_status: str = "https://mlop2.vercel.app/api/create-run"
     url_view: str = f"{url}/view"
 
     def update(self, settings) -> None:

@@ -88,7 +88,7 @@ class ServerInterface:
                 daemon=True,
             )
             self._thread_message.start()
-        
+
         r = self._post_v1(
             self.settings.url_status,
             self.headers,
@@ -314,11 +314,9 @@ def make_compat_message_v1(level, message, timestamp, step):
 def make_compat_status_v1(status, data, settings):
     return json.dumps(
         {
-            "status": status,
-            "data": {
-                "run_id": settings._op_id,
-                "run_name": settings._op_name,
-                "metadata": data,
-            },
+            "runId": settings._op_id,
+            "runName": settings._op_name,
+            "projectName": settings.project,
+            "metadata": data,
         }
     ).encode()
