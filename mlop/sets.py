@@ -47,7 +47,7 @@ class Settings:
     url_data: str = f"{url}/ingest/metrics"
     url_file: str = f"{url}/files"
     url_message: str = f"{url}/ingest/logs"
-    url_status: str = "https://mlop2.vercel.app/api/create-run"
+    url_status: str = "https://mlop2.vercel.app/api/create-run/"
     url_view: str = f"{url}/view"
 
     def update(self, settings) -> None:

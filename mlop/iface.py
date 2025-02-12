@@ -88,15 +88,16 @@ class ServerInterface:
                 daemon=True,
             )
             self._thread_message.start()
-
         r = self._post_v1(
-            self.settings.url_status,
+            # CHANGING URL_STATUS in sets.py is not updating the self.settings.url_status, please fix
+            "https://mlop2.vercel.app/api/create-run",
             self.headers,
-            make_compat_status_v1("INIT", self.settings.system.info(), self.settings),
+            make_compat_status_v1(self.settings.system.info(), self.settings),
             client=self.client,
         )
         try:
-            logger.info(f"{tag}: started: {r.json()['message']}")
+            # TODO send a proper response
+            logger.info(f"{tag}: started: {r.json()}")
         except Exception as e:
             logger.critical("%s: failed to start: %s", tag, e)
 
@@ -311,12 +312,12 @@ def make_compat_message_v1(level, message, timestamp, step):
     return ("\n".join(line) + "\n").encode("utf-8")
 
 
-def make_compat_status_v1(status, data, settings):
+def make_compat_status_v1(data, settings):
     return json.dumps(
         {
             "runId": settings._op_id,
             "runName": settings._op_name,
             "projectName": settings.project,
-            "metadata": data,
+            "metadata": json.dumps(data),
         }
     ).encode()
