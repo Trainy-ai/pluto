@@ -71,7 +71,8 @@ def stream_formatter(settings):
         )
     else:
         return ColorFormatter(
-            "%(asctime)s | %(levelname)-8s | %(message)s",
+            "%(asctime)s | %(message)s",
+            # "%(asctime)s | %(levelname)-8s | %(message)s",
             datefmt="%H:%M:%S",
         )
 

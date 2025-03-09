@@ -74,7 +74,7 @@ class Ops:
     def start(self) -> None:
         self._iface.start() if self._iface else None
         self._monitor.start()
-        logger.info(f"{TAG}: started")
+        logger.debug(f"{TAG}: started")
 
     def log(
         self, data: dict[str, any], step: int | None = None, commit: bool | None = None
@@ -92,7 +92,7 @@ class Ops:
             pass
         self._store.stop() if self._store else None
         self._iface.stop() if self._iface else None  # fixed order
-        logger.info(f"{TAG}: finished")
+        logger.debug(f"{TAG}: finished")
 
     def _worker(self, stop) -> None:
         while not stop() or not self._queue.empty():
@@ -157,8 +157,10 @@ class Ops:
                 f[k] = [v]
             else:
                 f[k].append(v)
-        else:
+        elif isinstance(v, (int, float)):
             d[k] = v
+        else:
+            pass # raise not supported error
         return d, f
 
     def _finish(self, exit_code) -> None:

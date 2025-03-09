@@ -7,7 +7,7 @@ import httpx
 import keyring
 
 from .log import setup_logger
-from .sets import Settings
+from .sets import Settings, get_console
 from .util import ANSI, print_url
 
 logger = logging.getLogger(f"{__name__.split('.')[0]}")
@@ -49,7 +49,10 @@ def login(settings=Settings(), retry=False):
             f"{tag}: initializing authentication\n\n {hint1}\n\n {hint2}\n\n {hint3}\n"
         )
         webbrowser.open(url=settings.url_token)
-        settings.auth = getpass.getpass(prompt="Enter API Key: ")
+        if get_console() == "jupyter":
+            settings.auth = getpass.getpass(prompt="Enter API key: ")
+        else:
+            settings.auth = input(f"{ANSI.yellow}Enter API key: ")
         try:
             keyring.set_password(
                 f"{settings.tag}", f"{settings.tag}", f"{settings.auth}"
