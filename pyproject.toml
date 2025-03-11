@@ -1,5 +1,5 @@
 [project]
-version = "0.0.0rc8"
+version = "0.0.0rc9"
 name = "mlop"
 authors = [
     {name = "jqssun", email = "jqssun+git@googlemail.com"},
@@ -18,7 +18,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-insecure = [
+dev = [
   "keyrings.alt",
 ]
 
