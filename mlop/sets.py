@@ -38,7 +38,7 @@ class Settings:
     x_file_stream_retry_max: int = 2**2
     x_file_stream_retry_wait_min_seconds: float = 2 ** (-1)
     x_file_stream_retry_wait_max_seconds: float = 2
-    x_file_stream_timeout_seconds: int = 2**2
+    x_file_stream_timeout_seconds: int = 2**3  # 2**2
     x_file_stream_max_conn: int = 2**5
     x_file_stream_max_size: int = 2**18
     x_file_stream_transmit_interval: int = 2**3
