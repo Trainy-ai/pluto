@@ -32,7 +32,7 @@ def login(settings=Settings(), retry=False):
         temp.critical(
             "%s: authentication failed: the provided token cannot be empty", tag
         )
-        sys.exit()  # os._exit(1)
+        settings.auth = "_key"
     client = httpx.Client(proxy=settings.http_proxy or settings.https_proxy or None)
     r = client.post(
         url=settings.url_login,
