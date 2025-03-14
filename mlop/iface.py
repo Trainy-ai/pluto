@@ -209,7 +209,7 @@ class ServerInterface:
                         )
                         self._thread_storage.start()
         except Exception as e:
-            logger.critical("%s: failed to send files: %s", tag, e)
+            logger.critical("%s: failed to send files to %s: %s", tag, self.settings.url_file, e)
 
     def _queue_iter(self, q, b):
         s = time.time()
@@ -236,15 +236,15 @@ class ServerInterface:
                 return r
             else:
                 logger.error(
-                    f"{tag}: server responded error {r.status_code} during PUT: {r.text}"
+                    f"{tag}: server responded error {r.status_code} during PUT to {url}: {r.text}"
                 )
         except Exception as e:
-            logger.error("%s: no response received: %s", tag, e)
+            logger.error("%s: no response received during PUT to %s: %s", tag, url, e)
         retry += 1
         self._put_v1(
             url, headers, content, client=client, retry=retry
         ) if retry < self.settings.x_file_stream_retry_max else logger.critical(
-            f"{tag}: failed to put file in storage after {retry} retries"
+            f"{tag}: failed to put file in storage after {retry} retries to {url}"
         )
 
     def _post_v1(self, url, headers, q, b=[], client=None, name=None, retry=0):
@@ -260,7 +260,7 @@ class ServerInterface:
             if r.status_code in [200, 201]:
                 if name is not None and isinstance(q, queue.Queue):
                     logger.debug(
-                        f"{tag}: {name}: sent {len(b)} line(s) at {len(b) / (time.time() - s):.2f} lines/s"
+                        f"{tag}: {name}: sent {len(b)} line(s) at {len(b) / (time.time() - s):.2f} lines/s to {url}"
                     )
                 return r
             else:
@@ -269,12 +269,12 @@ class ServerInterface:
                         f"{tag}: {name}: server responded error {r.status_code} for {len(b)} line(s) during POST: {r.text}"
                     )
         except Exception as e:
-            logger.error("%s: no response received during POST: %s", tag, e)
+            logger.error("%s: no response received during POST to %s: %s", tag, url, e)
 
         retry += 1
         if retry < self.settings.x_file_stream_retry_max:
             logger.warning(
-                f"{tag}: retry {retry}/{self.settings.x_file_stream_retry_max} for {len(b)} line(s)"
+                f"{tag}: retry {retry}/{self.settings.x_file_stream_retry_max} - server responded error {r.status_code} for {len(b)} line(s) during POST to {url}: {r.text}"
             )
             time.sleep(
                 min(
