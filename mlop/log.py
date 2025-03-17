@@ -9,24 +9,25 @@ from .util import ANSI
 builtins_input = builtins.input
 logger = logging.getLogger(f"{__name__.split('.')[0]}")
 
+colors = {
+    "DEBUG": ANSI.green,
+    "INFO": ANSI.blue,
+    "WARNING": ANSI.yellow,
+    "ERROR": ANSI.red,
+    "CRITICAL": ANSI.purple,
+}
+styles = {
+    "DEBUG": " 💬 ",
+    "INFO": " 🚀 ",
+    "WARNING": " 🚨 ",
+    "ERROR": " ⛔ ",
+    "CRITICAL": " 🚫 ",
+}
+
 
 class ColorFormatter(logging.Formatter):
     def format(self, record):
         prefix = ANSI.bold + ANSI.blue + f"{__name__.split('.')[0]}:" + ANSI.reset
-        colors = {
-            "DEBUG": ANSI.green,
-            "INFO": ANSI.blue,
-            "WARNING": ANSI.yellow,
-            "ERROR": ANSI.red,
-            "CRITICAL": ANSI.purple,
-        }
-        styles = {
-            "DEBUG": " 💬 ",
-            "INFO": " 🚀 ",
-            "WARNING": " 🚨 ",
-            "ERROR": " ⛔ ",
-            "CRITICAL": " 🚫 ",
-        }
         color = colors.get(record.levelname, "")
         style = styles.get(record.levelname, "")
         # record.msg = f"{color}{record.msg}{ANSI.reset}"
@@ -88,7 +89,7 @@ def setup_logger(settings, logger, console=None, op=True) -> None:
         rlogger = logging.getLogger()
         for h in rlogger.handlers[:]:  # iter root handlers
             rlogger.removeHandler(h)
-            
+
     logger.setLevel(settings.x_log_level)
 
     stream_handler = logging.StreamHandler()

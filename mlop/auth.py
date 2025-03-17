@@ -15,7 +15,8 @@ temp = logging.getLogger("auth")
 tag = "Auth"
 
 
-def login(settings=Settings(), retry=False):
+def login(settings=None, retry=False):
+    settings = settings or Settings()
     # op: differentiate if calling within a run
     setup_logger(settings, logger=temp, op=False)
     try:
@@ -73,7 +74,8 @@ def login(settings=Settings(), retry=False):
         login(retry=True)
 
 
-def logout(settings=Settings()):
+def logout(settings=None):
+    settings = settings or Settings()
     setup_logger(settings, logger=temp, op=False)
     try:
         keyring.delete_password(f"{settings.tag}", f"{settings.tag}")
