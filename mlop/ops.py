@@ -180,17 +180,14 @@ class Ops:
             self._step += 1
 
         # data = data.copy()  # TODO: check mutability
-        d, f, m = {}, {}, []
+        d, f, dm, fm = {}, {}, [], []
         for k, v in data.items():
-            if k not in self.settings.meta:
-                m.append(k)
-                self.settings.meta.append(k)
-                # d[f"{self.settings.x_meta_label}{k}"] = 0
-                logger.debug(f"{tag}: added {k} at step {self._step}")
             if isinstance(v, list):
+                dm, fm = self._m(dm, fm, k, v[0])
                 for e in v:
                     d, f = self._op(d, f, k, e)
             else:
+                dm, fm = self._m(dm, fm, k, v)
                 d, f = self._op(d, f, k, v)
 
         # d = dict_to_json(d)  # TODO: add serialisation
@@ -200,7 +197,18 @@ class Ops:
         self._iface.publish(
             data=d, file=f, timestamp=t, step=self._step
         ) if self._iface else None
-        self._iface._update_meta(m) if m and self._iface else None
+        self._iface._update_meta(data=dm, file=fm) if (dm or fm) and self._iface else None
+    
+    def _m(self, dm, fm, k, v) -> None:
+        if k not in self.settings.meta:
+            if isinstance(v, File):
+                fm.append(k)
+            elif isinstance(v, (int, float)):
+                dm.append(k)
+            self.settings.meta.append(k)
+            # d[f"{self.settings.x_meta_label}{k}"] = 0
+            logger.debug(f"{tag}: added {k} at step {self._step}")
+        return dm, fm
 
     def _op(self, d, f, k, v) -> None:
         if isinstance(v, File):
@@ -216,5 +224,5 @@ class Ops:
         elif isinstance(v, (int, float)):
             d[k] = v
         else:
-            pass  # raise not supported error
+            logger.warning(f"{tag}: unsupported type {type(v)}")
         return d, f

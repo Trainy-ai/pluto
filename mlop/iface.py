@@ -110,7 +110,7 @@ class ServerInterface:
     def publish(
         self,
         data: dict[str, any] | None = None,
-        file: None = None,
+        file: dict[str, any] | None = None,
         timestamp: int | None = None,
         step: int | None = None,
     ) -> None:
@@ -148,13 +148,19 @@ class ServerInterface:
             client=self.client,
         )
 
-    def _update_meta(self, meta):
+    def _update_meta(self, data=None, file=None):
         r = self._post_v1(
             self.settings.url_meta,
             self.headers,
-            make_compat_meta_v1(meta, self.settings),
+            make_compat_meta_v1(data, "data", self.settings),
             client=self.client,
-        )
+        ) if data else None
+        r = self._post_v1(
+            self.settings.url_meta,
+            self.headers,
+            make_compat_meta_v1(file, "file", self.settings),
+            client=self.client,
+        ) if file else None
 
     def _worker_publish(self, e, h, q, b, stop, name=None):
         while not (q.empty() and stop()):  # terminates only when both conditions met

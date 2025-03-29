@@ -9,6 +9,11 @@ STATUS = {
     signal.SIGINT.value: "TERMINATED",  # "INTERRUPTED",
 }
 
+DTYPE = {
+    "data": "METRIC",
+    "file": "FILE",
+}
+
 
 def make_compat_start_v1(config, settings, info):
     return json.dumps(
@@ -32,13 +37,13 @@ def make_compat_stop_v1(settings):
     ).encode()
 
 
-def make_compat_meta_v1(meta, settings):
+def make_compat_meta_v1(meta, dtype, settings):
     return json.dumps(
         {
             "runId": settings._op_id,
             # "runName": settings._op_name,
             # "projectName": settings.project,
-            "logType": "METRIC",  # TODO: handle other log types IMAGE, VIDEO, AUDIO, FILE
+            "logType": DTYPE[dtype],
             "logName": meta,  # TODO: better aggregate
         }
     ).encode()

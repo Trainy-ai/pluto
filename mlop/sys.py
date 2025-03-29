@@ -3,7 +3,6 @@ import logging
 import os
 import platform
 import time
-from typing import TypedDict, List
 
 import psutil
 from git import Repo
@@ -15,12 +14,6 @@ logger = logging.getLogger(f"{__name__.split('.')[0]}")
 tag = "System"
 
 
-class CPUFrequency(TypedDict):
-    freq: List[psutil._common.scpufreq]
-    min: float
-    max: float
-
-
 class System:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
@@ -30,17 +23,10 @@ class System:
 
         self.cpu_count = psutil.cpu_count
 
-        cpu_freq_info = self.get_cpu_freq()
-
-        self.cpu_freq: List[psutil._common.scpufreq] | None = (
-            cpu_freq_info["freq"] if cpu_freq_info else None
-        )
-        self.cpu_freq_min: float | None = (
-            cpu_freq_info["min"] if cpu_freq_info else None
-        )
-        self.cpu_freq_max: float | None = (
-            cpu_freq_info["max"] if cpu_freq_info else None
-        )
+        try:  # perf
+            self.cpu_freq = [i._asdict() for i in psutil.cpu_freq(percpu=True)]
+        except Exception:  # errors on darwin t81xx
+            self.cpu_freq = [0]
 
         self.svmem = psutil.virtual_memory()._asdict()
         self.sswap = psutil.swap_memory()._asdict()
@@ -71,18 +57,6 @@ class System:
         self.gpu = self.get_gpu()
         self.git = self.get_git()
 
-    def get_cpu_freq(self) -> CPUFrequency | None:
-        try:
-            cpu_freqs: List[psutil._common.scpufreq] = psutil.cpu_freq(percpu=True)
-
-            min_freq = min(f.min for f in cpu_freqs)
-            max_freq = max(f.max for f in cpu_freqs)
-
-            return {"freq": cpu_freqs, "min": min_freq, "max": max_freq}
-        except Exception:
-            # On macOS or when not available, psutil.cpu_freq will raise an exception
-            return None
-
     def __getattr__(self, name):
         return self.get_psutil(name)
 
@@ -95,11 +69,11 @@ class System:
     def get_gpu(self):
         d = {}
 
+        # NVIDIA
         n = run_cmd("nvidia-smi")
         if n:
-            stdout = logging.getLogger("stdout")
-            stdout.info(n)
-            try:  # NVIDIA
+            logging.getLogger("stdout").info(n)
+            try:
                 import pynvml
 
                 try:
@@ -118,9 +92,7 @@ class System:
                             {
                                 "name": pynvml.nvmlDeviceGetName(h),
                                 "memory": {
-                                    "total": to_human(
-                                        pynvml.nvmlDeviceGetMemoryInfo(h).total
-                                    ),
+                                    "total": pynvml.nvmlDeviceGetMemoryInfo(h).total
                                 },
                                 "temp": pynvml.nvmlDeviceGetTemperature(
                                     h, pynvml.NVML_TEMPERATURE_GPU
@@ -180,13 +152,13 @@ class System:
                 "physical": self.cpu_count(logical=False),
                 "virtual": self.cpu_count(logical=True),
                 "freq": {
-                    "min": self.cpu_freq_min,
-                    "max": self.cpu_freq_max,
+                    "min": min([i["min"] for i in self.cpu_freq]),
+                    "max": max([i["max"] for i in self.cpu_freq]),
                 },
             },
             "memory": {
-                "virt": to_human(self.svmem["total"]),
-                "swap": to_human(self.sswap["total"]),
+                "virt": self.svmem["total"],
+                "swap": self.sswap["total"],
             },
             "boot_time": self.boot_time,
         }
@@ -249,12 +221,17 @@ class System:
                     d[f"{p}gpu/nvda/{dev}/power"] = pynvml.nvmlDeviceGetPowerUsage(h)
         return d
 
+    @PendingDeprecationWarning
     def monitor_human(self):
-        cpu_freq = self.get_cpu_freq()
+        try:
+            cpu_freq = [i.current for i in psutil.cpu_freq(percpu=True)]
+        except Exception:  # errors on darwin t81xx
+            cpu_freq = [0]
+
         d = {
             "cpu": {
                 "percent": psutil.cpu_percent(percpu=True),
-                "freq": [f.current for f in cpu_freq["freq"]] if cpu_freq else None,
+                "freq": cpu_freq,
             },
             "memory": {
                 "virt": {
