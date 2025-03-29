@@ -95,7 +95,7 @@ class Ops:
             setup_logger(
                 settings=self.settings,
                 logger=logger,
-                console=logging.getLogger("stdout"),
+                console=logging.getLogger("console"),
             )  # global logger
             to_json(
                 [self.settings.system.get_info()], f"{self.settings.get_dir()}/sys.json"
@@ -142,7 +142,7 @@ class Ops:
             self._iface._update_status(self.settings) if self._iface else None
             logger.critical("%s: interrupted %s", tag, e)
         logger.debug(f"{tag}: finished")
-        teardown_logger(logger, console=logging.getLogger("stdout"))
+        teardown_logger(logger, console=logging.getLogger("console"))
 
     def _worker(self, stop) -> None:
         while not stop() or not self._queue.empty():

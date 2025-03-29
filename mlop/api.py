@@ -92,7 +92,7 @@ def make_compat_message_v1(level, message, timestamp, step):
                 "time": int(timestamp * 1000),  # convert to ms
                 "message": message,
                 "lineNumber": step,
-                "logType": "INFO" if level == logging.INFO else "ERROR",
+                "logType": logging._levelToName.get(level)  # TODO: server side support int
             }
         )
     ]

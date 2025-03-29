@@ -22,6 +22,9 @@ dev = [
   "keyrings.alt",
 ]
 
+[tool.setuptools]
+packages = ["mlop"]
+
 [project.urls]
 Homepage = "https://github.com/mlop-ai/mlop"
 Documentation = "https://mlop-ai.github.io/docs/"

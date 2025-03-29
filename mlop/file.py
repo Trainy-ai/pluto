@@ -63,7 +63,7 @@ class Image(File):
         data: any,  # Union[PILImage.Image, np.ndarray],
         caption: str | None = None,
     ) -> None:
-        self._name = caption or "image"
+        self._name = caption or f"{uuid.uuid4()}"
         self._id = f"{uuid.uuid4()}{uuid.uuid4()}".replace("-", "")
         self._ext = ".png"
 

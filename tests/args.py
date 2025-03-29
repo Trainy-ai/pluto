@@ -6,6 +6,7 @@ import keyring
 
 AUTH = "mlpi_public_use_only_"
 URL_LIST = {
+    "LOCAL": "http://localhost:3000",
     "REMOTE": "https://server.mlop.ai",
     "REMOTE_API": "https://api.mlop.ai/api/create-run",
 }
@@ -60,7 +61,7 @@ def read_sets_compat(args, tag):
         if args.lib == "m" or args.lib == "r":
             d["auth"] = AUTH
             if args.lib == "m":
-                d["url"] = URL_LIST["LOCAL_RUST"]
+                d["url"] = URL_LIST["LOCAL"]
             elif args.lib == "r":
                 d["url"] = URL_LIST["REMOTE"]
             d["url_data"] = f"{d['url']}/ingest/metrics"
