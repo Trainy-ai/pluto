@@ -60,7 +60,9 @@ for e in range(NUM_EPOCHS):
         # user shouldn't attempt to repeatedly log image with the same filename
         file = mlop.Image(image, caption=f"random-field-{e}-{i}")
         examples.append(file)
-    run.log({"examples": examples})
+        run.log({"A/iter": i})
+        run.log({f"B/{e}-{i}": file})
+    # run.log({"B/0": examples})
     print(
         f"{TAG}: Epoch {e + 1} / {NUM_EPOCHS} took {time.time() - RUN:.4f}s, now waiting {WAIT}s"
     )

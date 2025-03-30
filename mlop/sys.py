@@ -22,11 +22,10 @@ class System:
         self.timezone = list(time.tzname)
 
         self.cpu_count = psutil.cpu_count
-
         try:  # perf
             self.cpu_freq = [i._asdict() for i in psutil.cpu_freq(percpu=True)]
         except Exception:  # errors on darwin t81xx
-            self.cpu_freq = [0]
+            self.cpu_freq = [{"current": 0, "min": 0, "max": 0}]
 
         self.svmem = psutil.virtual_memory()._asdict()
         self.sswap = psutil.swap_memory()._asdict()
