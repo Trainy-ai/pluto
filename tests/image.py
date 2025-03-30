@@ -17,7 +17,7 @@ WAIT = ITEM_PER_EPOCH * 0.01
 if platform.system() == "Linux":  # or platform.machine() == "x86_64"
     NUM_EPOCHS = 2  # for actions
 else:
-    NUM_EPOCHS = 20
+    NUM_EPOCHS = 40
 TOTAL = NUM_EPOCHS * ITEM_PER_EPOCH
 INIT = time.time()
 
@@ -42,7 +42,7 @@ for e in range(NUM_EPOCHS):
     examples = []
     RUN = time.time()
     for i in range(ITEM_PER_EPOCH):
-        if False:
+        if i % 2 == 0:
             file = Image.new(
                 "RGB",
                 (100, 100),
@@ -62,7 +62,7 @@ for e in range(NUM_EPOCHS):
         examples.append(file)
         run.log({"A/iter": i})
         run.log({f"B/{e}-{i}": file})
-    # run.log({"B/0": examples})
+    run.log({"B/0": examples})
     print(
         f"{TAG}: Epoch {e + 1} / {NUM_EPOCHS} took {time.time() - RUN:.4f}s, now waiting {WAIT}s"
     )

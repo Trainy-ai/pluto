@@ -117,6 +117,7 @@ class Ops:
 
     def start(self) -> None:
         self._iface.start() if self._iface else None
+        self._iface._update_meta(list(self.settings.system.monitor().keys())) if self._iface else None
         self._monitor.start()
         logger.debug(f"{tag}: started")
 

@@ -3,6 +3,7 @@ import logging
 import os
 import platform
 import time
+from typing import Any, Dict, List, Optional, Union
 
 import psutil
 from git import Repo
@@ -18,55 +19,55 @@ class System:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
 
-        self.uname = platform.uname()._asdict()
-        self.timezone = list(time.tzname)
+        self.uname: Dict[str, str] = platform.uname()._asdict()
+        self.timezone: List[str] = list(time.tzname)
 
         self.cpu_count = psutil.cpu_count
         try:  # perf
-            self.cpu_freq = [i._asdict() for i in psutil.cpu_freq(percpu=True)]
+            self.cpu_freq: List[Dict[str, float]] = [i._asdict() for i in psutil.cpu_freq(percpu=True)]
         except Exception:  # errors on darwin t81xx
             self.cpu_freq = [{"current": 0, "min": 0, "max": 0}]
 
-        self.svmem = psutil.virtual_memory()._asdict()
-        self.sswap = psutil.swap_memory()._asdict()
-        self.disk = [i._asdict() for i in psutil.disk_partitions()]
-        self.net_if_addrs = {
+        self.svmem: Dict[str, Any] = psutil.virtual_memory()._asdict()
+        self.sswap: Dict[str, Any] = psutil.swap_memory()._asdict()
+        self.disk: List[Dict[str, Any]] = [i._asdict() for i in psutil.disk_partitions()]
+        self.net_if_addrs: Dict[str, List[Dict[str, Any]]] = {
             i: [
                 {k: v for k, v in j._asdict().items() if k != "family"}
                 for j in psutil.net_if_addrs()[i]
             ]
             for i in psutil.net_if_addrs()
         }
-        self.boot_time = psutil.boot_time()
-        self.users = [i._asdict() for i in psutil.users()]
+        self.boot_time: float = psutil.boot_time()
+        self.users: List[Dict[str, Any]] = [i._asdict() for i in psutil.users()]
 
-        self.pid = os.getpid()
-        self.proc = psutil.Process(pid=self.pid)
+        self.pid: int = os.getpid()
+        self.proc: psutil.Process = psutil.Process(pid=self.pid)
         with self.proc.oneshot():  # perf
-            self.proc_info = self.proc.as_dict(attrs=["exe", "cmdline"])
-            self.proc_child = self.proc.children(recursive=True)
-            self.pid_child = [p.pid for p in self.proc_child] + [self.pid]
+            self.proc_info: Dict[str, Any] = self.proc.as_dict(attrs=["exe", "cmdline"])
+            self.proc_child: List[psutil.Process] = self.proc.children(recursive=True)
+            self.pid_child: List[int] = [p.pid for p in self.proc_child] + [self.pid]
         if self.settings.mode == "debug":  # privacy guard
-            self.environ = self.proc.environ()
-            self.requirements = [
+            self.environ: Dict[str, str] = self.proc.environ()
+            self.requirements: List[str] = [
                 f"{p.metadata['Name']}=={p.version}"
                 for p in importlib.metadata.distributions()
             ]
 
-        self.gpu = self.get_gpu()
-        self.git = self.get_git()
+        self.gpu: Dict[str, Any] = self.get_gpu()
+        self.git: Dict[str, Any] = self.get_git()
 
-    def __getattr__(self, name):
+    def __getattr__(self, name: str) -> Optional[Any]:
         return self.get_psutil(name)
 
-    def get_psutil(self, name):  # handling os specific methods
+    def get_psutil(self, name: str) -> Optional[Any]:  # handling os specific methods
         if hasattr(psutil, name):
             return getattr(psutil, name)
         else:
             return None
 
-    def get_gpu(self):
-        d = {}
+    def get_gpu(self) -> Dict[str, Any]:
+        d: Dict[str, Any] = {}
 
         # NVIDIA
         n = run_cmd("nvidia-smi")
@@ -115,8 +116,8 @@ class System:
                 logger.debug(f"{tag}: NVIDIA: pynvml not found")
         return d
 
-    def get_git(self):
-        d = {}
+    def get_git(self) -> Dict[str, Any]:
+        d: Dict[str, Any] = {}
         try:
             repo = Repo(
                 f"{self.settings.get_dir()}" or os.getcwd(),
@@ -139,8 +140,8 @@ class System:
             logger.debug("%s: git: repository not detected: %s", tag, e)
         return d
 
-    def get_info(self):
-        d = {
+    def get_info(self) -> Dict[str, Any]:
+        d: Dict[str, Any] = {
             "process": {
                 **self.proc_info,
                 "pid": self.pid,
@@ -180,9 +181,9 @@ class System:
             }
         return d
 
-    def monitor(self):
+    def monitor(self) -> Dict[str, Union[int, float]]:
         p = self.settings.x_sys_label
-        d = {
+        d: Dict[str, Union[int, float]] = {
             **{
                 f"{p}cpu/pct/{i}": v
                 for i, v in enumerate(psutil.cpu_percent(percpu=True))
@@ -221,13 +222,13 @@ class System:
         return d
 
     @PendingDeprecationWarning
-    def monitor_human(self):
+    def monitor_human(self) -> Dict[str, Any]:
         try:
             cpu_freq = [i.current for i in psutil.cpu_freq(percpu=True)]
         except Exception:  # errors on darwin t81xx
             cpu_freq = [0]
 
-        d = {
+        d: Dict[str, Any] = {
             "cpu": {
                 "percent": psutil.cpu_percent(percpu=True),
                 "freq": cpu_freq,

@@ -54,10 +54,9 @@ class ServerInterface:
                 # connect=settings.x_file_stream_timeout_seconds,
             ),
         )
-
         self.client_storage = httpx.Client(
             # http1=False, # TODO: set http2
-            verify=True if not self.settings.insecure_disable_ssl else False,
+            verify=not self.settings.insecure_disable_ssl,
             proxy=self.settings.http_proxy or self.settings.https_proxy or None,
             timeout=httpx.Timeout(self.settings.x_file_stream_timeout_seconds),
         )
@@ -65,19 +64,16 @@ class ServerInterface:
         self._stop_event = threading.Event()
 
         self._queue_data = queue.Queue()
-        self._buffer_data = None
         self._thread_data = None
         self._thread_file = None
         self._thread_storage = None
+        self._thread_meta = None
 
         self._queue_message = self.settings.message
-        self._buffer_message = None
         self._thread_message = None
 
     def start(self) -> None:
         logger.info(f"{tag}: find live updates at {print_url(self.settings.url_view)}")
-        self._update_meta(list(self.settings.system.monitor().keys()))
-
         if self._thread_data is None:
             self._thread_data = threading.Thread(
                 target=self._worker_publish,
@@ -85,7 +81,6 @@ class ServerInterface:
                     self.settings.url_data,
                     self.headers_data,
                     self._queue_data,
-                    self._buffer_data,
                     self._stop_event.is_set,
                     "data",
                 ),
@@ -99,7 +94,6 @@ class ServerInterface:
                     self.settings.url_message,
                     self.headers,
                     self._queue_message,
-                    self._buffer_message,
                     self._stop_event.is_set,
                     "message" if self.settings.mode == "debug" else None,
                 ),
@@ -133,6 +127,7 @@ class ServerInterface:
             self._thread_file,
             self._thread_storage,
             self._thread_message,
+            self._thread_meta,
         ]:
             if t is not None:
                 t.join(timeout=None)
@@ -149,23 +144,12 @@ class ServerInterface:
         )
 
     def _update_meta(self, data=None, file=None):
-        if data:
-            r = self._post_v1(
-                self.settings.url_meta,
-                self.headers,
-                make_compat_meta_v1(data, "data", self.settings),
-                client=self.client,
-            )
-        if file: 
-            for k, v in file.items():
-                r = self._post_v1(
-                    self.settings.url_meta,
-                    self.headers,
-                    make_compat_meta_v1(v, k, self.settings),
-                    client=self.client,
-                )
+        self._thread_meta = threading.Thread(
+            target=self._worker_meta, args=(data, file), daemon=True
+        )
+        self._thread_meta.start()
 
-    def _worker_publish(self, e, h, q, b, stop, name=None):
+    def _worker_publish(self, e, h, q, stop, name=None):
         while not (q.empty() and stop()):  # terminates only when both conditions met
             if q.empty():
                 time.sleep(self.settings.x_internal_check_process)  # debounce
@@ -174,7 +158,6 @@ class ServerInterface:
                     e,
                     h,
                     q,
-                    b,
                     client=self.client,
                     name=name,
                 )
@@ -190,11 +173,15 @@ class ServerInterface:
         )
 
     def _worker_file(self, file, q):
+        client = httpx.Client(
+            verify=not self.settings.insecure_disable_ssl,
+            proxy=self.settings.http_proxy or self.settings.https_proxy or None,
+        )
         r = self._post_v1(
             self.settings.url_file,
             self.headers,
             q,
-            client=self.client,
+            client=client,
         )
         try:
             d = r.json()
@@ -211,8 +198,25 @@ class ServerInterface:
                         self._thread_storage.start()
         except Exception as e:
             logger.critical(
-                "%s: failed to send files to %s: %s", tag, self.settings.url_file, e
+                "%s: failed to send files to %s: %s (%s)", tag, self.settings.url_file, e, type(e).__name__
             )
+
+    def _worker_meta(self, data=None, file=None):
+        if data:
+            r = self._post_v1(
+                self.settings.url_meta,
+                self.headers,
+                make_compat_meta_v1(data, "data", self.settings),
+                client=self.client,
+            )
+        if file:
+            for k, v in file.items():
+                r = self._post_v1(
+                    self.settings.url_meta,
+                    self.headers,
+                    make_compat_meta_v1(v, k, self.settings),
+                    client=self.client,
+                )
 
     def _queue_iter(self, q, b):
         s = time.time()
@@ -242,7 +246,7 @@ class ServerInterface:
                     f"{tag}: server responded error {r.status_code} during PUT to {url}: {r.text}"
                 )
         except Exception as e:
-            logger.error("%s: no response received during PUT to %s: %s", tag, url, e)
+            logger.error("%s: no response received during PUT to %s: %s: %s", tag, url, type(e).__name__, e)
         retry += 1
         self._put_v1(
             url, headers, content, client=client, retry=retry
@@ -250,8 +254,8 @@ class ServerInterface:
             f"{tag}: failed to put item in storage after {retry} retries to {url}"
         )
 
-    def _post_v1(self, url, headers, q, b=[], client=None, name=None, retry=0):
-        b = []
+    def _post_v1(self, url, headers, q, client=None, name=None, retry=0):
+        b, r = [], None
         try:
             s = time.time()
             content = self._queue_iter(q, b) if isinstance(q, queue.Queue) else q
@@ -272,12 +276,14 @@ class ServerInterface:
                         f"{tag}: {name}: server responded error {r.status_code} for {len(b)} line(s) during POST: {r.text}"
                     )
         except Exception as e:
-            logger.error("%s: no response received during POST to %s: %s", tag, url, e)
+            logger.error("%s: no response received during POST to %s: %s: %s", tag, url, type(e).__name__, e)
 
         retry += 1
         if retry < self.settings.x_file_stream_retry_max:
             logger.warning(
-                f"{tag}: retry {retry}/{self.settings.x_file_stream_retry_max} - server responded error {r.status_code} for {len(b)} line(s) during POST to {url}: {r.text}"
+                f"{tag}: retry {retry}/{self.settings.x_file_stream_retry_max}: server responded error {r.status_code} for {len(b)} line(s) during POST to {url}: {r.text}"
+                if r
+                else f"{tag}: retry {retry}/{self.settings.x_file_stream_retry_max}: no response received for {len(b)} line(s) during POST to {url}"
             )
             time.sleep(
                 min(
@@ -288,7 +294,7 @@ class ServerInterface:
             for i in b:  # if isinstance(q, queue.Queue)
                 q.put(i, block=False)
             return self._post_v1(
-                url, headers, q, b, client=client, retry=retry
+                url, headers, q, client=client, retry=retry
             )  # kwargs
         else:
             if name is not None:
