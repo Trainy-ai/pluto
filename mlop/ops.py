@@ -10,7 +10,7 @@ from collections.abc import Mapping
 
 from .api import make_compat_start_v1
 from .auth import login
-from .file import File, Image
+from .file import Audio, File, Image
 from .iface import ServerInterface
 from .log import setup_logger, teardown_logger
 from .sets import Settings
@@ -217,7 +217,7 @@ class Ops:
 
     def _op(self, d, f, k, v) -> None:
         if isinstance(v, File):
-            if isinstance(v, Image):
+            if isinstance(v, Image) or isinstance(v, Audio):
                 v.load(self.settings.get_dir())
             # TODO: add step to serialise data for files
             v._mkcopy(self.settings.get_dir())  # key independent

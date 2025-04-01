@@ -6,7 +6,10 @@ import re
 import shutil
 import tempfile
 import uuid
+from typing import Union
 
+import numpy as np
+import soundfile as sf
 from PIL import Image as PILImage
 
 from .util import get_class
@@ -60,7 +63,7 @@ class File:
 class Image(File):
     def __init__(
         self,
-        data: any,  # Union[PILImage.Image, np.ndarray],
+        data: Union[PILImage.Image, np.ndarray],
         caption: str | None = None,
     ) -> None:
         self._name = caption or f"{uuid.uuid4()}"
@@ -106,6 +109,36 @@ class Image(File):
             logger.error(
                 f"Image: proceeding with potentially incompatible mime type: {self._type}"
             )
+
+
+class Audio(File):
+    def __init__(
+        self, data: Union[str, np.ndarray], caption: str | None = None
+    ) -> None:
+        self._name = caption or f"{uuid.uuid4()}"
+        self._id = f"{uuid.uuid4()}{uuid.uuid4()}".replace("-", "")
+        self._ext = ".wav"
+
+        if isinstance(data, str):
+            logger.debug("Audio: used file")
+            self._audio = "file"
+            self._path = os.path.abspath(data)
+        else:
+            self._path = None
+            if isinstance(data, np.ndarray):
+                logger.debug("Audio: used numpy array")
+                self._audio = data
+            else:
+                logger.critical("Audio: unsupported data type: %s", type(data))
+
+    def load(self, dir=None):
+        if not self._path:
+            if dir:
+                self._tmp = f"{dir}/files/{self._name}-{self._id}{self._ext}"
+                sf.write(self._tmp, self._audio, samplerate=44100)
+                self._path = os.path.abspath(self._tmp)
+
+        super().__init__(path=self._path, name=self._name)
 
 
 def make_compat_matplotlib(val: any) -> any:

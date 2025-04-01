@@ -1,5 +1,5 @@
 from .auth import login, logout
-from .file import File, Image
+from .file import Audio, File, Image
 from .init import init
 from .sets import Settings, setup
 from .sys import System
@@ -8,6 +8,7 @@ from .sys import System
 __all__ = (
     "File",
     "Image",
+    "Audio",
     "System",
     "Settings",
     "init",
