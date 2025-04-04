@@ -1,4 +1,5 @@
 from .auth import login, logout
+from .compat.torch import watch
 from .file import Audio, File, Image
 from .init import init
 from .sets import Settings, setup
@@ -15,6 +16,7 @@ __all__ = (
     "login",
     "logout",
     "setup",
+    "watch"
 )
 
 __version__ = "0.0.0"

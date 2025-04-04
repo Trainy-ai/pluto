@@ -34,7 +34,7 @@ class DataStore:
             self._thread.start()
 
         self.cursor.execute(f"""
-            CREATE TABLE IF NOT EXISTS {self.settings.store_table_data}(
+            CREATE TABLE IF NOT EXISTS {self.settings.store_table_num}(
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 time INTEGER NOT NULL,
                 step INTEGER NOT NULL,
@@ -53,8 +53,8 @@ class DataStore:
         """)
         self.conn.commit()
 
-    def insert(self, data=None, file=None, timestamp=None, step=None):
-        self._queue.put((data, file, timestamp, step))
+    def insert(self, num=None, file=None, timestamp=None, step=None):
+        self._queue.put((num, file, timestamp, step))
 
     def stop(self):
         while not self._queue.empty():
@@ -69,27 +69,27 @@ class DataStore:
 
     def _worker(self):
         while not self._stop_event.is_set():
-            batch_data, batch_file = [], []
+            batch_num, batch_file = [], []
             start = time.time()
             while (
                 time.time() - start < self.settings.store_aggregate_interval
-                and len(batch_data) < self.settings.store_max_size
+                and len(batch_num) < self.settings.store_max_size
                 and len(batch_file) < self.settings.store_max_size
             ):
                 try:
-                    d, f, t, s = self._queue.get(
+                    n, f, t, s = self._queue.get(
                         timeout=max(
                             0,
                             self.settings.store_aggregate_interval
                             - (time.time() - start),
                         )
                     )
-                    if d != {}:
-                        batch_data.append(
+                    if n != {}:
+                        batch_num.append(
                             {
                                 "t": t,
                                 "s": s,
-                                "d": d,
+                                "n": n,
                             }
                         )
                     if f != {}:
@@ -102,7 +102,7 @@ class DataStore:
                         )
                 except queue.Empty:
                     continue
-            self._insert(batch_data, batch_file)
+            self._insert(batch_num, batch_file)
 
     def _insert(self, d, f):
         with self._lock:
@@ -111,9 +111,9 @@ class DataStore:
                 if d != []:
                     self.cursor.executemany(
                         f"""
-                        INSERT INTO {self.settings.store_table_data} (time, step, key, value) VALUES (?, ?, ?, ?)
+                        INSERT INTO {self.settings.store_table_num} (time, step, key, value) VALUES (?, ?, ?, ?)
                         """,
-                        [(e["t"], e["s"], k, v) for e in d for k, v in e["d"].items()],
+                        [(e["t"], e["s"], k, v) for e in d for k, v in e["n"].items()],
                     )
                     logger.info(f"{tag}: inserted {len(d)} line(s)")
                 if f != []:

@@ -107,6 +107,7 @@ def read_sets_compat(args, tag):
         mlop = importlib.import_module(module)
 
         d["x_log_level"] = 10
+        # d["mode"] = "offline"
     else:
         print(f"{tag}: Using mlop")
         import mlop
@@ -117,7 +118,7 @@ def read_sets_compat(args, tag):
                 d["url"] = URL_LIST["LOCAL"]
             elif args.lib == "r":
                 d["url"] = URL_LIST["REMOTE"]
-            d["url_data"] = f"{d['url']}/ingest/metrics"
+            d["url_num"] = f"{d['url']}/ingest/metrics"
             d["url_file"] = f"{d['url']}/files"
             d["url_message"] = f"{d['url']}/ingest/logs"
             d["url_status"] = URL_LIST["REMOTE_API"]

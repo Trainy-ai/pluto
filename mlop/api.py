@@ -47,7 +47,7 @@ def make_compat_meta_v1(meta, dtype, settings):
             "runId": settings._op_id,
             # "runName": settings._op_name,
             # "projectName": settings.project,
-            "logType": dtype.upper() if dtype != "data" else "METRIC",
+            "logType": dtype.upper() if dtype != "num" else "METRIC",
             "logName": meta,  # TODO: better aggregate
         }
     ).encode()
@@ -60,7 +60,7 @@ def make_compat_monitor_v1(data):
     return {pattern.sub(lambda m: ABBR[m.group(0)], k): v for k, v in data.items()}
 
 
-def make_compat_data_v1(data, timestamp, step):
+def make_compat_num_v1(data, timestamp, step):
     line = [
         json.dumps(
             {

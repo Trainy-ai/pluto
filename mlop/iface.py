@@ -7,9 +7,9 @@ import httpx
 import keyring
 
 from .api import (
-    make_compat_data_v1,
     make_compat_file_v1,
     make_compat_meta_v1,
+    make_compat_num_v1,
     make_compat_start_v1,
     make_compat_stop_v1,
     make_compat_storage_v1,
@@ -38,8 +38,8 @@ class ServerInterface:
             "X-Run-Name": f"{self.settings._op_name}",
             "X-Project-Name": f"{self.settings.project}",
         }
-        self.headers_data = self.headers.copy()
-        self.headers_data.update({"Content-Type": "application/x-ndjson"})
+        self.headers_num = self.headers.copy()
+        self.headers_num.update({"Content-Type": "application/x-ndjson"})
 
         self.client = httpx.Client(
             # http2=True,
@@ -63,8 +63,8 @@ class ServerInterface:
 
         self._stop_event = threading.Event()
 
-        self._queue_data = queue.Queue()
-        self._thread_data = None
+        self._queue_num = queue.Queue()
+        self._thread_num = None
         self._thread_file = None
         self._thread_storage = None
         self._thread_meta = None
@@ -74,19 +74,19 @@ class ServerInterface:
 
     def start(self) -> None:
         logger.info(f"{tag}: find live updates at {print_url(self.settings.url_view)}")
-        if self._thread_data is None:
-            self._thread_data = threading.Thread(
+        if self._thread_num is None:
+            self._thread_num = threading.Thread(
                 target=self._worker_publish,
                 args=(
-                    self.settings.url_data,
-                    self.headers_data,
-                    self._queue_data,
+                    self.settings.url_num,
+                    self.headers_num,
+                    self._queue_num,
                     self._stop_event.is_set,
                     "data",
                 ),
                 daemon=True,
             )
-            self._thread_data.start()
+            self._thread_num.start()
         if self._thread_message is None:
             self._thread_message = threading.Thread(
                 target=self._worker_publish,
@@ -103,14 +103,14 @@ class ServerInterface:
 
     def publish(
         self,
-        data: dict[str, any] | None = None,
+        num: dict[str, any] | None = None,
         file: dict[str, any] | None = None,
         timestamp: int | None = None,
         step: int | None = None,
     ) -> None:
-        if data:
-            self._queue_data.put(
-                make_compat_data_v1(data, timestamp, step), block=False
+        if num:
+            self._queue_num.put(
+                make_compat_num_v1(num, timestamp, step), block=False
             )
         if file:
             self._thread_file = threading.Thread(
@@ -123,7 +123,7 @@ class ServerInterface:
     def stop(self) -> None:
         self._stop_event.set()
         for t in [
-            self._thread_data,
+            self._thread_num,
             self._thread_file,
             self._thread_storage,
             self._thread_message,
@@ -143,9 +143,9 @@ class ServerInterface:
             client=self.client,
         )
 
-    def _update_meta(self, data=None, file=None):
+    def _update_meta(self, num=None, file=None):
         self._thread_meta = threading.Thread(
-            target=self._worker_meta, args=(data, file), daemon=True
+            target=self._worker_meta, args=(num, file), daemon=True
         )
         self._thread_meta.start()
 
@@ -201,12 +201,12 @@ class ServerInterface:
                 "%s: failed to send files to %s: %s (%s)", tag, self.settings.url_file, e, type(e).__name__
             )
 
-    def _worker_meta(self, data=None, file=None):
-        if data:
+    def _worker_meta(self, num=None, file=None):
+        if num:
             r = self._post_v1(
                 self.settings.url_meta,
                 self.headers,
-                make_compat_meta_v1(data, "data", self.settings),
+                make_compat_meta_v1(num, "num", self.settings),
                 client=self.client,
             )
         if file:

@@ -26,7 +26,7 @@ class Settings:
     _op_status: int = -1
 
     store_db: str = "store.db"
-    store_table_data: str = "data"
+    store_table_num: str = "num"
     store_table_file: str = "file"
     store_max_size: int = 2**14
     store_aggregate_interval: float = 2 ** (-1)
@@ -56,7 +56,7 @@ class Settings:
     url_stop: str = f"{_url_api}/api/update-run-status"
     url_meta: str = f"{_url_api}/api/add-logname"
     _url: str = "https://server.mlop.ai"
-    url_data: str = f"{_url}/ingest/metrics"
+    url_num: str = f"{_url}/ingest/metrics"
     url_file: str = f"{_url}/files"
     url_message: str = f"{_url}/ingest/logs"
     url_view: str = f"{_url}/view"

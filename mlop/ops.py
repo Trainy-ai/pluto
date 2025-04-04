@@ -57,7 +57,7 @@ class OpsMonitor:
     def _worker_monitor(self, stop):
         while not stop():
             self.op._iface.publish(
-                data=make_compat_monitor_v1(self.op.settings.system.monitor()),
+                num=make_compat_monitor_v1(self.op.settings.system.monitor()),
                 file=None,
                 timestamp=time.time(),
                 step=self.op._step,
@@ -183,41 +183,41 @@ class Ops:
             self._step += 1
 
         # data = data.copy()  # TODO: check mutability
-        d, f, dm, fm = {}, {}, [], {}
+        n, f, nm, fm = {}, {}, [], {}
         for k, v in data.items():
             if isinstance(v, list):
-                dm, fm = self._m(dm, fm, k, v[0])
+                nm, fm = self._m(nm, fm, k, v[0])
                 for e in v:
-                    d, f = self._op(d, f, k, e)
+                    n, f = self._op(n, f, k, e)
             else:
-                dm, fm = self._m(dm, fm, k, v)
-                d, f = self._op(d, f, k, v)
+                nm, fm = self._m(nm, fm, k, v)
+                n, f = self._op(n, f, k, v)
 
         # d = dict_to_json(d)  # TODO: add serialisation
         self._store.insert(
-            data=d, file=f, timestamp=t, step=self._step
+            num=n, file=f, timestamp=t, step=self._step
         ) if self._store else None
         self._iface.publish(
-            data=d, file=f, timestamp=t, step=self._step
+            num=n, file=f, timestamp=t, step=self._step
         ) if self._iface else None
-        self._iface._update_meta(data=dm, file=fm) if (
-            dm or fm
+        self._iface._update_meta(num=nm, file=fm) if (
+            nm or fm
         ) and self._iface else None
 
-    def _m(self, dm, fm, k, v) -> None:
+    def _m(self, nm, fm, k, v) -> None:
         if k not in self.settings.meta:
             if isinstance(v, File):
                 if v.__class__.__name__ not in fm:
                     fm[v.__class__.__name__] = []
                 fm[v.__class__.__name__].append(k)
             elif isinstance(v, (int, float)):
-                dm.append(k)
+                nm.append(k)
             self.settings.meta.append(k)
             # d[f"{self.settings.x_meta_label}{k}"] = 0
             logger.debug(f"{tag}: added {k} at step {self._step}")
-        return dm, fm
+        return nm, fm
 
-    def _op(self, d, f, k, v) -> None:
+    def _op(self, n, f, k, v) -> None:
         if isinstance(v, File):
             if isinstance(v, Image) or isinstance(v, Audio):
                 v.load(self.settings.get_dir())
@@ -229,7 +229,7 @@ class Ops:
             else:
                 f[k].append(v)
         elif isinstance(v, (int, float)):
-            d[k] = v
+            n[k] = v
         else:
             logger.warning(f"{tag}: unsupported type {type(v)}")
-        return d, f
+        return n, f
