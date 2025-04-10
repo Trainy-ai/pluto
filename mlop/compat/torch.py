@@ -14,6 +14,7 @@ def watch(
     disable_grad: bool = False,
     disable_param: bool = False,
     freq: int | None = 1000,  # log_freq
+    bins: int | None = 64,
 ):
     if mlop.ops is None or len(mlop.ops) == 0:
         logger.critical(f"{tag}: no runs to attach, please call mlop.init() first")
@@ -24,10 +25,12 @@ def watch(
     if not disable_grad:
         for name, param in module.named_parameters():
             if param.requires_grad and check_param(param, name):
-                hooks.append(param.register_hook(_backward("_grad", name, log, freq)))
+                hooks.append(
+                    param.register_hook(_backward("_grad", name, log, freq, bins))
+                )
 
     if not disable_param:
-        hooks.append(module.register_forward_hook(_forward("_param", log, freq)))
+        hooks.append(module.register_forward_hook(_forward("_param", log, freq, bins)))
 
     return hooks
 
@@ -42,7 +45,7 @@ def check_param(param, name):
         return False
 
 
-def _backward(prefix, name, log, freq):
+def _backward(prefix, name, log, freq, bins):
     c = [0]
 
     def f(grad):
@@ -50,14 +53,14 @@ def _backward(prefix, name, log, freq):
         if c[0] < freq:
             return
         c[0] = 0
-        hist = make_compat_histogram_torch(grad.data)
+        hist = make_compat_histogram_torch(grad.data, bins)
         if hist is not None:
             log({f"{prefix}/{name}": hist})
 
     return f
 
 
-def _forward(prefix, log, freq):
+def _forward(prefix, log, freq, bins):
     c = [0]
 
     def f(module, input, output):
@@ -68,7 +71,7 @@ def _forward(prefix, log, freq):
 
         for name, param in module.named_parameters():
             if check_param(param, name):
-                hist = make_compat_histogram_torch(param.data)
+                hist = make_compat_histogram_torch(param.data, bins)
                 if hist is not None:
                     log({f"{prefix}/{name}": hist})
                 else:
@@ -115,12 +118,12 @@ def make_compat_histogram_torch(tensor, bins=64):
     if tmin > tmax:
         tmin, tmax = tmax, tmin
 
-    if tmin == tmax:  # use single bin if all values are the same
-        tensor = torch.Tensor([flat.numel()])
-        bins = torch.Tensor([tmin, tmax])
-    else:
+    if True:  # tmin != tmax:
         tensor = flat.histc(bins=bins, min=tmin, max=tmax)
         bins = torch.linspace(tmin, tmax, steps=bins + 1)
+    else:  # use single bin if all values are the same
+        tensor = torch.Tensor([flat.numel()])
+        bins = torch.Tensor([tmin, tmax])
 
     # add back zeros from sparse tensor
     if zeros:

@@ -226,7 +226,7 @@ class Op:
                 if v.__class__.__name__ not in fm:
                     fm[v.__class__.__name__] = []
                 fm[v.__class__.__name__].append(k)
-            elif isinstance(v, (int, float)):
+            elif isinstance(v, (int, float)) or v.__class__.__name__ == 'Tensor':
                 nm.append(k)
             self.settings.meta.append(k)
             # d[f"{self.settings.x_meta_label}{k}"] = 0
@@ -249,6 +249,11 @@ class Op:
             d[k].append(v)
         elif isinstance(v, (int, float)):
             n[k] = v
+        elif v.__class__.__name__ == 'Tensor':
+            if len(v.shape) == 0:
+                n[k] = v.item()
+            else:
+                logger.warning(f"{tag}: unsupported tensor shape {v.shape}")
         else:
             logger.warning(f"{tag}: unsupported type {type(v)}")
         return n, d, f

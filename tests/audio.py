@@ -2,6 +2,7 @@ import os
 import time
 
 import httpx
+import numpy as np
 
 from .args import get_prefs, init_test, timer
 
@@ -21,6 +22,8 @@ def gen_audio(FILE_NAME=f".mlop/files/{TAG}"):
 def test_audio(
     mlop, run, FILE_NAME=f".mlop/files/{TAG}", NUM_EPOCHS=None, ITEM_PER_EPOCH=None
 ):
+    if not os.path.exists(f"{FILE_NAME}.ogg"):
+        gen_audio(FILE_NAME)
     if NUM_EPOCHS is None or ITEM_PER_EPOCH is None:
         NUM_EPOCHS = get_prefs(TAG)["NUM_EPOCHS"]
         ITEM_PER_EPOCH = get_prefs(TAG)["ITEM_PER_EPOCH"]
@@ -30,8 +33,10 @@ def test_audio(
         examples = []
         for i in range(ITEM_PER_EPOCH):
             file = mlop.Audio(f"{FILE_NAME}.ogg", caption=f"{TAG}-{e}-{i}")
+            ndarray = mlop.Audio(np.array([[1, 1, 1], [1, 1, 1]], dtype=np.float32), caption=f"{TAG}-{e}-{i}")
             examples.append(file)
             run.log({f"{TAG}/file": file})
+            run.log({f"{TAG}/data": ndarray})
         run.log({f"{TAG}/all": examples})
         print(
             f"{TAG}: Epoch {e + 1} / {NUM_EPOCHS} took {time.time() - epoch_time:.4f}s, sleeping {WAIT}s"

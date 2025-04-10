@@ -2,6 +2,7 @@ import importlib.metadata
 import logging
 import os
 import platform
+import sys
 import time
 from typing import Any, Dict, List, Optional, Union
 
@@ -24,13 +25,17 @@ class System:
 
         self.cpu_count = psutil.cpu_count
         try:  # perf
-            self.cpu_freq: List[Dict[str, float]] = [i._asdict() for i in psutil.cpu_freq(percpu=True)]
+            self.cpu_freq: List[Dict[str, float]] = [
+                i._asdict() for i in psutil.cpu_freq(percpu=True)
+            ]
         except Exception:  # errors on darwin t81xx
             self.cpu_freq = [{"current": 0, "min": 0, "max": 0}]
 
         self.svmem: Dict[str, Any] = psutil.virtual_memory()._asdict()
         self.sswap: Dict[str, Any] = psutil.swap_memory()._asdict()
-        self.disk: List[Dict[str, Any]] = [i._asdict() for i in psutil.disk_partitions()]
+        self.disk: List[Dict[str, Any]] = [
+            i._asdict() for i in psutil.disk_partitions()
+        ]
         self.net_if_addrs: Dict[str, List[Dict[str, Any]]] = {
             i: [
                 {k: v for k, v in j._asdict().items() if k != "family"}
@@ -72,7 +77,7 @@ class System:
         # NVIDIA
         n = run_cmd("nvidia-smi")
         if n:
-            logging.getLogger("console").error(n)
+            logging.getLogger("console").error(n)  # TODO: fix logging to error
             try:
                 import pynvml
 

@@ -91,6 +91,7 @@ def make_compat_data_v1(data, timestamp, step):
                         "num": len(j["bins"]) - 1,
                     }
                     j["bins"] = bins
+                    j["maxFreq"] = max(j["freq"])
                 c = json.dumps(j)
             else:
                 c = json.dumps(d.to_dict())

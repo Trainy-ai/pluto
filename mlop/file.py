@@ -68,7 +68,7 @@ class Image(File):
 
     def __init__(
         self,
-        data: Union[PILImage.Image, np.ndarray],
+        data: Union[str, PILImage.Image, np.ndarray],
         caption: str | None = None,
     ) -> None:
         self._name = caption or f"{uuid.uuid4()}"
@@ -120,7 +120,10 @@ class Audio(File):
     tag = "Audio"
 
     def __init__(
-        self, data: Union[str, np.ndarray], caption: str | None = None
+        self,
+        data: Union[str, np.ndarray],
+        rate: int | None = 48000,
+        caption: str | None = None,
     ) -> None:
         self._name = caption or f"{uuid.uuid4()}"
         self._id = f"{uuid.uuid4()}{uuid.uuid4()}".replace("-", "")
@@ -135,6 +138,7 @@ class Audio(File):
             if isinstance(data, np.ndarray):
                 logger.debug(f"{self.tag}: used numpy array")
                 self._audio = data
+                self._rate = rate
             else:
                 logger.critical(f"{self.tag}: unsupported data type: %s", type(data))
 
@@ -142,7 +146,7 @@ class Audio(File):
         if not self._path:
             if dir:
                 self._tmp = f"{dir}/files/{self._name}-{self._id}{self._ext}"
-                sf.write(self._tmp, self._audio, samplerate=44100)
+                sf.write(file=self._tmp, data=self._audio, samplerate=self._rate)
                 self._path = os.path.abspath(self._tmp)
 
         super().__init__(path=self._path, name=self._name)
