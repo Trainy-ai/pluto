@@ -23,6 +23,9 @@ full = [
   "keyrings.alt",
 ]
 
+[project.scripts]
+mlop = "mlop.__main__:main"
+
 [tool.setuptools]
 packages = ["mlop", "mlop.compat"]
 
