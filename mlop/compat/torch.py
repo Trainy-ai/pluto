@@ -20,17 +20,18 @@ def watch(
         logger.critical(f"{tag}: no runs to attach, please call mlop.init() first")
         return
     else:
-        log, hooks = mlop.log, mlop._hooks
+        op = mlop.ops[-1]
+        log, hooks = op.log, mlop._hooks
 
     if not disable_grad:
         for name, param in module.named_parameters():
             if param.requires_grad and check_param(param, name):
                 hooks.append(
-                    param.register_hook(_backward("_grad", name, log, freq, bins))
+                    param.register_hook(_backward(op, name, freq, bins))
                 )
 
     if not disable_param:
-        hooks.append(module.register_forward_hook(_forward("_param", log, freq, bins)))
+        hooks.append(module.register_forward_hook(_forward(op, freq, bins)))
 
     return hooks
 
@@ -45,7 +46,7 @@ def check_param(param, name):
         return False
 
 
-def _backward(prefix, name, log, freq, bins):
+def _backward(op, name, freq, bins):
     c = [0]
 
     def f(grad):
@@ -55,12 +56,12 @@ def _backward(prefix, name, log, freq, bins):
         c[0] = 0
         hist = make_compat_histogram_torch(grad.data, bins)
         if hist is not None:
-            log({f"{prefix}/{name}": hist})
+            op.log({f"{op.settings.x_grad_label}/{name}": hist}, step=op._step)
 
     return f
 
 
-def _forward(prefix, log, freq, bins):
+def _forward(op, freq, bins):
     c = [0]
 
     def f(module, input, output):
@@ -73,7 +74,7 @@ def _forward(prefix, log, freq, bins):
             if check_param(param, name):
                 hist = make_compat_histogram_torch(param.data, bins)
                 if hist is not None:
-                    log({f"{prefix}/{name}": hist})
+                    op.log({f"{op.settings.x_param_label}/{name}": hist}, step=op._step)
                 else:
                     logger.error(f"{tag}: {name} does not contain a valid tensor")
 

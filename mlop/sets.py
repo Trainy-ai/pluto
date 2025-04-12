@@ -45,8 +45,9 @@ class Settings:
     x_file_stream_max_size: int = 2**18
     x_file_stream_transmit_interval: int = 2**3
     x_sys_sampling_interval: int = 2**2
-    x_sys_label: str = "_sys/"
-    x_meta_label: str = "_meta/"
+    x_sys_label: str = "sys"
+    x_grad_label: str = "grad"
+    x_param_label: str = "param"
 
     url: str = "https://demo.mlop.ai"
     url_token: str = f"{url}/api-keys"
