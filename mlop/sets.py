@@ -54,16 +54,17 @@ class Settings:
     _url_py: str = "https://py.mlop.ai"
     url_trigger: str = f"{_url_py}/api/runs/triggers"
     _url_api: str = "https://api.mlop.ai"
-    url_login: str = f"{_url_api}/api/is-logged-in"
+    url_login: str = f"{_url_api}/api/slug"
     url_start: str = f"{_url_api}/api/runs/create"
     url_stop: str = f"{_url_api}/api/runs/status/update"
     url_meta: str = f"{_url_api}/api/runs/logName/add"
+    url_graph: str = f"{_url_api}/api/runs/modelGraph/create"
     _url: str = "https://server.mlop.ai"
     url_num: str = f"{_url}/ingest/metrics"
     url_data: str = f"{_url}/ingest/data"
     url_file: str = f"{_url}/files"
     url_message: str = f"{_url}/ingest/logs"
-    url_view: str = f"{_url}/view"
+    url_view: str = None
 
     def update(self, settings) -> None:
         if isinstance(settings, Settings):

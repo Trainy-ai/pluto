@@ -1,7 +1,4 @@
-import json
 import logging
-from functools import reduce
-from operator import mul
 
 import torch
 
@@ -34,7 +31,7 @@ def watch(
         return
     else:
         op, hooks = mlop.ops[-1], mlop._hooks
-        op._module, module._nodes = module, []
+        op._torch, module._nodes = module, []
 
     if not disable_grad:
         for name, param in module.named_parameters():
@@ -45,6 +42,7 @@ def watch(
         hooks.append(module.register_forward_hook(_forward(op, freq, bins)))
 
     if not disable_graph:
+        op._torch._nodes = _to_dict(module)
         types = [
             getattr(torch.nn, t)
             for t in (
@@ -57,6 +55,23 @@ def watch(
         ]
         hooks.extend(_hook_child(op, types, module, hooks))
     return hooks
+
+
+def _to_dict(module):
+    d = get_module(module)
+
+    children = []
+    for idx, (name, child) in enumerate(module._modules.items()):
+        if child is None:
+            continue
+        child_dict = {"name": name, "order": idx}
+        child_dict.update(_to_dict(child))
+        children.append(child_dict)
+
+    if children:
+        d["children"] = children
+
+    return d
 
 
 def _hook_child(op, types, module, hooks=[], prefix=None):
@@ -78,35 +93,31 @@ def _forward_child(op, name):
 
     def f(module, input, output):
         if c[0] == 1:
-            if op._module._nodes:
-                print({
-                    "name": "torch",
-                    "nodes": op._module._nodes,
-                })
-                op._module._nodes = []
+            if op._torch._nodes:
+                if not hasattr(op._torch, "_ready"):
+                    op._torch._ready = True
             return
         c[0] = 1
 
-        params = {
-            pname: list(param.size()) for pname, param in module.named_parameters()
-        }
+        _up, _down = (
+            get_node_id(input) if isinstance(input, tuple) else get_node_id((input,)),
+            get_node_id(output)
+            if isinstance(output, tuple)
+            else get_node_id((output,)),
+        )
 
-        _up = get_node_id(input) if isinstance(input, tuple) else get_node_id((input,))
-        _down = get_node_id(output) if isinstance(output, tuple) else get_node_id((output,))
+        n = _find_node(op._torch._nodes, id(module))
+        if n is not None:
+            n.update(
+                {
+                    "shapes": {
+                        "input": [get_shape(i) for i in input],
+                        "output": get_shape(output),
+                    },
+                    "edges": {"up": _up, "down": _down},
+                }
+            )
 
-        node = {
-            "name": name,
-            "id": id(module),
-            # "class": str(module),
-            "module": get_module_info(module),
-            "params": params,
-            "shapes": {
-                "input": [get_shape(i) for i in input],
-                "output": get_shape(output),
-            },
-            "edges": {"up": _up, "down": _down},
-        }
-        op._module._nodes.append(node)
     return f
 
 
@@ -155,8 +166,13 @@ def check_param(param, name):
         return False
 
 
-def get_module_info(module):
-    info = {"name": module.__class__.__name__, "args": [], "kwargs": {}}
+def get_module(module):
+    info = {
+        "type": module.__class__.__name__,
+        "id": id(module),
+        "args": [],
+        "kwargs": {},
+    }
 
     if hasattr(module, "in_channels") and hasattr(module, "out_channels"):
         info["args"] = [module.in_channels, module.out_channels]
@@ -179,6 +195,15 @@ def get_module_info(module):
                 and isinstance(v, (int, float, str, bool))
             ):
                 info["kwargs"][k] = v
+
+    # TODO: find a more robust solution to enforce params
+    params = {
+        pname: list(param.size())
+        for pname, param in module.named_parameters()
+        if "." not in pname
+    }
+    if params:
+        info.update({"params": params})
 
     return info
 
@@ -271,3 +296,16 @@ def make_compat_tensor(tensor):
         return tensor[torch.isfinite(tensor)]  # remove inf/nan
     else:
         return tensor
+
+
+def _find_node(nodes, target_id):
+    if nodes.get("id") == target_id:
+        return nodes
+
+    if "children" in nodes:
+        for child in nodes["children"]:
+            result = _find_node(child, target_id)
+            if result is not None:
+                return result
+
+    return None

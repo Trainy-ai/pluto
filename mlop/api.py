@@ -21,12 +21,14 @@ ABBR = {
     "bytes_": "bytes/",
 }
 
+
 def make_compat_check_v1(settings):
     return json.dumps(
         {
             "runId": settings._op_id,
         }
     ).encode()
+
 
 def make_compat_start_v1(config, settings, info):
     return json.dumps(
@@ -152,3 +154,9 @@ def make_compat_message_v1(level, message, timestamp, step):
         )
     ]
     return ("\n".join(line) + "\n").encode("utf-8")
+
+
+def make_compat_graph_v1(settings, name, nodes):
+    return json.dumps(
+        {"runId": settings._op_id, "graph": {"format": name, "nodes": nodes}}
+    ).encode()

@@ -9,7 +9,12 @@ import time
 import traceback
 from collections.abc import Mapping
 
-from .api import make_compat_check_v1, make_compat_monitor_v1, make_compat_start_v1
+from .api import (
+    make_compat_check_v1,
+    make_compat_graph_v1,
+    make_compat_monitor_v1,
+    make_compat_start_v1,
+)
 from .auth import login
 from .data import Data
 from .file import Audio, File, Image
@@ -74,6 +79,15 @@ class OpMonitor:
                 if r.json()["status"] == "CANCELLED":
                     logger.critical(f"{tag}: server finished run")
                     os._exit(signal.SIGINT.value)  # TODO: do a more graceful exit
+                if hasattr(self.op, "_torch") and self.op._torch._nodes:
+                    if hasattr(self.op._torch, "_ready"):
+                        self.op._iface._post_v1(
+                            self.op.settings.url_graph,
+                            self.op._iface.headers,
+                            make_compat_graph_v1(self.op.settings, "torch", self.op._torch._nodes),
+                            client=self.op._iface.client,
+                        )
+                        self.op._torch._nodes = []
             except Exception as e:
                 logger.critical("%s: failed: %s", tag, e)
             time.sleep(self.op.settings.x_sys_sampling_interval)
