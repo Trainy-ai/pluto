@@ -31,7 +31,7 @@ def watch(
         return
     else:
         op, hooks = mlop.ops[-1], mlop._hooks
-        op._torch, module._nodes = module, []
+        op._torch, module._nodes = module, {}
 
     if not disable_grad:
         for name, param in module.named_parameters():
@@ -42,7 +42,6 @@ def watch(
         hooks.append(module.register_forward_hook(_forward(op, freq, bins)))
 
     if not disable_graph:
-        op._torch._nodes = _to_dict(module)
         types = [
             getattr(torch.nn, t)
             for t in (
@@ -53,6 +52,8 @@ def watch(
             )
             if hasattr(torch.nn, t)
         ]
+        op._torch._nodes = _to_dict(module)
+        hooks.append(module.register_forward_hook(_forward_child(op)))
         hooks.extend(_hook_child(op, types, module, hooks))
     return hooks
 
@@ -79,16 +80,14 @@ def _hook_child(op, types, module, hooks=[], prefix=None):
         if prefix:
             name = f"{prefix}.{name}"
         try:
-            if not isinstance(child, tuple(types)):
-                hooks.append(child.register_forward_hook(_forward_child(op, name)))
-            else:
-                hooks = _hook_child(op, types, child, hooks, name)
+            hooks.append(child.register_forward_hook(_forward_child(op)))
+            hooks = _hook_child(op, types, child, hooks, name)
         except RuntimeError as e:
             logger.error("%s: failed to watch child %s: %s", tag, name, e)
     return hooks
 
 
-def _forward_child(op, name):
+def _forward_child(op):
     c = [0]
 
     def f(module, input, output):
@@ -99,22 +98,49 @@ def _forward_child(op, name):
             return
         c[0] = 1
 
-        _up, _down = (
-            get_node_id(input) if isinstance(input, tuple) else get_node_id((input,)),
-            get_node_id(output)
-            if isinstance(output, tuple)
-            else get_node_id((output,)),
-        )
+        if not isinstance(input, tuple):
+            input = (input,)
+        if not isinstance(output, tuple):
+            output = (output,)
 
         n = _find_node(op._torch._nodes, id(module))
         if n is not None:
             n.update(
                 {
-                    "shapes": {
-                        "input": [get_shape(i) for i in input],
-                        "output": get_shape(output),
+                    "input": {
+                        "id": [
+                            t.data_ptr() if hasattr(t, "data_ptr") else id(t)
+                            for t in input
+                        ],
+                        "shape": [get_shape(i) for i in input],
+                        "grad_fn": [
+                            id(i.grad_fn) if hasattr(i, "grad_fn") else None
+                            for i in input
+                        ],
+                        "next": [
+                            [id(f) for f, _ in i.grad_fn.next_functions]
+                            if hasattr(i.grad_fn, "next_functions")
+                            else None
+                            for i in input
+                        ],
                     },
-                    "edges": {"up": _up, "down": _down},
+                    "output": {
+                        "id": [
+                            t.data_ptr() if hasattr(t, "data_ptr") else id(t)
+                            for t in output
+                        ],
+                        "shape": [get_shape(i) for i in output],
+                        "grad_fn": [
+                            id(i.grad_fn) if hasattr(i, "grad_fn") else None
+                            for i in output
+                        ],
+                        "next": [
+                            [id(f) for f, _ in i.grad_fn.next_functions]
+                            if hasattr(i.grad_fn, "next_functions")
+                            else None
+                            for i in output
+                        ],
+                    },
                 }
             )
 
@@ -206,15 +232,6 @@ def get_module(module):
         info.update({"params": params})
 
     return info
-
-
-def get_node_id(tensors):
-    if not isinstance(tensors, tuple):
-        tensors = (tensors,)
-    return [
-        getattr(t, "_node_id", t.data_ptr() if hasattr(t, "data_ptr") else id(t))
-        for t in tensors
-    ]
 
 
 def get_shape(tensor, r=set()):
