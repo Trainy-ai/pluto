@@ -62,7 +62,7 @@ def _forward_module(op):
                     op.settings.url_graph,
                     op._iface.headers,
                     make_compat_graph_v1(op.settings, "torch", op._torch._nodes),
-                    client=op._iface.client,
+                    client=op._iface.client_api,
                 ) if op._iface else None
                 op._torch._nodes = []
             return

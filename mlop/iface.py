@@ -5,6 +5,7 @@ import time
 
 import httpx
 import keyring
+from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn
 
 from .api import (
     make_compat_data_v1,
@@ -43,7 +44,6 @@ class ServerInterface:
         self.headers_num.update({"Content-Type": "application/x-ndjson"})
 
         self.client = httpx.Client(
-            # http2=True,
             verify=True if not self.settings.insecure_disable_ssl else False,
             proxy=self.settings.http_proxy or self.settings.https_proxy or None,
             limits=httpx.Limits(
@@ -61,6 +61,13 @@ class ServerInterface:
             proxy=self.settings.http_proxy or self.settings.https_proxy or None,
             timeout=httpx.Timeout(self.settings.x_file_stream_timeout_seconds),
         )
+        self.client_api = httpx.Client(
+            verify=True if not self.settings.insecure_disable_ssl else False,
+            proxy=self.settings.http_proxy or self.settings.https_proxy or None,
+            timeout=httpx.Timeout(
+                self.settings.x_file_stream_timeout_seconds,
+            ),
+        )
 
         self._stop_event = threading.Event()
 
@@ -74,6 +81,19 @@ class ServerInterface:
 
         self._queue_message = self.settings.message
         self._thread_message = None
+
+        self._progress = Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
+            transient=True,
+        )
+        self._progress_task = None
+        self._thread_progress = None
+        self._lock_progress = threading.Lock()
+        self._nb = bool(self.settings._nb())
+        self._total = 0
 
     def start(self) -> None:
         logger.info(f"{tag}: find live updates at {print_url(self.settings.url_view)}")
@@ -116,6 +136,11 @@ class ServerInterface:
                 daemon=True,
             )
             self._thread_message.start()
+        if self._thread_progress is None:
+            self._thread_progress = threading.Thread(
+                target=self._worker_progress, daemon=True
+            )
+            self._thread_progress.start()
 
     def publish(
         self,
@@ -125,22 +150,38 @@ class ServerInterface:
         timestamp: int | None = None,
         step: int | None = None,
     ) -> None:
-        if num:
-            self._queue_num.put(make_compat_num_v1(num, timestamp, step), block=False)
-        if data:
-            self._queue_data.put(
-                make_compat_data_v1(data, timestamp, step), block=False
-            )
-        if file:
-            self._thread_file = threading.Thread(
-                target=self._worker_file,
-                args=(file, make_compat_file_v1(file, timestamp, step)),
-                daemon=True,
-            )  # TODO: batching
-            self._thread_file.start()
+        with self._lock_progress:  # enforce one thread at a time
+            self._total += 1
+            if num:
+                self._queue_num.put(
+                    make_compat_num_v1(num, timestamp, step), block=False
+                )
+            if data:
+                self._queue_data.put(
+                    make_compat_data_v1(data, timestamp, step), block=False
+                )
+            if file:
+                self._thread_file = threading.Thread(
+                    target=self._worker_file,
+                    args=(file, make_compat_file_v1(file, timestamp, step)),
+                    daemon=True,
+                )  # TODO: batching
+                self._thread_file.start()
 
     def stop(self) -> None:
         self._stop_event.set()
+
+        while (
+            not self._queue_num.empty()
+            or not self._queue_data.empty()
+            or not self._queue_message.empty()
+        ):
+            time.sleep(self.settings.x_internal_check_process / 10)  # TODO: cleanup
+
+        if self._progress_task is not None:
+            self._progress.stop()
+            self._progress_task = None
+
         for t in [
             self._thread_num,
             self._thread_data,
@@ -148,6 +189,7 @@ class ServerInterface:
             self._thread_storage,
             self._thread_message,
             self._thread_meta,
+            self._thread_progress,
         ]:
             if t is not None:
                 t.join(timeout=None)
@@ -160,7 +202,7 @@ class ServerInterface:
             self.settings.url_stop,
             self.headers,
             make_compat_stop_v1(self.settings, trace),
-            client=self.client,
+            client=self.client_api,
         )
 
     def _update_meta(self, num=None, df=None):
@@ -168,6 +210,37 @@ class ServerInterface:
             target=self._worker_meta, args=(num, df), daemon=True
         )
         self._thread_meta.start()
+
+    def _worker_progress(self):
+        while not (
+            self._stop_event.is_set()
+            and self._queue_num.empty()
+            and self._queue_data.empty()
+            and self._queue_message.empty()
+        ):
+            with self._lock_progress:
+                if self._total > 0:
+                    if self._progress_task is None:
+                        self._progress_task = self._progress.add_task(
+                            "Processing", total=100
+                        )
+                        self._progress.start()
+
+                    if self._total > 0:
+                        i = self._total - (
+                            self._queue_num.qsize()
+                            + self._queue_data.qsize()
+                            + self._queue_message.qsize()
+                        )
+                        self._progress.update(
+                            self._progress_task,
+                            completed=min(100 * i / self._total, 100),
+                            description=f"Uploading ({max(i, 0)}/{self._total}):",
+                        )
+                        if self._nb and hasattr(self._progress, 'live'):
+                            self._progress.live.refresh()
+
+            time.sleep(self.settings.x_internal_check_process)
 
     def _worker_publish(self, e, h, q, stop, name=None):
         while not (q.empty() and stop()):  # terminates only when both conditions met
@@ -193,15 +266,11 @@ class ServerInterface:
         )
 
     def _worker_file(self, file, q):
-        client = httpx.Client(
-            verify=not self.settings.insecure_disable_ssl,
-            proxy=self.settings.http_proxy or self.settings.https_proxy or None,
-        )
         r = self._post_v1(
             self.settings.url_file,
             self.headers,
             q,
-            client=client,
+            client=self.client,
         )
         try:
             d = r.json()
@@ -231,7 +300,7 @@ class ServerInterface:
                 self.settings.url_meta,
                 self.headers,
                 make_compat_meta_v1(num, "num", self.settings),
-                client=self.client,
+                client=self.client_api,
             )
         if file:
             for k, v in file.items():
@@ -239,7 +308,7 @@ class ServerInterface:
                     self.settings.url_meta,
                     self.headers,
                     make_compat_meta_v1(v, k, self.settings),
-                    client=self.client,
+                    client=self.client_api,
                 )
 
     def _queue_iter(self, q, b):

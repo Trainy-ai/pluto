@@ -17,7 +17,7 @@ def test_metric(mlop, run, NUM_EPOCHS=None, ITEM_PER_EPOCH=None):
 
     for i in range(NUM_EPOCHS):
         run.log({f"val/{TAG}-{i}": random.random() for i in range(ITEM_PER_EPOCH)})
-        run.log({f"val/{TAG}-total": i + 1})
+        run.log({f"{TAG}-total": i + 1})
         if i % WAIT_INT == 0:
             print(f"{TAG}: Epoch {i + 1} / {NUM_EPOCHS}, sleeping {WAIT}s")
             time.sleep(WAIT)

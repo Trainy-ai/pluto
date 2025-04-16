@@ -104,7 +104,7 @@ class Op:
                 make_compat_start_v1(
                     self.config, self.settings, self.settings._sys.get_info()
                 ),
-                client=tmp_iface.client,
+                client=tmp_iface.client_api,
             )
             self.settings.url_view = r.json()["url"]
             self.settings._op_id = r.json()["runId"]

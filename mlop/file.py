@@ -43,8 +43,7 @@ class File:
         self._name = name
         self._ext = os.path.splitext(self._path)[-1]
         self._type = self._mimetype()
-        self._stat = os.stat(self._path)
-        self._size = self._stat.st_size  # os.path.getsize(self._path)
+        self._stat = os.stat(self._path)  # os.path.getsize(self._path)
         self._url = None
 
     def _mimetype(self) -> str:
