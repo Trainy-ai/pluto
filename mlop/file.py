@@ -88,7 +88,8 @@ class Image(File):
                 class_name = get_class(data)
                 if class_name.startswith("matplotlib."):
                     logger.debug(f"{self.tag}: attempted conversion from matplotlib")
-                    self._image = make_compat_image_matplotlib(data)
+                    self._matplotlib = True
+                    self._image = data
                 elif class_name.startswith("torch.") and (
                     "Tensor" in class_name or "Variable" in class_name
                 ):
@@ -102,12 +103,11 @@ class Image(File):
         if not self._path:
             if dir:
                 self._tmp = f"{dir}/files/{self._name}-{self._id}{self._ext}"
-                self._image.save(self._tmp, format=self._ext[1:])
+                if hasattr(self, "_matplotlib"):
+                    make_compat_image_matplotlib(self._tmp, self._image)
+                else:
+                    self._image.save(self._tmp, format=self._ext[1:])
                 self._path = os.path.abspath(self._tmp)
-            else:
-                with tempfile.NamedTemporaryFile(delete=False, suffix=self._ext) as tmp:
-                    self._image.save(tmp.name, format=self._ext[1:])
-                    self._path = os.path.abspath(tmp.name)
 
         super().__init__(path=self._path, name=self._name)
         if not self._type.startswith("image/"):
@@ -160,6 +160,7 @@ class Video(File):
         data: Union[str, np.ndarray],
         rate: int | None = 30,
         caption: str | None = None,
+        format: str | None = None,
         **kwargs,
     ) -> None:
         if "fps" in kwargs:
@@ -167,7 +168,7 @@ class Video(File):
 
         self._name = caption or f"{uuid.uuid4()}"
         self._id = f"{uuid.uuid4()}{uuid.uuid4()}".replace("-", "")
-        self._ext = ".mp4"
+        self._ext = f".{format}" if format in ["mp4", "webm","ogg", "gif"] else ".mp4"
 
         if isinstance(data, str):
             logger.debug(f"{self.tag}: used file")
@@ -246,7 +247,7 @@ def make_compat_video_numpy(v: any) -> any:
     return v
 
 
-def make_compat_image_matplotlib(val: any) -> any:
+def make_compat_image_matplotlib(f, val: any) -> any:
     # from matplotlib.spines import Spine # only required for is_frame_like workaround
     import matplotlib.pyplot as plt
     from matplotlib.figure import Figure
@@ -263,12 +264,7 @@ def make_compat_image_matplotlib(val: any) -> any:
                 logger.critical(f"{tag}: Image conversion failed: %s", e)
                 raise e
 
-    from io import BytesIO
-
-    buf = BytesIO()
-    val.savefig(buf, format="png")
-    image = PILImage.open(buf, formats=["PNG"])
-    return image
+    val.savefig(f, format="png")
 
 
 def make_compat_image_torch(val: any) -> any:

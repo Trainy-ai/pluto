@@ -77,7 +77,7 @@ class Settings:
 
     def get_dir(self) -> str:
         return os.path.join(
-            self.dir, "." + self.tag, self.project, self._op_name, str(self._op_id)
+            self.dir, "." + self.tag, self.project, self._op_name, # str(self._op_id)
         )
 
     def _nb(self) -> bool:

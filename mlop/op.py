@@ -11,7 +11,6 @@ from collections.abc import Mapping
 
 from .api import (
     make_compat_check_v1,
-    make_compat_graph_v1,
     make_compat_monitor_v1,
     make_compat_start_v1,
 )
@@ -20,7 +19,6 @@ from .data import Data
 from .file import Audio, File, Image, Video
 from .iface import ServerInterface
 from .log import setup_logger, teardown_logger
-from .sets import Settings
 from .store import DataStore
 from .sys import System
 from .util import dict_to_json, to_json

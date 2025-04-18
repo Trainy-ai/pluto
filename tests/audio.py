@@ -9,7 +9,7 @@ from .args import get_prefs, init_test, timer
 TAG = "audio"
 
 
-def gen_audio(FILE_NAME=f".mlop/files/{TAG}"):
+def get_audio(FILE_NAME=f".mlop/files/{TAG}"):
     os.makedirs(f"{os.path.dirname(FILE_NAME)}", exist_ok=True)
     r = httpx.get(
         "https://actions.google.com/sounds/v1/alarms/digital_watch_alarm_long.ogg"
@@ -23,7 +23,7 @@ def test_audio(
     mlop, run, FILE_NAME=f".mlop/files/{TAG}", NUM_EPOCHS=None, ITEM_PER_EPOCH=None
 ):
     if not os.path.exists(f"{FILE_NAME}.ogg"):
-        gen_audio(FILE_NAME)
+        get_audio(FILE_NAME)
     if NUM_EPOCHS is None or ITEM_PER_EPOCH is None:
         NUM_EPOCHS = get_prefs(TAG)["NUM_EPOCHS"]
         ITEM_PER_EPOCH = get_prefs(TAG)["ITEM_PER_EPOCH"]
