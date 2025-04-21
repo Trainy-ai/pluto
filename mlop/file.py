@@ -63,6 +63,33 @@ class File:
             self._path = os.path.abspath(self._tmp)
 
 
+class Text(File):
+    tag = "Text"
+
+    def __init__(self, data: str, caption: str | None = None) -> None:
+        self._name = caption or f"{uuid.uuid4()}"
+        self._id = f"{uuid.uuid4()}{uuid.uuid4()}".replace("-", "")
+        self._ext = ".txt"
+
+        if isinstance(data, str):
+            if os.path.exists(data):
+                self._path = os.path.abspath(data)
+            else:
+                self._text = data
+        else:
+            self._text = str(data)
+
+    def load(self, dir=None):
+        if not self._path:
+            if dir:
+                self._tmp = f"{dir}/files/{self._name}-{self._id}{self._ext}"
+                with open(self._tmp, "w") as f:
+                    f.write(self._text)
+                self._path = os.path.abspath(self._tmp)
+
+        super().__init__(path=self._path, name=self._name)
+
+
 class Image(File):
     tag = "Image"
 
@@ -173,7 +200,7 @@ class Video(File):
 
         self._name = caption or f"{uuid.uuid4()}"
         self._id = f"{uuid.uuid4()}{uuid.uuid4()}".replace("-", "")
-        self._ext = f".{format}" if format in ["mp4", "webm","ogg", "gif"] else ".mp4"
+        self._ext = f".{format}" if format in ["mp4", "webm", "ogg", "gif"] else ".mp4"
 
         if isinstance(data, str):
             logger.debug(f"{self.tag}: used file")

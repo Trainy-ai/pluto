@@ -10,6 +10,8 @@ tag = "Setup"
 class Settings:
     tag: str = f"{__name__.split('.')[0]}"
     dir: str = str(os.path.abspath(os.getcwd()))
+    git_diff_head: str = None
+    git_diff_remote: str = None
 
     _auth: str = None
     _sys: dict[str, any] = {}

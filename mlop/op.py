@@ -16,7 +16,7 @@ from .api import (
 )
 from .auth import login
 from .data import Data
-from .file import Audio, File, Image, Video
+from .file import Audio, File, Image, Text, Video
 from .iface import ServerInterface
 from .log import setup_logger, teardown_logger
 from .store import DataStore
@@ -67,12 +67,16 @@ class OpMonitor:
                     timestamp=time.time(),
                     step=self.op._step,
                 ) if self.op._iface else None
-                r = self.op._iface._post_v1(
-                    self.op.settings.url_trigger,
-                    self.op._iface.headers,
-                    make_compat_check_v1(self.op.settings),
-                    client=self.op._iface.client,
-                ) if self.op._iface else None
+                r = (
+                    self.op._iface._post_v1(
+                        self.op.settings.url_trigger,
+                        self.op._iface.headers,
+                        make_compat_check_v1(self.op.settings),
+                        client=self.op._iface.client,
+                    )
+                    if self.op._iface
+                    else None
+                )
                 if hasattr(r, "json") and r.json()["status"] == "CANCELLED":
                     logger.critical(f"{tag}: server finished run")
                     os._exit(signal.SIGINT.value)  # TODO: do a more graceful exit
@@ -138,6 +142,14 @@ class Op:
             list(make_compat_monitor_v1(self.settings._sys.monitor()).keys())
         ) if self._iface else None
         self._monitor.start()
+
+        for k, f in [
+            ("head", self.settings.git_diff_head),
+            ("remote", self.settings.git_diff_remote),
+        ]:  # TODO: diffs should not go in time-series data
+            if False and f and os.path.exists(f):
+                self._log({f"git/{k}": Text(f)}, step=0)
+
         logger.debug(f"{tag}: started")
 
     def log(
@@ -246,7 +258,12 @@ class Op:
 
     def _op(self, n, d, f, k, v) -> None:
         if isinstance(v, File):
-            if isinstance(v, Image) or isinstance(v, Audio) or isinstance(v, Video):
+            if (
+                isinstance(v, Text)
+                or isinstance(v, Image)
+                or isinstance(v, Audio)
+                or isinstance(v, Video)
+            ):
                 v.load(self.settings.get_dir())
             # TODO: add step to serialise data for files
             v._mkcopy(self.settings.get_dir())  # key independent

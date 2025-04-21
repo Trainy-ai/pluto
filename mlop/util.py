@@ -94,20 +94,21 @@ def update_node(src, dst):
     return dst
 
 
-def run_cmd(cmd="ls"):
+def run_cmd(cmd="ls", timeout=10):
     if not shutil.which(cmd.split()[0]):
         return None
 
     try:
-        r = subprocess.run(cmd.split(), check=False, capture_output=True, text=True)
+        r = subprocess.run(cmd.split(), check=False, capture_output=True, text=True, timeout=timeout)
         if r.returncode == 0:
             return r.stdout
         else:
             return r.stderr
     except FileNotFoundError:
         return None
-    except subprocess.SubprocessError as e:
-        return e
+    except (subprocess.SubprocessError, subprocess.TimeoutExpired) as e:
+        logger.error("%s: %s", tag, e)
+        return None
 
 
 def gen_id(seed=None, length=8) -> str:
