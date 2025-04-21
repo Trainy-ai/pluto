@@ -463,7 +463,7 @@ def _backward(op, name, freq, bins):
         c[0] = 0
         hist = make_compat_histogram_tensor(grad.data, bins)
         if hist is not None:
-            op.log({f"{op.settings.x_grad_label}/{name}": hist}, step=op._step)
+            op._log({f"{op.settings.x_grad_label}/{name}": hist}, step=op._step)
 
     return f
 
@@ -481,7 +481,7 @@ def _forward(op, freq, bins):
             if check_param(param, name):
                 hist = make_compat_histogram_tensor(param.data, bins)
                 if hist is not None:
-                    op.log({f"{op.settings.x_param_label}/{name}": hist}, step=op._step)
+                    op._log({f"{op.settings.x_param_label}/{name}": hist}, step=op._step)
                 else:
                     logger.error(f"{tag}: {name} does not contain a valid tensor")
 

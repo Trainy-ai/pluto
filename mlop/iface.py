@@ -177,7 +177,6 @@ class ServerInterface:
         while (
             not self._queue_num.empty()
             or not self._queue_data.empty()
-            or not self._queue_message.empty()
         ):
             time.sleep(self.settings.x_internal_check_process / 10)  # TODO: cleanup
 
@@ -219,7 +218,6 @@ class ServerInterface:
             self._stop_event.is_set()
             and self._queue_num.empty()
             and self._queue_data.empty()
-            and self._queue_message.empty()
         ):
             with self._lock_progress:
                 if self._total > 0:
@@ -229,19 +227,17 @@ class ServerInterface:
                         )
                         self._progress.start()
 
-                    if self._total > 0:
-                        i = self._total - (
-                            self._queue_num.qsize()
-                            + self._queue_data.qsize()
-                            + self._queue_message.qsize()
-                        )
-                        self._progress.update(
-                            self._progress_task,
-                            completed=min(100 * i / self._total, 100),
-                            description=f"Uploading ({max(i, 0)}/{self._total}):",
-                        )
-                        if self._nb and hasattr(self._progress, "live"):
-                            self._progress.live.refresh()
+                    i = self._total - (
+                        self._queue_num.qsize()
+                        + self._queue_data.qsize()
+                    )
+                    self._progress.update(
+                        self._progress_task,
+                        completed=min(100 * i / self._total, 100),
+                        description=f"Uploading ({max(i, 0)}/{self._total}):",
+                    )
+                    if self._nb and hasattr(self._progress, "live"):
+                        self._progress.live.refresh()
 
             time.sleep(self.settings.x_internal_check_process)
 

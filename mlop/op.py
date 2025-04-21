@@ -208,12 +208,8 @@ class Op:
             logger.critical("%s: failed: %s", tag, e)
             raise e
 
+        self._step = self._step + 1 if step is None else step
         t = time.time() if t is None else t
-        if step is not None:
-            if step > self._step:
-                self._step = step
-        else:
-            self._step += 1
 
         # data = data.copy()  # TODO: check mutability
         n, d, f, nm, fm = {}, {}, {}, [], {}
