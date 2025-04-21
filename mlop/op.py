@@ -142,14 +142,6 @@ class Op:
             list(make_compat_monitor_v1(self.settings._sys.monitor()).keys())
         ) if self._iface else None
         self._monitor.start()
-
-        for k, f in [
-            ("head", self.settings.git_diff_head),
-            ("remote", self.settings.git_diff_remote),
-        ]:  # TODO: diffs should not go in time-series data
-            if False and f and os.path.exists(f):
-                self._log({f"git/{k}": Text(f)}, step=0)
-
         logger.debug(f"{tag}: started")
 
     def log(

@@ -131,12 +131,15 @@ class System:
             )
             try:
                 c = {
-                    "url": repo.remotes["origin"].url,
                     "name": repo.config_reader().get_value("user", "name"),
                     "email": repo.config_reader().get_value("user", "email"),
                 }
             except Exception as e:
                 c = {}
+            try:
+                c.update({"url": repo.remotes["origin"].url})
+            except Exception as e:
+                pass
             d = {
                 "root": repo.git.rev_parse("--show-toplevel"),
                 "dirty": repo.is_dirty(),
@@ -148,19 +151,11 @@ class System:
                 cmd = "git diff"
                 if repo.git.version_info >= (2, 11, 0):  # TODO: remove legacy compat
                     cmd += " --submodule=diff"
+                d["diff"] = {
+                    "remote": run_cmd(cmd + " @{u}"),
+                }
                 if d["dirty"]:
-                    self.settings.git_diff_head = os.path.join(
-                        self.settings.dir, "diff_HEAD.patch"
-                    )
-                    with open(self.settings.git_diff_head, "w") as f:
-                        f.write(run_cmd(cmd + " HEAD"))
-                up = repo.active_branch.tracking_branch()
-                if up and up.commit != repo.head.commit:  # c.f. remote branch
-                    self.settings.git_diff_remote = os.path.join(
-                        self.settings.dir, f"diff_{up.commit.hexsha}.patch"
-                    )
-                    with open(self.settings.git_diff_remote, "w") as f:
-                        f.write(run_cmd(cmd + f" {up.commit.hexsha}"))
+                    d["diff"]["head"] = run_cmd(cmd + " HEAD")
         except Exception as e:
             logger.warning(
                 "%s: git: repository not detected: (%s) %s",
