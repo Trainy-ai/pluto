@@ -22,7 +22,7 @@ ABBR = {
     "net": "network",
     "mem": "memory",
     "recv": "received",
-    "bytes_": "bytes/",
+    "bytes_": "bytes.",
 }
 
 

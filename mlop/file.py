@@ -4,7 +4,6 @@ import mimetypes
 import os
 import re
 import shutil
-import tempfile
 import uuid
 from pathlib import Path
 from typing import Union
@@ -95,7 +94,7 @@ class Image(File):
 
     def __init__(
         self,
-        data: Union[str, PILImage.Image, np.ndarray],
+        data: Union[str, "PILImage.Image", np.ndarray],
         caption: str | None = None,
     ) -> None:
         self._name = caption or f"{uuid.uuid4()}"
@@ -108,23 +107,22 @@ class Image(File):
             self._path = os.path.abspath(data)
         else:
             self._path = None
-            if isinstance(data, PILImage.Image):
+            class_name = get_class(data)
+            if class_name.startswith("PIL.Image.Image"):
                 logger.debug(f"{self.tag}: used PILImage")
                 self._image = data
+            elif class_name.startswith("matplotlib."):
+                logger.debug(f"{self.tag}: attempted conversion from matplotlib")
+                self._matplotlib = True
+                self._image = data
+            elif class_name.startswith("torch.") and (
+                "Tensor" in class_name or "Variable" in class_name
+            ):
+                logger.debug(f"{self.tag}: attempted conversion from torch")
+                self._image = make_compat_image_torch(data)
             else:
-                class_name = get_class(data)
-                if class_name.startswith("matplotlib."):
-                    logger.debug(f"{self.tag}: attempted conversion from matplotlib")
-                    self._matplotlib = True
-                    self._image = data
-                elif class_name.startswith("torch.") and (
-                    "Tensor" in class_name or "Variable" in class_name
-                ):
-                    logger.debug(f"{self.tag}: attempted conversion from torch")
-                    self._image = make_compat_image_torch(data)
-                else:
-                    logger.debug(f"{self.tag}: attempted conversion from array")
-                    self._image = make_compat_image_numpy(data)
+                logger.debug(f"{self.tag}: attempted conversion from array")
+                self._image = make_compat_image_numpy(data)
 
     def load(self, dir=None):
         if not self._path:

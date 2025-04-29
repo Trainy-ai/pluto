@@ -210,21 +210,21 @@ class System:
         p = self.settings.x_sys_label
         d: Dict[str, Union[int, float]] = {
             **{
-                f"{p}/cpu/pct/{i}": v
+                f"{p}/cpu.pct.{i}": v
                 for i, v in enumerate(psutil.cpu_percent(percpu=True))
             },
             **{
-                f"{p}/mem/{k}": v
+                f"{p}/mem.{k}": v
                 for k, v in psutil.virtual_memory()._asdict().items()
                 if k in ("active", "used")
             },
             **{
-                f"{p}/disk/{k}": v
+                f"{p}/disk.{k}": v
                 for k, v in psutil.disk_usage(self.settings.get_dir())._asdict().items()
                 if k in ("used",)
             },
             **{
-                f"{p}/net/{k}": v
+                f"{p}/net.{k}": v
                 for k, v in psutil.net_io_counters()._asdict().items()
                 if k.startswith("bytes")
             },
@@ -237,13 +237,13 @@ class System:
                     dev = (
                         str(pynvml.nvmlDeviceGetName(h))[2:-1].lower().replace(" ", "_")
                     )
-                    d[f"{p}/gpu/nvda/{dev}/pct"] = pynvml.nvmlDeviceGetUtilizationRates(
+                    d[f"{p}/gpu.nvda.{dev}.pct"] = pynvml.nvmlDeviceGetUtilizationRates(
                         h
                     ).gpu
-                    d[f"{p}/gpu/nvda/{dev}/mem/pct"] = (
+                    d[f"{p}/gpu.nvda.{dev}.mem.pct"] = (
                         pynvml.nvmlDeviceGetUtilizationRates(h).memory
                     )
-                    d[f"{p}/gpu/nvda/{dev}/power"] = pynvml.nvmlDeviceGetPowerUsage(h)
+                    d[f"{p}/gpu.nvda.{dev}.power"] = pynvml.nvmlDeviceGetPowerUsage(h)
         return d
 
     @PendingDeprecationWarning

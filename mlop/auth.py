@@ -5,11 +5,10 @@ import webbrowser
 
 import httpx
 import keyring
-from keyrings.alt.file import PlaintextKeyring
 
 from .log import setup_logger, teardown_logger
 from .sets import Settings, get_console
-from .util import ANSI, print_url
+from .util import ANSI, import_lib, print_url
 
 tlogger = logging.getLogger("auth")
 tag = "Authentication"
@@ -21,7 +20,7 @@ def login(settings=None, retry=False):
     try:
         auth = keyring.get_password(f"{settings.tag}", f"{settings.tag}")
     except keyring.errors.NoKeyringError:  # fallback
-        keyring.set_keyring(PlaintextKeyring())
+        keyring.set_keyring(import_lib("keyrings.alt.file").PlaintextKeyring()())
         auth = keyring.get_password(f"{settings.tag}", f"{settings.tag}")
     if settings._auth is None:
         if auth == "":
@@ -35,7 +34,7 @@ def login(settings=None, retry=False):
         settings._auth = "_key"
     client = httpx.Client(
         verify=True if not settings.insecure_disable_ssl else False,
-        proxy=settings.http_proxy or settings.https_proxy or None
+        proxy=settings.http_proxy or settings.https_proxy or None,
     )
     r = client.post(
         url=settings.url_login,
@@ -56,7 +55,10 @@ def login(settings=None, retry=False):
         tlogger.info(
             f"{tag}: initializing authentication\n\n {hint1}\n\n {hint2}\n\n {hint3}\n"
         )
-        webbrowser.open(url=settings.url_token)
+        if hasattr(settings._sys, "monitor") and settings._sys.monitor() == {}:  # migrate mode
+            return
+        else:
+            webbrowser.open(url=settings.url_token)
         if get_console() == "jupyter":
             settings._auth = getpass.getpass(prompt="Enter API key: ")
         else:
@@ -70,7 +72,7 @@ def login(settings=None, retry=False):
                 "%s: failed to save key to system keyring service: %s", tag, e
             )
         teardown_logger(tlogger)
-        login(retry=True)
+        login(settings=settings, retry=True)
 
 
 def logout(settings=None):
@@ -79,9 +81,11 @@ def logout(settings=None):
     try:
         keyring.delete_password(f"{settings.tag}", f"{settings.tag}")
     except keyring.errors.NoKeyringError:
-        keyring.set_keyring(PlaintextKeyring())
+        keyring.set_keyring(import_lib("keyrings.alt.file").PlaintextKeyring())
         keyring.delete_password(f"{settings.tag}", f"{settings.tag}")
     except Exception as e:
-        tlogger.warning("%s: failed to delete key from system keyring service: %s", tag, e)
+        tlogger.warning(
+            "%s: failed to delete key from system keyring service: %s", tag, e
+        )
     tlogger.info(f"{tag}: logged out")
     teardown_logger(tlogger)
