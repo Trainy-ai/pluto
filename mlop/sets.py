@@ -18,7 +18,6 @@ class Settings:
     mode: str = "perf"  # noop | debug | perf
     meta: list = None
     message: queue.Queue = queue.Queue()
-    alert: dict[str, any] = {}
     disable_store: bool = True  # TODO: make false
     disable_iface: bool = False
     disable_console: bool = False  # disable file-based logging

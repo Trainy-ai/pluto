@@ -92,11 +92,11 @@ class ServerInterface:
             TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
             transient=True,
             console=Console(file=_stderr),
+            # redirect_stdout=False,
         )
         self._progress_task = None
         self._thread_progress = None
         self._lock_progress = threading.Lock()
-        self._nb = bool(self.settings._nb())
         self._total = 0
 
     def start(self) -> None:
@@ -140,7 +140,7 @@ class ServerInterface:
                 daemon=True,
             )
             self._thread_message.start()
-        if self._thread_progress is None:
+        if self._thread_progress is None and self.settings.mode == "debug":
             self._thread_progress = threading.Thread(
                 target=self._worker_progress, daemon=True
             )
@@ -173,6 +173,12 @@ class ServerInterface:
                 self._thread_file.start()
 
     def stop(self) -> None:
+        if self._thread_progress is None:  # TODO: only display progress bar if waiting
+            self._thread_progress = threading.Thread(
+                target=self._worker_progress, daemon=True
+            )
+            self._thread_progress.start()
+
         self._stop_event.set()
 
         while not self._queue_num.empty() or not self._queue_data.empty():
@@ -242,8 +248,6 @@ class ServerInterface:
                             self._progress.remove_task(self._progress_task)
                             self._progress_task = None  # signal no active task
 
-                    if self._nb and hasattr(self._progress, "live"):
-                        self._progress.live.refresh()
             time.sleep(self.settings.x_internal_check_process / 2)
 
     def _worker_publish(self, e, h, q, stop, name=None):

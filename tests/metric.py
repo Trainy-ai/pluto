@@ -20,6 +20,14 @@ def test_metric(mlop, run, NUM_EPOCHS=None, ITEM_PER_EPOCH=None):
     decay_rate = 0.0001
     noise_scale = 0.5 
 
+    run.alert(
+        message=f"run started with {NUM_EPOCHS} epochs",
+        title=TAG,
+        level="INFO",
+        remote=True,
+        email=True,
+    )
+
     for i in range(NUM_EPOCHS):
         base_value = math.exp(-decay_rate * i)
         run.log({

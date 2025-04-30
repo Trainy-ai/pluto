@@ -52,10 +52,9 @@ class ConsoleHandler:
         for line in buf.rstrip().splitlines():
             self.count += 1
             m = line.rstrip()
-            if "━━" not in m:  # TODO: better filter for progress bars
-                self.queue.put(
-                    make_compat_message_v1(self.level, m, time.time(), self.count)
-                )
+            self.queue.put(
+                make_compat_message_v1(self.level, m, time.time(), self.count)
+            )
             self.logger.log(self.level, m)
         self.stream.write(buf)
         self.stream.flush()

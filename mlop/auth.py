@@ -16,6 +16,7 @@ tag = "Authentication"
 
 def login(settings=None, retry=False):
     settings = settings or Settings()
+    settings.update(settings)
     setup_logger(settings=settings, logger=tlogger)
     try:
         auth = keyring.get_password(f"{settings.tag}", f"{settings.tag}")
@@ -81,6 +82,7 @@ def login(settings=None, retry=False):
 
 def logout(settings=None):
     settings = settings or Settings()
+    settings.update(settings)
     setup_logger(settings=settings, logger=tlogger)
     try:
         keyring.delete_password(f"{settings.tag}", f"{settings.tag}")

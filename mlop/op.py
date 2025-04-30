@@ -225,7 +225,9 @@ class Op:
             self._iface._post_v1(
                 self.settings.url_alert,
                 self._iface.headers,
-                make_compat_alert_v1(self.settings, t, message, title, level, url, **kwargs),
+                make_compat_alert_v1(
+                    self.settings, t, message, title, level, url, **kwargs
+                ),
                 client=self._iface.client,
             ) if self._iface else None
         else:
@@ -239,9 +241,6 @@ class Op:
             ) if self._iface else logger.warning(
                 f"{tag}: alert not sent since interface is disabled"
             )
-
-    def check(self, data, **kwargs):
-        pass
 
     def _worker(self, stop) -> None:
         while not stop() or not self._queue.empty():
