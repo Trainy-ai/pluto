@@ -18,6 +18,7 @@ from .api import (
     make_compat_stop_v1,
     make_compat_storage_v1,
 )
+from .log import _stderr
 from .sets import Settings
 from .util import print_url
 
@@ -90,7 +91,7 @@ class ServerInterface:
             BarColumn(),
             TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
             transient=True,
-            console=Console(file=sys.stderr),
+            console=Console(file=_stderr),
         )
         self._progress_task = None
         self._thread_progress = None
@@ -174,15 +175,8 @@ class ServerInterface:
     def stop(self) -> None:
         self._stop_event.set()
 
-        while (
-            not self._queue_num.empty()
-            or not self._queue_data.empty()
-        ):
+        while not self._queue_num.empty() or not self._queue_data.empty():
             time.sleep(self.settings.x_internal_check_process / 10)  # TODO: cleanup
-
-        if self._progress_task is not None:
-            self._progress.stop()
-            self._progress_task = None
 
         for t in [
             self._thread_num,
@@ -196,6 +190,11 @@ class ServerInterface:
             if t is not None:
                 t.join(timeout=None)
                 t = None
+
+        if self._progress_task is not None:
+            self._progress.remove_task(self._progress_task)
+            self._progress_task = None
+
         self._update_status(self.settings)
         logger.info(f"{tag}: find uploaded data at {print_url(self.settings.url_view)}")
 
@@ -221,25 +220,31 @@ class ServerInterface:
         ):
             with self._lock_progress:
                 if self._total > 0:
-                    if self._progress_task is None:
+                    i = self._total - (
+                        self._queue_num.qsize() + self._queue_data.qsize()
+                    )
+                    p = 100 * i / self._total
+
+                    if self._progress_task is None and p < 100:  # init
                         self._progress_task = self._progress.add_task(
                             "Processing:", total=100
                         )
                         self._progress.start()
 
-                    i = self._total - (
-                        self._queue_num.qsize()
-                        + self._queue_data.qsize()
-                    )
-                    self._progress.update(
-                        self._progress_task,
-                        completed=min(100 * i / self._total, 100),
-                        description=f"Uploading ({max(i, 0)}/{self._total}):",
-                    )
+                    if self._progress_task is not None:  # update if exists
+                        self._progress.update(
+                            self._progress_task,
+                            completed=min(p, 100),
+                            description=f"Uploading ({max(i, 0)}/{self._total}):",
+                        )
+                        if p >= 100:
+                            time.sleep(self.settings.x_internal_check_process / 2)
+                            self._progress.remove_task(self._progress_task)
+                            self._progress_task = None  # signal no active task
+
                     if self._nb and hasattr(self._progress, "live"):
                         self._progress.live.refresh()
-
-            time.sleep(self.settings.x_internal_check_process)
+            time.sleep(self.settings.x_internal_check_process / 2)
 
     def _worker_publish(self, e, h, q, stop, name=None):
         while not (q.empty() and stop()):  # terminates only when both conditions met
