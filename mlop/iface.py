@@ -173,6 +173,10 @@ class ServerInterface:
                 )  # TODO: batching
                 self._thread_file.start()
 
+    def save(self) -> None:
+        while not self._queue_num.empty() or not self._queue_data.empty():
+            time.sleep(self.settings.x_internal_check_process / 10)  # TODO: cleanup
+
     def stop(self) -> None:
         if self._thread_progress is None:  # TODO: only display progress bar if waiting
             self._thread_progress = threading.Thread(
@@ -181,9 +185,7 @@ class ServerInterface:
             self._thread_progress.start()
 
         self._stop_event.set()
-
-        while not self._queue_num.empty() or not self._queue_data.empty():
-            time.sleep(self.settings.x_internal_check_process / 10)  # TODO: cleanup
+        self.save()
 
         for t in [
             self._thread_num,
@@ -203,6 +205,7 @@ class ServerInterface:
             self._progress_task = None
 
         self._update_status(self.settings)
+        time.sleep(self.settings.x_internal_check_process / 10)  # TODO: cleanup console
         logger.info(f"{tag}: find uploaded data at {print_url(self.settings.url_view)}")
 
     def _update_status(self, settings, trace: Union[Any, None] = None):

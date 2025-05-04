@@ -83,9 +83,14 @@ class Histogram(Data):
                 )
             else:
                 self._shape = "uniform"
-        elif isinstance(data, list) or isinstance(data, np.ndarray):
+        elif (
+            isinstance(data, list)
+            or isinstance(data, np.ndarray)
+            or (data.__class__.__name__ == "Tensor" and data.ndim == 1)
+        ):
             d, b = np.histogram(data, bins=bins)
             d, b = d.tolist(), b.tolist()
+            self._shape = "uniform"
         else:
             logger.critical(
                 f"{self.tag}: data must be a list or numpy array: force proceeding with an empty histogram"

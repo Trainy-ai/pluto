@@ -15,9 +15,9 @@ class Settings:
     _auth: str = None
     _sys: Dict[str, Any] = {}
     compat: Dict[str, Any] = {}
-    project: str = "default"
+    project: str = tag
     mode: str = "perf"  # noop | debug | perf
-    meta: List[Any] = None
+    meta: List[str] = []
     message: queue.Queue = queue.Queue()
     disable_store: bool = True  # TODO: make false
     disable_iface: bool = False

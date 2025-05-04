@@ -28,6 +28,7 @@ class File:
         self,
         path: str,
         name: Union[str, None] = None,
+        **kwargs,
     ) -> None:
         self._path = os.path.abspath(path)
         self._id = self._hash()
@@ -38,7 +39,7 @@ class File:
             e = ValueError(
                 f"invalid file name: {name}; file name may only contain alphanumeric characters, dashes, underscores, and periods; proceeding with sanitized name"
             )
-            logger.warning(f"{self.tag}: %s", e)
+            logger.debug(f"{self.tag}: %s", e)
             name = INVALID_CHAR.sub("-", name)
         self._name = name
         self._ext = os.path.splitext(self._path)[-1]
@@ -62,11 +63,40 @@ class File:
             self._path = os.path.abspath(self._tmp)
 
 
+class Artifact(File):
+    tag = "Artifact"
+
+    def __init__(
+        self,
+        data: str = None,
+        caption: Union[str, None] = None,
+        metadata: dict = {},
+        **kwargs,
+    ) -> None:
+        self._name = caption + f".{uuid.uuid4()}" if caption else f"{uuid.uuid4()}"
+        self._id = f"{uuid.uuid4()}{uuid.uuid4()}".replace("-", "")
+
+        self._metadata = metadata
+        if isinstance(data, str) and os.path.exists(data):
+            self._path = os.path.abspath(data)
+
+    # TODO: remove legacy compat
+    def add_file(self, path: str, name: str = None):
+        self._name = name + f".{uuid.uuid4()}" if name else f"{uuid.uuid4()}"
+        self._path = os.path.abspath(path)
+
+    def load(self, dir=None):
+        if not self._path:
+            logger.critical(f"{self.tag}: failed to load artifact")
+        else:
+            super().__init__(path=self._path, name=self._name)
+
+
 class Text(File):
     tag = "Text"
 
     def __init__(self, data: str, caption: Union[str, None] = None) -> None:
-        self._name = caption or f"{uuid.uuid4()}"
+        self._name = caption + f".{uuid.uuid4()}" if caption else f"{uuid.uuid4()}"
         self._id = f"{uuid.uuid4()}{uuid.uuid4()}".replace("-", "")
         self._ext = ".txt"
 
@@ -97,7 +127,7 @@ class Image(File):
         data: Union[str, "PILImage.Image", np.ndarray],
         caption: Union[str, None] = None,
     ) -> None:
-        self._name = caption or f"{uuid.uuid4()}"
+        self._name = caption + f".{uuid.uuid4()}" if caption else f"{uuid.uuid4()}"
         self._id = f"{uuid.uuid4()}{uuid.uuid4()}".replace("-", "")
         self._ext = ".png"
 
@@ -154,7 +184,7 @@ class Audio(File):
         # TODO: remove legacy compat
         rate = kwargs.get("sample_rate", rate)
 
-        self._name = caption or f"{uuid.uuid4()}"
+        self._name = caption + f".{uuid.uuid4()}" if caption else f"{uuid.uuid4()}"
         self._id = f"{uuid.uuid4()}{uuid.uuid4()}".replace("-", "")
         self._ext = ".wav"
 
@@ -194,7 +224,7 @@ class Video(File):
     ) -> None:
         rate = kwargs.get("fps", rate)
 
-        self._name = caption or f"{uuid.uuid4()}"
+        self._name = caption + f".{uuid.uuid4()}" if caption else f"{uuid.uuid4()}"
         self._id = f"{uuid.uuid4()}{uuid.uuid4()}".replace("-", "")
         self._ext = f".{format}" if format in ["mp4", "webm", "ogg", "gif"] else ".mp4"
 

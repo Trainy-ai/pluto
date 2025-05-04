@@ -27,7 +27,6 @@ class OpInit:
 
     def setup(self, settings) -> None:
         self.settings = settings
-        self.settings.meta = []  # TODO: find a better way to de-reference meta
 
 
 def init(
@@ -36,7 +35,8 @@ def init(
     name: Union[str, None] = None,
     # id: str | None = None,
     config: Union[dict, str, None] = None,
-    settings: Union[Settings, Dict[str, Any], None] = {},
+    settings: Union[Settings, Dict[str, Any], None] = dict(),
+    **kwargs
 ) -> Op:
     if not isinstance(settings, Settings):  # isinstance(settings, dict)
         default = Settings()

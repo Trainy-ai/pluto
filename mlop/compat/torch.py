@@ -16,12 +16,12 @@ tag = "Torch"
 
 def _watch_torch(
     module: "torch.nn.Module",
-    disable_graph: bool = False,
+    disable_graph: bool = True,
     disable_grad: bool = False,
     disable_param: bool = False,
     freq: Optional[int] = 1000,
     bins: Optional[int] = 64,
-    op = None,
+    op=None,
     **kwargs,
 ):
     # TODO: remove legacy compat
@@ -49,14 +49,16 @@ def _watch_torch(
     if not disable_param and not hasattr(module, "_hook_param"):
         module._hook_param = [module.register_forward_hook(_forward(op, freq, bins))]
 
-    if not disable_graph and not hasattr(module, "_hook_graph"):
-        module._hook_graph = [
-            module.apply(_add_hooks),
-            module.register_forward_hook(_forward_module(op)),
-        ]
+    if not hasattr(module, "_hook_graph"):
+        module._hook_graph = []
+        if not disable_graph:
+            module._hook_graph.append(module.apply(_add_hooks))
+        module._hook_graph.append(
+            module.register_forward_hook(_forward_module(op, disable_graph))
+        )
 
 
-def _forward_module(op):
+def _forward_module(op, disable_graph):
     c = [0]
 
     def f(module, inputs, outputs):
@@ -73,15 +75,19 @@ def _forward_module(op):
 
         c[0] = 1
         # nodes = update_nodes(read_module(module).to_json(), _to_dict(module))
-        op._torch._nodes = make_compat_graph_nodes_v1(
-            _to_dict(module), ref=read_module(module).to_json()
-        )
+        ref = read_module(module).to_json() if not disable_graph else {}
+        op._torch._nodes = make_compat_graph_nodes_v1(_to_dict(module), ref=ref)
 
     return f
 
 
 def _to_dict(module):
-    d = {"id": id(module), "type": module.__class__.__name__}
+    d = {
+        "id": id(module),
+        "type": module.__class__.__name__,
+        **get_args(module),
+        **get_params(module),
+    }
 
     nodes = []
     for idx, (name, c) in enumerate(module._modules.items()):
@@ -157,8 +163,6 @@ class ModuleInst:
                 ]
                 for src, dst in edges
             ],
-            **get_args(self.module),
-            **get_params(self.module),
         }
 
         return info
@@ -412,9 +416,9 @@ def get_args(module):
     }
 
     if hasattr(module, "in_channels") and hasattr(module, "out_channels"):
-        info["args"] = [module.in_channels, module.out_channels]
+        info["args"] = [int(module.in_channels), int(module.out_channels)]
     elif hasattr(module, "in_features") and hasattr(module, "out_features"):
-        info["args"] = [module.in_features, module.out_features]
+        info["args"] = [int(module.in_features), int(module.out_features)]
 
     for k, v in module.__dict__.items():  # dir(module)
         if not k.startswith("_") and not callable(v):  # skip private attrs and methods
@@ -480,7 +484,9 @@ def _forward(op, freq, bins):
             if check_param(param, name):
                 hist = make_compat_histogram_tensor(param.data, bins)
                 if hist is not None:
-                    op._log({f"{op.settings.x_param_label}/{name}": hist}, step=op._step)
+                    op._log(
+                        {f"{op.settings.x_param_label}/{name}": hist}, step=op._step
+                    )
                 else:
                     logger.error(f"{tag}: {name} does not contain a valid tensor")
 

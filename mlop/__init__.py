@@ -1,6 +1,6 @@
 from .auth import login, logout
 from .data import Data, Graph, Histogram
-from .file import Audio, File, Image, Video
+from .file import Artifact, Audio, File, Image, Text, Video
 from .init import finish, init
 from .sets import Settings
 from .sys import System
@@ -15,6 +15,8 @@ __all__ = (
     "Graph",
     "Histogram",
     "File",
+    "Artifact",
+    "Text",
     "Image",
     "Audio",
     "Video",

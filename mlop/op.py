@@ -21,7 +21,7 @@ from .api import (
 from .auth import login
 from .compat.torch import _watch_torch
 from .data import Data
-from .file import Audio, File, Image, Text, Video
+from .file import Artifact, Audio, File, Image, Text, Video
 from .iface import ServerInterface
 from .log import setup_logger, teardown_logger
 from .store import DataStore
@@ -197,10 +197,10 @@ class Op:
             logger.critical("%s: interrupted %s", tag, e)
         logger.debug(f"{tag}: finished")
         teardown_logger(logger, console=logging.getLogger("console"))
-        mlop.ops.remove(self)
+        mlop.ops = [op for op in mlop.ops if op != self]
 
     def watch(self, module, **kwargs):
-        if any(b.__module__.startswith("torch.nn") for b in module.__class__.__bases__):
+        if any(b.__module__.startswith(("torch.nn", "lightning.pytorch", "pytorch_lightning.core.module")) for b in module.__class__.__bases__):
             return _watch_torch(module, op=self, **kwargs)
         else:
             logger.error(f"{tag}: unsupported module type {module.__class__.__name__}")
@@ -312,7 +312,8 @@ class Op:
     def _op(self, n, d, f, k, v) -> None:
         if isinstance(v, File):
             if (
-                isinstance(v, Text)
+                isinstance(v, Artifact)
+                or isinstance(v, Text)
                 or isinstance(v, Image)
                 or isinstance(v, Audio)
                 or isinstance(v, Video)
