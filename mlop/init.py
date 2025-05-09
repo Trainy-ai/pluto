@@ -9,7 +9,7 @@ import mlop
 from . import sets
 from .op import Op
 from .sets import Settings
-from .util import gen_id
+from .util import gen_id, get_char
 
 logger = logging.getLogger(f"{__name__.split('.')[0]}")
 tag = "Init"
@@ -36,7 +36,7 @@ def init(
     # id: str | None = None,
     config: Union[dict, str, None] = None,
     settings: Union[Settings, Dict[str, Any], None] = dict(),
-    **kwargs
+    **kwargs,
 ) -> Op:
     # TODO: remove legacy compat
     dir = kwargs.get("save_dir", dir)
@@ -47,10 +47,9 @@ def init(
         settings = default
 
     settings.dir = dir if dir else settings.dir
-    settings.project = project if project else settings.project
-
+    settings.project = get_char(project) if project else settings.project
     settings._op_name = (
-        name if name else gen_id(seed=settings.project)
+        get_char(name) if name else gen_id(seed=settings.project)
     )  # datetime.now().strftime("%Y%m%d"), str(int(time.time()))
     # settings._op_id = id if id else gen_id(seed=settings.project)
 

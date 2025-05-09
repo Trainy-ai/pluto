@@ -5,6 +5,7 @@ import logging
 import math
 import os
 import random
+import re
 import shutil
 import string
 import subprocess
@@ -19,6 +20,9 @@ from .sets import get_console
 
 logger = logging.getLogger(f"{__name__.split('.')[0]}")
 tag = "Util"
+
+VALID_CHAR = re.compile(r"^[ -~]+$")
+INVALID_CHAR = re.compile(r"[^ -~]")
 
 
 class ANSI:
@@ -203,6 +207,14 @@ def val_to_json(val: Any) -> Union[Sequence, Dict, Any]:
         return val
     elif isinstance(val, (list, tuple, range)):
         raise NotImplementedError()  # TODO: for files
+
+
+def get_char(v: str) -> str:
+    if VALID_CHAR.match(v):
+        return v
+    else:
+        logger.debug(f"{tag}: unsupported char: {v}")
+        return INVALID_CHAR.sub("-", v)
 
 
 def get_class(val: any) -> str:
