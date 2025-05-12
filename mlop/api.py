@@ -96,20 +96,7 @@ def make_compat_data_v1(data, timestamp, step):
     lines = []
     for k, dl in data.items():
         for d in dl:
-            if isinstance(d, Histogram):
-                j = d.to_dict()
-                if j["shape"] == "uniform":
-                    bins = {
-                        "min": min(j["bins"]),
-                        "max": max(j["bins"]),
-                        "num": len(j["bins"]) - 1,
-                    }
-                    j["bins"] = bins
-                    j["maxFreq"] = max(j["freq"])
-                c = json.dumps(j)
-            else:
-                c = json.dumps(d.to_dict())
-
+            c = json.dumps(d.to_dict())
             lines.append(
                 json.dumps(
                     {

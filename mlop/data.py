@@ -16,6 +16,7 @@ class Data:  # TODO: add table class
         return {
             **self._data,
             "type": self.__class__.__name__,
+            "v": 1,
         }
 
 
@@ -102,8 +103,89 @@ class Histogram(Data):
         super().__init__(data=self.to_data())
 
     def to_data(self):
+        if self._shape == "uniform":
+            return {
+                "freq": self._freq,
+                "maxFreq": max(self._freq),
+                "bins": {
+                    "min": min(self._bins),
+                    "max": max(self._bins),
+                    "num": len(self._bins) - 1,
+                },
+                "shape": self._shape,
+            }
+        else:
+            return {
+                "freq": self._freq,
+                "bins": self._bins,
+                "shape": self._shape,
+            }
+
+
+class Table(Data):
+    tag = "Table"
+
+    def __init__(self, data=None, **kwargs):
+        # TODO: remove legacy compat
+        self._col = kwargs.get("columns", [])
+        self._row = kwargs.get("rows", [])
+        self._table = kwargs.get("table", [[None]])
+        self._dataframe = kwargs.get("dataframe", None)
+        data = self._dataframe if self._dataframe is not None else data
+
+        if data.__class__.__name__ == "DataFrame" and hasattr(data, "to_dict"):
+            self._pd = self._dataframe.to_dict(orient="split")
+            self._table = self._pd.get("data", [[None]])
+            if not (self._col and len(self._col) == len(self._table[0])):
+                self._col = self._pd.get("columns", [])
+            if not (self._row and len(self._row) == len(self._table)):
+                self._row = self._pd.get("index", [])
+        elif isinstance(data, np.ndarray):
+            self._table = data.tolist()
+        elif isinstance(data, list):
+            self._table = data
+        else:
+            logger.warning(
+                f"{self.tag}: unsupported data type: {data.__class__.__name__}"
+            )
+
+        # TODO: remove dtype enforcement
+        for i, r in enumerate(self._table):
+            for j, c in enumerate(r):
+                if self._col and not isinstance(c, type(self._table[0][j])):
+                    logger.warning(
+                        f"{self.tag}: type mismatch detected in column {j}: force proceeding"
+                    )
+                    c = self._table[0][j]
+                if self._row and not isinstance(c, type(self._table[i][0])):
+                    logger.warning(
+                        f"{self.tag}: type mismatch detected in row {i}: force proceeding"
+                    )
+                    c = self._table[i][0]
+
+        super().__init__(data=self.to_data())
+
+    def to_data(self):
         return {
-            "freq": self._freq,
-            "bins": self._bins,
-            "shape": self._shape,
+            "table": self._table,
+            **(
+                {
+                    "col": [
+                        {"name": str(c), "dtype": self._table[0][i].__class__.__name__}
+                        for i, c in enumerate(self._col)
+                    ]
+                }
+                if len(self._col) == len(self._table[0])
+                else {}
+            ),
+            **(
+                {
+                    "row": [
+                        {"name": str(r), "dtype": self._table[i][0].__class__.__name__}
+                        for i, r in enumerate(self._row)
+                    ]
+                }
+                if len(self._row) == len(self._table)
+                else {}
+            ),
         }

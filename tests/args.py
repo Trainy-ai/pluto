@@ -46,6 +46,10 @@ PLATFORM_PREFS = {
             "NUM_EPOCHS": 4,
             "ITEM_PER_EPOCH": 4,
         },
+        "table": {
+            "NUM_EPOCHS": 100,
+            "ITEM_PER_EPOCH": 10,
+        },
     },
     "Linux": {
         "metric": {
@@ -61,6 +65,10 @@ PLATFORM_PREFS = {
             "ITEM_PER_EPOCH": 10,
         },
         "video": {
+            "NUM_EPOCHS": 2,
+            "ITEM_PER_EPOCH": 10,
+        },
+        "table": {
             "NUM_EPOCHS": 2,
             "ITEM_PER_EPOCH": 10,
         },

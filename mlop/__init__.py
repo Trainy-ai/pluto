@@ -1,5 +1,5 @@
 from .auth import login, logout
-from .data import Data, Graph, Histogram
+from .data import Data, Graph, Histogram, Table
 from .file import Artifact, Audio, File, Image, Text, Video
 from .init import finish, init
 from .sets import Settings
@@ -14,6 +14,7 @@ __all__ = (
     "Data",
     "Graph",
     "Histogram",
+    "Table",
     "File",
     "Artifact",
     "Text",
