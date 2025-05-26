@@ -18,6 +18,7 @@ class OpInit:
 
     def init(self) -> Op:
         op = Op(config=self.config, settings=self.settings)
+        op.settings.meta = []  # TODO: check
         op.start()
         return op
 
