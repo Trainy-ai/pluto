@@ -41,7 +41,7 @@ jobs:
           sed -i "s/{{MLOP_COMMIT_SHA}}/${{ github.sha }}/g" mlop/__init__.py
           sed -i "s/__version__ = '.*'/__version__ = '1.0.0.dev${NIGHTLY_VERSION}'/g" mlop/__init__.py
           sed -i "0,/version = \"${CURRENT_VERSION}\"/s//version = \"${NIGHTLY_VERSION}\"/" pyproject.toml
-          sed -i 's/name = "mlop"/name = "mlop-nightly"/g' pyproject.toml
+          sed -i 's/name = "trainy-mlop"/name = "trainy-mlop-nightly"/g' pyproject.toml
           cat pyproject.toml
           cat mlop/__init__.py
           
