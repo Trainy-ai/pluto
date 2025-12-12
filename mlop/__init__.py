@@ -1,3 +1,6 @@
+import os
+import subprocess
+
 from .auth import login, logout
 from .data import Data, Graph, Histogram, Table
 from .file import Artifact, Audio, File, Image, Text, Video
@@ -31,3 +34,36 @@ __all__ = (
 )
 
 __version__ = "0.0.2"
+
+
+# Replaced with the current commit when building the wheels.
+_MLOP_COMMIT_SHA = '{{MLOP_COMMIT_SHA}}'
+
+def _get_git_commit():
+    if 'MLOP_COMMIT_SHA' not in _MLOP_COMMIT_SHA:
+        # This is a release build, so we don't need to get the commit hash from
+        # git, as it's already been set.
+        return _MLOP_COMMIT_SHA
+
+    # This is a development build (pip install -e .), so we need to get the
+    # commit hash from git.
+    try:
+        cwd = os.path.dirname(__file__)
+        commit_hash = subprocess.check_output(
+            ['git', 'rev-parse', 'HEAD'],
+            cwd=cwd,
+            universal_newlines=True,
+            stderr=subprocess.DEVNULL,
+        ).strip()
+        changes = subprocess.check_output(
+            ['git', 'status', '--porcelain'],
+            cwd=cwd,
+            universal_newlines=True,
+            stderr=subprocess.DEVNULL,
+        ).strip()
+        if changes:
+            commit_hash += '-dirty'
+        return commit_hash
+    except Exception:  # pylint: disable=broad-except
+        return _MLOP_COMMIT_SHA
+

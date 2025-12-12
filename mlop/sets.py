@@ -75,10 +75,10 @@ class Settings:
             and hasattr(self, "url_ingest")
             and hasattr(self, "url_py")
         ):
-            self.url_app = "https://app.mlop.ai"
-            self.url_api = "https://api-prod.mlop.ai"
-            self.url_ingest = "https://ingest-prod.mlop.ai"
-            self.url_py = "https://py-prod.mlop.ai"
+            self.url_app = "https://trakkur.trainy.ai"
+            self.url_api = "https://trakkur-api.trainy.ai"
+            self.url_ingest = "https://trakkur-ingest.trainy.ai"
+            self.url_py = "https://trakkur-py.trainy.ai"
         self.update_url()
 
     def update_url(self):
