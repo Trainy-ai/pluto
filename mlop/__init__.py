@@ -12,32 +12,33 @@ _hooks = []
 ops, log, watch, alert = None, None, None, None
 
 __all__ = (
-    "Data",
-    "Graph",
-    "Histogram",
-    "Table",
-    "File",
-    "Artifact",
-    "Text",
-    "Image",
-    "Audio",
-    "Video",
-    "System",
-    "Settings",
-    "alert",
-    "init",
-    "login",
-    "logout",
-    "watch",
-    "finish",
-    "setup",
+    'Data',
+    'Graph',
+    'Histogram',
+    'Table',
+    'File',
+    'Artifact',
+    'Text',
+    'Image',
+    'Audio',
+    'Video',
+    'System',
+    'Settings',
+    'alert',
+    'init',
+    'login',
+    'logout',
+    'watch',
+    'finish',
+    'setup',
 )
 
-__version__ = "0.0.2"
+__version__ = '0.0.2'
 
 
 # Replaced with the current commit when building the wheels.
 _MLOP_COMMIT_SHA = '{{MLOP_COMMIT_SHA}}'
+
 
 def _get_git_commit():
     if 'MLOP_COMMIT_SHA' not in _MLOP_COMMIT_SHA:
@@ -66,4 +67,3 @@ def _get_git_commit():
         return commit_hash
     except Exception:  # pylint: disable=broad-except
         return _MLOP_COMMIT_SHA
-

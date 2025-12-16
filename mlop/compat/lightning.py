@@ -12,48 +12,48 @@ if TYPE_CHECKING:
     from lightning.pytorch.loggers.utilities import _scan_checkpoints
     from lightning.pytorch.utilities.rank_zero import rank_zero_only
 else:
-    torch = import_lib("torch")
+    torch = import_lib('torch')
     ModelCheckpoint = getattr(
-        import_lib("lightning.pytorch.callbacks.model_checkpoint"),
-        "ModelCheckpoint",
+        import_lib('lightning.pytorch.callbacks.model_checkpoint'),
+        'ModelCheckpoint',
         object,
     )
-    Logger = getattr(import_lib("lightning.pytorch.loggers"), "Logger", object)
+    Logger = getattr(import_lib('lightning.pytorch.loggers'), 'Logger', object)
     rank_zero_only = getattr(
-        import_lib("lightning.pytorch.utilities.rank_zero"),
-        "rank_zero_only",
+        import_lib('lightning.pytorch.utilities.rank_zero'),
+        'rank_zero_only',
         lambda fn: fn,
     )
     _scan_checkpoints = getattr(
-        import_lib("lightning.pytorch.loggers.utilities"), "_scan_checkpoints", None
+        import_lib('lightning.pytorch.loggers.utilities'), '_scan_checkpoints', None
     )
 
 logger = logging.getLogger(f"{__name__.split('.')[0]}")
-tag = "Lightning"
+tag = 'Lightning'
 
 
 class MLOPLogger(Logger):
     def __init__(self, op=None, **kwargs):
         super().__init__()
-        if hasattr(op, "_log"):
+        if hasattr(op, '_log'):
             self.op = op
         elif mlop.ops and len(mlop.ops) > 0:
             self.op = mlop.ops[-1]
         else:
-            if "project" not in kwargs:
-                kwargs["project"] = "lightning"
+            if 'project' not in kwargs:
+                kwargs['project'] = 'lightning'
             self.op = mlop.init(**kwargs)
         self._checkpoint: Optional[ModelCheckpoint] = None
         self._time = {}
 
     @property
     def name(self) -> str:
-        return getattr(self.op.settings, "_op_name")
+        return getattr(self.op.settings, '_op_name')
 
     @property
     @rank_zero_only
     def version(self) -> Union[int, str]:
-        return getattr(self.op.settings, "_op_id")
+        return getattr(self.op.settings, '_op_id')
 
     @property
     def experiment(self) -> Any:
@@ -74,7 +74,7 @@ class MLOPLogger(Logger):
 
     @property
     def group_separator(self) -> str:
-        return "."
+        return '.'
 
     @rank_zero_only
     def log_metrics(self, metrics: Dict[str, float], step: Optional[int] = None):
@@ -103,7 +103,8 @@ class MLOPLogger(Logger):
         for k, v in kwargs.items():
             if not isinstance(v, list) or len(v) != len(files):
                 logger.error(
-                    f"{tag}: Expected {len(files)} items but found {len(v)} for kwarg '{k}'"
+                    f'{tag}: Expected {len(files)} items but found {len(v)} '
+                    f"for kwarg '{k}'"
                 )
                 return
 
@@ -120,7 +121,8 @@ class MLOPLogger(Logger):
             self.op.log(data=d, step=step)
         except Exception as e:
             logger.error(
-                f"{tag}: Error creating or logging {ftype.__name__} for key '{key}': {e}"
+                f'{tag}: Error creating or logging {ftype.__name__} for key '
+                f"'{key}': {e}"
             )
 
     @rank_zero_only
@@ -151,15 +153,15 @@ class MLOPLogger(Logger):
         self.op.finish()
 
     def log_checkpoint(
-        self, checkpoint: "ModelCheckpoint", step: Optional[int] = None
+        self, checkpoint: 'ModelCheckpoint', step: Optional[int] = None
     ) -> None:
         for t, p, s, _ in _scan_checkpoints(checkpoint, self._time):
             self.op.log(
                 data={
-                    "model": mlop.Artifact(
+                    'model': mlop.Artifact(
                         data=p,
                         metadata={
-                            "score": s.item() if isinstance(s, torch.Tensor) else s,
+                            'score': s.item() if isinstance(s, torch.Tensor) else s,
                         },
                     )
                 },
@@ -167,12 +169,12 @@ class MLOPLogger(Logger):
             )
             self._time[p] = t
 
-    def log_graph(self, model: "torch.nn.Module", **kwargs: Any) -> None:
+    def log_graph(self, model: 'torch.nn.Module', **kwargs: Any) -> None:
         self.op.watch(model, **kwargs)
 
-    def watch(self, model: "torch.nn.Module", **kwargs: Any) -> None:
+    def watch(self, model: 'torch.nn.Module', **kwargs: Any) -> None:
         self.op.watch(model, **kwargs)
 
     def finalize(self, status: str) -> None:
-        if status == "success":
+        if status == 'success':
             self.log_checkpoint(self._checkpoint) if self._checkpoint else None

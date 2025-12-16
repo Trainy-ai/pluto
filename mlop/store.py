@@ -7,19 +7,19 @@ import time
 from .sets import Settings
 
 logger = logging.getLogger(f"{__name__.split('.')[0]}")
-tag = "Store"
+tag = 'Store'
 
 
 class DataStore:
     def __init__(self, config: dict, settings: Settings) -> None:
         self.settings = settings
 
-        self.db = f"{settings.get_dir()}/{settings.store_db}"
+        self.db = f'{settings.get_dir()}/{settings.store_db}'
 
         self.conn = sqlite3.connect(
             self.db, check_same_thread=False
         )  # isolation_level=None
-        self.conn.execute("PRAGMA journal_mode=WAL;")
+        self.conn.execute('PRAGMA journal_mode=WAL;')
         self.cursor = self.conn.cursor()
 
         self._stop_event = threading.Event()
@@ -65,7 +65,7 @@ class DataStore:
             self._thread = None
         self.conn.commit()
         self.conn.close()
-        logger.info(f"{tag}: find saved database at {self.db}")
+        logger.info(f'{tag}: find saved database at {self.db}')
 
     def _worker(self):
         while not self._stop_event.is_set():
@@ -87,17 +87,17 @@ class DataStore:
                     if n != {}:
                         batch_num.append(
                             {
-                                "t": t,
-                                "s": s,
-                                "n": n,
+                                't': t,
+                                's': s,
+                                'n': n,
                             }
                         )
                     if f != {}:
                         batch_file.append(
                             {
-                                "t": t,
-                                "s": s,
-                                "f": f,
+                                't': t,
+                                's': s,
+                                'f': f,
                             }
                         )
                 except queue.Empty:
@@ -106,31 +106,35 @@ class DataStore:
 
     def _insert(self, d, f):
         with self._lock:
-            self.conn.execute("BEGIN")
+            self.conn.execute('BEGIN')
             try:
                 if d != []:
                     self.cursor.executemany(
                         f"""
-                        INSERT INTO {self.settings.store_table_num} (time, step, key, value) VALUES (?, ?, ?, ?)
+                        INSERT INTO {self.settings.store_table_num}
+                        (time, step, key, value)
+                        VALUES (?, ?, ?, ?)
                         """,
-                        [(e["t"], e["s"], k, v) for e in d for k, v in e["n"].items()],
+                        [(e['t'], e['s'], k, v) for e in d for k, v in e['n'].items()],
                     )
-                    logger.info(f"{tag}: inserted {len(d)} line(s)")
+                    logger.info(f'{tag}: inserted {len(d)} line(s)')
                 if f != []:
                     self.cursor.executemany(
                         f"""
-                        INSERT INTO {self.settings.store_table_file} (time, step, name, aid) VALUES (?, ?, ?, ?)
+                        INSERT INTO {self.settings.store_table_file}
+                        (time, step, name, aid)
+                        VALUES (?, ?, ?, ?)
                         """,
                         [
-                            (e["t"], e["s"], f"{fe._name}{fe._ext}", fe._id)
+                            (e['t'], e['s'], f'{fe._name}{fe._ext}', fe._id)
                             for e in f
                             # for fe in e["f"].values()
-                            for fel in e["f"].values()
+                            for fel in e['f'].values()
                             for fe in fel
                         ],
                     )
-                    logger.info(f"{tag}: inserted {len(f)} file(s)")
+                    logger.info(f'{tag}: inserted {len(f)} file(s)')
                 self.conn.commit()
             except Exception as e:
                 self.conn.rollback()
-                logger.error("%s: failed to insert batch: %s", tag, e)
+                logger.error('%s: failed to insert batch: %s', tag, e)

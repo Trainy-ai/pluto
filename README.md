@@ -1,14 +1,8 @@
-<img src="https://github.com/mlop-ai/mlop/raw/refs/heads/main/design/favicon.svg?sanitize=true" alt="logo" height="80">
-
-[![stars](https://img.shields.io/github/stars/mlop-ai/mlop)](https://github.com/mlop-ai/mlop/stargazers)
-[![colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/mlop-ai/mlop/blob/main/examples/intro.ipynb)
-[![pypi](https://img.shields.io/pypi/v/mlop)](https://pypi.org/project/mlop/)
-[![license](https://img.shields.io/github/license/mlop-ai/mlop)](https://github.com/mlop-ai/mlop/blob/main/LICENSE)
-<!-- [![build](https://img.shields.io/github/actions/workflow/status/mlop-ai/mlop/mlop.yml)](https://github.com/mlop-ai/mlop/actions/workflows/mlop.yml) -->
+[![pypi](https://img.shields.io/pypi/v/mlop)](https://pypi.org/project/trainy-mlop-nightly/)
 
 ## THIS README/REPO IS CURRENTLY UNDER CONSTRUCTION WHILE WE UPDATE THE REFERENCES IN OUR FORK
 
-**mlop** is a Machine Learning Operations (MLOps) framework. It provides [self-hostable superior experimental tracking capabilities and lifecycle management for training ML models](https://github.com/mlop-ai/server). To get started, [try out our introductory notebook](https://colab.research.google.com/github/mlop-ai/mlop/blob/main/examples/intro.ipynb) or [get an account with us today](https://app.mlop.ai/auth/sign-up)!
+**mlop** is a Machine Learning Operations (MLOps) framework. It provides [self-hostable superior experimental tracking capabilities and lifecycle management for training ML models](https://github.com/mlop-ai/server). To get started, [try out our introductory notebook](https://colab.research.google.com/github/mlop-ai/mlop/blob/main/examples/intro.ipynb) or [get an account with us today](https://trakkur.trainy.ai/auth/sign-up)!
 
 ## 🎥 Demo
 

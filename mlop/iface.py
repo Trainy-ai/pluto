@@ -21,7 +21,7 @@ from .sets import Settings
 from .util import print_url
 
 logger = logging.getLogger(f"{__name__.split('.')[0]}")
-tag = "Interface"
+tag = 'Interface'
 
 
 class ServerInterface:
@@ -29,17 +29,20 @@ class ServerInterface:
         self.config = config
         self.settings = settings
 
-        # self.url_view = f"{self.settings.url_view}/{self.settings.user}/{self.settings.project}/{self.settings._op_id}"
+        # self.url_view = (
+        #     f"{self.settings.url_view}/{self.settings.user}/"
+        #     f"{self.settings.project}/{self.settings._op_id}"
+        # )
         self.headers = {
-            "Authorization": f"Bearer {self.settings._auth}",
-            "Content-Type": "application/json",
-            "User-Agent": f"{self.settings.tag}",
-            "X-Run-Id": f"{self.settings._op_id}",
-            "X-Run-Name": f"{self.settings._op_name}",
-            "X-Project-Name": f"{self.settings.project}",
+            'Authorization': f'Bearer {self.settings._auth}',
+            'Content-Type': 'application/json',
+            'User-Agent': f'{self.settings.tag}',
+            'X-Run-Id': f'{self.settings._op_id}',
+            'X-Run-Name': f'{self.settings._op_name}',
+            'X-Project-Name': f'{self.settings.project}',
         }
         self.headers_num = self.headers.copy()
-        self.headers_num.update({"Content-Type": "application/x-ndjson"})
+        self.headers_num.update({'Content-Type': 'application/x-ndjson'})
 
         self.client = httpx.Client(
             verify=not self.settings.insecure_disable_ssl,
@@ -82,9 +85,9 @@ class ServerInterface:
 
         self._progress = Progress(
             SpinnerColumn(),
-            TextColumn("[progress.description]{task.description}"),
+            TextColumn('[progress.description]{task.description}'),
             BarColumn(),
-            TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
+            TextColumn('[progress.percentage]{task.percentage:>3.0f}%'),
             transient=True,
             console=Console(file=_stderr),
             # redirect_stdout=False,
@@ -95,7 +98,7 @@ class ServerInterface:
         self._total = 0
 
     def start(self) -> None:
-        logger.info(f"{tag}: find live updates at {print_url(self.settings.url_view)}")
+        logger.info(f'{tag}: find live updates at {print_url(self.settings.url_view)}')
         if self._thread_num is None:
             self._thread_num = threading.Thread(
                 target=self._worker_publish,
@@ -104,7 +107,7 @@ class ServerInterface:
                     self.headers_num,
                     self._queue_num,
                     self._stop_event.is_set,
-                    "num",
+                    'num',
                 ),
                 daemon=True,
             )
@@ -117,7 +120,7 @@ class ServerInterface:
                     self.headers,
                     self._queue_data,
                     self._stop_event.is_set,
-                    "data",
+                    'data',
                 ),
                 daemon=True,
             )
@@ -130,7 +133,7 @@ class ServerInterface:
                     self.headers,
                     self._queue_message,
                     self._stop_event.is_set,
-                    "message" if self.settings.mode == "debug" else None,
+                    'message' if self.settings.mode == 'debug' else None,
                 ),
                 daemon=True,
             )
@@ -201,12 +204,13 @@ class ServerInterface:
         self._update_status(self.settings)
 
         logger.info(
-            f"{tag}: find {self._total} synced entries at {print_url(self.settings.url_view)}"
+            f'{tag}: find {self._total} synced entries at '
+            f'{print_url(self.settings.url_view)}'
         )
-        if self.settings.meta and self.settings.mode == "debug":
-            logger.info(f"{tag}: recorded metadata:")
+        if self.settings.meta and self.settings.mode == 'debug':
+            logger.info(f'{tag}: recorded metadata:')
             for e in sorted(self.settings.meta, key=len):
-                logger.info(f"    {e}")
+                logger.info(f'    {e}')
 
     def _update_status(self, settings, trace: Union[Any, None] = None):
         self._post_v1(
@@ -241,7 +245,7 @@ class ServerInterface:
 
                     if self._progress_task is None and p < 100:  # init
                         self._progress_task = self._progress.add_task(
-                            "Processing:", total=100
+                            'Processing:', total=100
                         )
                         self._progress.start()
 
@@ -249,7 +253,7 @@ class ServerInterface:
                         self._progress.update(
                             self._progress_task,
                             completed=min(p, 100),
-                            description=f"Uploading ({max(i, 0)}/{self._total}):",
+                            description=f'Uploading ({max(i, 0)}/{self._total}):',
                         )
                         if p >= 100:
                             self._progress.remove_task(self._progress_task)
@@ -274,7 +278,7 @@ class ServerInterface:
         _ = self._put_v1(
             url,
             {
-                "Content-Type": f._type,  # "application/octet-stream"
+                'Content-Type': f._type,  # "application/octet-stream"
             },
             data,
             client=self.client_storage,
@@ -293,11 +297,11 @@ class ServerInterface:
                 for f in fel:
                     url = make_compat_storage_v1(f, d[k])
                     with open(
-                        f._path, "rb"
+                        f._path, 'rb'
                     ) as file:  # TODO: data = open(f._path, "rb")
                         data = file.read()
                     if not url:
-                        logger.critical(f"{tag}: file api did not provide storage url")
+                        logger.critical(f'{tag}: file api did not provide storage url')
                     else:
                         self._thread_storage = threading.Thread(
                             target=self._worker_storage,
@@ -307,7 +311,7 @@ class ServerInterface:
                         self._thread_storage.start()
         except Exception as e:
             logger.critical(
-                "%s: failed to send files to %s: [%s] %s",
+                '%s: failed to send files to %s: [%s] %s',
                 tag,
                 self.settings.url_file,
                 type(e).__name__,
@@ -319,7 +323,7 @@ class ServerInterface:
             self._post_v1(
                 self.settings.url_meta,
                 self.headers,
-                make_compat_meta_v1(num, "num", self.settings),
+                make_compat_meta_v1(num, 'num', self.settings),
                 client=self.client_api,
             )
         if file:
@@ -355,19 +359,31 @@ class ServerInterface:
         retry=0,
     ):
         if retry >= self.settings.x_file_stream_retry_max:
-            logger.critical(f"{tag}: {name}: failed after {retry} retries")
+            logger.critical(f'{tag}: {name}: failed after {retry} retries')
             return None
 
         try:
             r = method(url, content=content, headers=headers)
             if r.status_code in [200, 201]:
                 return r
+            max_retry = self.settings.x_file_stream_retry_max
+            status_code = r.status_code if r else 'N/A'
+            target = len(q) if q else 'request'
+            response = r.text if r else 'N/A'
             logger.warning(
-                f"{tag}: {name}: retry {retry + 1}/{self.settings.x_file_stream_retry_max}: response code {r.status_code if r else 'N/A'} for {len(q) if q else 'request'} from {url}: {r.text if r else 'N/A'}"
+                '%s: %s: retry %s/%s: response code %s for %s from %s: %s',
+                tag,
+                name,
+                retry + 1,
+                max_retry,
+                status_code,
+                target,
+                url,
+                response,
             )
         except Exception as e:
             logger.debug(
-                "%s: %s: retry %s/%s: no response from %s: %s: %s",
+                '%s: %s: retry %s/%s: no response from %s: %s: %s',
                 tag,
                 name,
                 retry + 1,
@@ -388,7 +404,7 @@ class ServerInterface:
                 content.put(i, block=False)
         return self._try(method, url, headers, content, name=name, q=q, retry=retry + 1)
 
-    def _put_v1(self, url, headers, content, client, name="put"):
+    def _put_v1(self, url, headers, content, client, name='put'):
         return self._try(
             client.put,
             url,
@@ -397,7 +413,7 @@ class ServerInterface:
             name=name,
         )
 
-    def _post_v1(self, url, headers, q, client, name: Union[str, None] = "post"):
+    def _post_v1(self, url, headers, q, client, name: Union[str, None] = 'post'):
         b, r = [], None
         content = self._queue_iter(q, b) if isinstance(q, queue.Queue) else q
 
@@ -418,6 +434,7 @@ class ServerInterface:
             and isinstance(q, queue.Queue)
         ):
             logger.debug(
-                f"{tag}: {name}: sent {len(b)} line(s) at {len(b) / (time.time() - s):.2f} lines/s to {url}"
+                f'{tag}: {name}: sent {len(b)} line(s) at '
+                f'{len(b) / (time.time() - s):.2f} lines/s to {url}'
             )
         return r

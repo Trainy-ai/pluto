@@ -8,7 +8,7 @@ from .sets import Settings, setup
 from .util import gen_id, get_char
 
 logger = logging.getLogger(f"{__name__.split('.')[0]}")
-tag = "Init"
+tag = 'Init'
 
 
 class OpInit:
@@ -36,7 +36,7 @@ def init(
     **kwargs,
 ) -> Op:
     # TODO: remove legacy compat
-    dir = kwargs.get("save_dir", dir)
+    dir = kwargs.get('save_dir', dir)
 
     settings = setup(settings)
     settings.dir = dir if dir else settings.dir
@@ -52,7 +52,7 @@ def init(
         op = op.init()
         return op
     except Exception as e:
-        logger.critical("%s: failed, %s", tag, e)  # add early logger
+        logger.critical('%s: failed, %s', tag, e)  # add early logger
         raise e
 
 

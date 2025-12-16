@@ -13,37 +13,37 @@ _stdout = sys.stdout
 _stderr = sys.stderr
 
 colors = {
-    "DEBUG": ANSI.green,
-    "INFO": ANSI.cyan,
-    "WARNING": ANSI.yellow,
-    "ERROR": ANSI.red,
-    "CRITICAL": ANSI.purple,
+    'DEBUG': ANSI.green,
+    'INFO': ANSI.cyan,
+    'WARNING': ANSI.yellow,
+    'ERROR': ANSI.red,
+    'CRITICAL': ANSI.purple,
 }
 styles = {
-    "DEBUG": " 💬 ",
-    "INFO": " 🚀 ",
-    "WARNING": " 🚨 ",
-    "ERROR": " ⛔ ",
-    "CRITICAL": " 🚫 ",
+    'DEBUG': ' 💬 ',
+    'INFO': ' 🚀 ',
+    'WARNING': ' 🚨 ',
+    'ERROR': ' ⛔ ',
+    'CRITICAL': ' 🚫 ',
 }
 
 
 class ColorFormatter(logging.Formatter):
     def format(self, record):
         prefix = ANSI.bold + ANSI.cyan + f"{__name__.split('.')[0]}:" + ANSI.reset
-        color = colors.get(record.levelname, "")
-        style = styles.get(record.levelname, "")
+        color = colors.get(record.levelname, '')
+        style = styles.get(record.levelname, '')
 
         # TODO: remove legacy compat
-        if record.msg.startswith("Operation"):
-            prefix = "\n" + prefix
+        if record.msg.startswith('Operation'):
+            prefix = '\n' + prefix
 
-        return f"{prefix}{color}{style}{super().format(record)}{ANSI.reset}"
+        return f'{prefix}{color}{style}{super().format(record)}{ANSI.reset}'
 
 
 class ConsoleHandler:
     def __init__(
-        self, logger, queue, level=logging.INFO, stream=sys.stdout, type="stdout"
+        self, logger, queue, level=logging.INFO, stream=sys.stdout, type='stdout'
     ):
         self.logger = logger
         self.queue = queue
@@ -73,21 +73,21 @@ class ConsoleHandler:
 def stream_formatter(settings):
     if settings.x_log_level <= logging.DEBUG:
         return ColorFormatter(
-            "%(asctime)s.%(msecs)03d %(levelname)-8s %(threadName)-10s:%(process)d "
-            "[%(filename)s:%(funcName)s():%(lineno)s] %(message)s",
-            datefmt="%H:%M:%S",
+            '%(asctime)s.%(msecs)03d %(levelname)-8s %(threadName)-10s:%(process)d '
+            '[%(filename)s:%(funcName)s():%(lineno)s] %(message)s',
+            datefmt='%H:%M:%S',
         )
     else:
         return ColorFormatter(
-            "%(asctime)s | %(message)s",
+            '%(asctime)s | %(message)s',
             # "%(asctime)s | %(levelname)-8s | %(message)s",
-            datefmt="%H:%M:%S",
+            datefmt='%H:%M:%S',
         )
 
 
-def input_hook(prompt="", logger=None):
+def input_hook(prompt='', logger=None):
     content = _input(prompt)
-    logger.warn(f"{prompt}{content}")
+    logger.warn(f'{prompt}{content}')
     return content
 
 
@@ -124,29 +124,29 @@ def teardown_logger(logger, console=None):
 def setup_logger_file(settings, logger, console):
     console.setLevel(logging.DEBUG)
 
-    file_handler = logging.FileHandler(f"{settings.get_dir()}/{settings.tag}.log")
+    file_handler = logging.FileHandler(f'{settings.get_dir()}/{settings.tag}.log')
     file_formatter = logging.Formatter(
-        "%(asctime)s %(levelname)-8s %(threadName)-10s:%(process)d "
-        "[%(filename)s:%(funcName)s():%(lineno)s] %(message)s"
+        '%(asctime)s %(levelname)-8s %(threadName)-10s:%(process)d '
+        '[%(filename)s:%(funcName)s():%(lineno)s] %(message)s'
     )
     file_handler.setFormatter(file_formatter)
     logger.addHandler(file_handler)
 
-    file_handler = logging.FileHandler(f"{settings.get_dir()}/sys.log")
+    file_handler = logging.FileHandler(f'{settings.get_dir()}/sys.log')
     file_formatter = logging.Formatter(
-        "%(asctime)s.%(msecs)03d | %(levelname)-7s | %(message)s",
-        datefmt="%H:%M:%S",
+        '%(asctime)s.%(msecs)03d | %(levelname)-7s | %(message)s',
+        datefmt='%H:%M:%S',
     )
     file_handler.setFormatter(file_formatter)
     console.addHandler(file_handler)  # TODO: fix slow file writes
 
-    if settings.mode == "debug":
-        builtins.input = lambda prompt="": input_hook(prompt, logger=console)
+    if settings.mode == 'debug':
+        builtins.input = lambda prompt='': input_hook(prompt, logger=console)
     sys.stdout = ConsoleHandler(
-        console, settings.message, logging.INFO, sys.stdout, "stdout"
+        console, settings.message, logging.INFO, sys.stdout, 'stdout'
     )
     sys.stderr = ConsoleHandler(
-        console, settings.message, logging.ERROR, sys.stderr, "stderr"
+        console, settings.message, logging.ERROR, sys.stderr, 'stderr'
     )
 
     return logger, console

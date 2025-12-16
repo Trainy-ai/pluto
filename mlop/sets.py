@@ -5,7 +5,7 @@ import sys
 from typing import Any, Dict, List, Union
 
 logger = logging.getLogger(f"{__name__.split('.')[0]}")
-tag = "Settings"
+tag = 'Settings'
 
 
 class Settings:
@@ -16,7 +16,7 @@ class Settings:
     _sys: Dict[str, Any] = {}
     compat: Dict[str, Any] = {}
     project: str = tag
-    mode: str = "perf"  # noop | debug | perf
+    mode: str = 'perf'  # noop | debug | perf
     meta: List[str] = []
     message: queue.Queue = queue.Queue()
     disable_store: bool = True  # TODO: make false
@@ -28,9 +28,9 @@ class Settings:
     _op_id: int = None
     _op_status: int = -1
 
-    store_db: str = "store.db"
-    store_table_num: str = "num"
-    store_table_file: str = "file"
+    store_db: str = 'store.db'
+    store_table_num: str = 'num'
+    store_table_file: str = 'file'
     store_max_size: int = 2**14
     store_aggregate_interval: float = 2 ** (-1)
 
@@ -48,9 +48,9 @@ class Settings:
     x_file_stream_max_size: int = 2**18
     x_file_stream_transmit_interval: int = 2**3
     x_sys_sampling_interval: int = 2**2
-    x_sys_label: str = "sys"
-    x_grad_label: str = "grad"
-    x_param_label: str = "param"
+    x_sys_label: str = 'sys'
+    x_grad_label: str = 'grad'
+    x_param_label: str = 'param'
 
     host: str = None
     url_view: str = None
@@ -65,35 +65,35 @@ class Settings:
 
     def update_host(self):
         if self.host is not None:
-            self.url_app = f"http://{self.host}:3000"
-            self.url_api = f"http://{self.host}:3001"
-            self.url_ingest = f"http://{self.host}:3003"
-            self.url_py = f"http://{self.host}:3004"
+            self.url_app = f'http://{self.host}:3000'
+            self.url_api = f'http://{self.host}:3001'
+            self.url_ingest = f'http://{self.host}:3003'
+            self.url_py = f'http://{self.host}:3004'
         elif not (  # backwards compatibility
-            hasattr(self, "url_app")
-            and hasattr(self, "url_api")
-            and hasattr(self, "url_ingest")
-            and hasattr(self, "url_py")
+            hasattr(self, 'url_app')
+            and hasattr(self, 'url_api')
+            and hasattr(self, 'url_ingest')
+            and hasattr(self, 'url_py')
         ):
-            self.url_app = "https://trakkur.trainy.ai"
-            self.url_api = "https://trakkur-api.trainy.ai"
-            self.url_ingest = "https://trakkur-ingest.trainy.ai"
-            self.url_py = "https://trakkur-py.trainy.ai"
+            self.url_app = 'https://trakkur.trainy.ai'
+            self.url_api = 'https://trakkur-api.trainy.ai'
+            self.url_ingest = 'https://trakkur-ingest.trainy.ai'
+            self.url_py = 'https://trakkur-py.trainy.ai'
         self.update_url()
 
     def update_url(self):
-        self.url_token = f"{self.url_app}/api-keys"
-        self.url_login = f"{self.url_api}/api/slug"
-        self.url_start = f"{self.url_api}/api/runs/create"
-        self.url_stop = f"{self.url_api}/api/runs/status/update"
-        self.url_meta = f"{self.url_api}/api/runs/logName/add"
-        self.url_graph = f"{self.url_api}/api/runs/modelGraph/create"
-        self.url_num = f"{self.url_ingest}/ingest/metrics"
-        self.url_data = f"{self.url_ingest}/ingest/data"
-        self.url_file = f"{self.url_ingest}/files"
-        self.url_message = f"{self.url_ingest}/ingest/logs"
-        self.url_alert = f"{self.url_py}/api/runs/alert"
-        self.url_trigger = f"{self.url_py}/api/runs/trigger"
+        self.url_token = f'{self.url_app}/api-keys'
+        self.url_login = f'{self.url_api}/api/slug'
+        self.url_start = f'{self.url_api}/api/runs/create'
+        self.url_stop = f'{self.url_api}/api/runs/status/update'
+        self.url_meta = f'{self.url_api}/api/runs/logName/add'
+        self.url_graph = f'{self.url_api}/api/runs/modelGraph/create'
+        self.url_num = f'{self.url_ingest}/ingest/metrics'
+        self.url_data = f'{self.url_ingest}/ingest/data'
+        self.url_file = f'{self.url_ingest}/files'
+        self.url_message = f'{self.url_ingest}/ingest/logs'
+        self.url_alert = f'{self.url_py}/api/runs/alert'
+        self.url_trigger = f'{self.url_py}/api/runs/trigger'
 
     def to_dict(self) -> Dict[str, Any]:
         return {key: getattr(self, key) for key in self.__annotations__.keys()}
@@ -101,26 +101,26 @@ class Settings:
     def get_dir(self) -> str:
         return os.path.join(
             self.dir,
-            "." + self.tag,
+            '.' + self.tag,
             self.project,
             self._op_name,  # str(self._op_id)
         )
 
     def _nb(self) -> bool:
         return (
-            get_console() in ["ipython", "jupyter"]
+            get_console() in ['ipython', 'jupyter']
             or self._nb_colab()
             or self._nb_kaggle()
         )
 
     def _nb_colab(self) -> bool:
-        return "google.colab" in sys.modules
+        return 'google.colab' in sys.modules
 
     def _nb_kaggle(self) -> bool:
         return (
-            os.getenv("KAGGLE_KERNEL_RUN_TYPE") is not None
-            or "kaggle_environments" in sys.modules
-            or "kaggle" in sys.modules
+            os.getenv('KAGGLE_KERNEL_RUN_TYPE') is not None
+            or 'kaggle_environments' in sys.modules
+            or 'kaggle' in sys.modules
         )
 
 
@@ -130,21 +130,21 @@ def get_console() -> str:
 
         ipython = get_ipython()
         if ipython is None:
-            return "python"
+            return 'python'
     except ImportError:
-        return "python"
+        return 'python'
 
-    if "spyder" in sys.modules or "terminal" in ipython.__module__:
-        return "ipython"
+    if 'spyder' in sys.modules or 'terminal' in ipython.__module__:
+        return 'ipython'
 
     connection_file = (
-        ipython.config.get("IPKernelApp", {}).get("connection_file", "")
-        or ipython.config.get("ColabKernelApp", {}).get("connection_file", "")
+        ipython.config.get('IPKernelApp', {}).get('connection_file', '')
+        or ipython.config.get('ColabKernelApp', {}).get('connection_file', '')
     ).lower()
-    if "jupyter" not in connection_file:
-        return "ipython"
+    if 'jupyter' not in connection_file:
+        return 'ipython'
     else:
-        return "jupyter"
+        return 'jupyter'
 
 
 def setup(settings: Union[Settings, Dict[str, Any], None] = None) -> None:

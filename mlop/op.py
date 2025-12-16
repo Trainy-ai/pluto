@@ -27,7 +27,7 @@ from .sys import System
 from .util import get_char, get_val, to_json
 
 logger = logging.getLogger(f"{__name__.split('.')[0]}")
-tag = "Operation"
+tag = 'Operation'
 
 
 class OpMonitor:
@@ -80,11 +80,11 @@ class OpMonitor:
                     if self.op._iface
                     else None
                 )
-                if hasattr(r, "json") and r.json()["status"] == "CANCELLED":
-                    logger.critical(f"{tag}: server finished run")
+                if hasattr(r, 'json') and r.json()['status'] == 'CANCELLED':
+                    logger.critical(f'{tag}: server finished run')
                     os._exit(signal.SIGINT.value)  # TODO: do a more graceful exit
             except Exception as e:
-                logger.critical("%s: failed: %s", tag, e)
+                logger.critical('%s: failed: %s', tag, e)
             time.sleep(self.op.settings.x_sys_sampling_interval)
 
 
@@ -94,7 +94,7 @@ class Op:
         self.settings = settings
         self._monitor = OpMonitor(op=self)
 
-        if self.settings.mode == "noop":
+        if self.settings.mode == 'noop':
             self.settings.disable_iface = True
             self.settings.disable_store = True
         else:
@@ -111,18 +111,18 @@ class Op:
                 ),
                 client=tmp_iface.client_api,
             )
-            self.settings.url_view = r.json()["url"]
-            self.settings._op_id = r.json()["runId"]
-            logger.info(f"{tag}: started run {str(self.settings._op_id)}")
+            self.settings.url_view = r.json()['url']
+            self.settings._op_id = r.json()['runId']
+            logger.info(f'{tag}: started run {str(self.settings._op_id)}')
 
-            os.makedirs(f"{self.settings.get_dir()}/files", exist_ok=True)
+            os.makedirs(f'{self.settings.get_dir()}/files', exist_ok=True)
             setup_logger(
                 settings=self.settings,
                 logger=logger,
-                console=logging.getLogger("console"),
+                console=logging.getLogger('console'),
             )  # global logger
             to_json(
-                [self.settings._sys.get_info()], f"{self.settings.get_dir()}/sys.json"
+                [self.settings._sys.get_info()], f'{self.settings.get_dir()}/sys.json'
             )
 
         self._store = (
@@ -145,7 +145,7 @@ class Op:
             list(make_compat_monitor_v1(self.settings._sys.monitor()).keys())
         ) if self._iface else None
         self._monitor.start()
-        logger.debug(f"{tag}: started")
+        logger.debug(f'{tag}: started')
 
         # set globals
         if mlop.ops is None:
@@ -160,7 +160,7 @@ class Op:
         commit: Union[bool, None] = None,
     ) -> None:
         """Log run data"""
-        if self.settings.mode == "perf":
+        if self.settings.mode == 'perf':
             self._queue.put((data, step), block=False)
         else:  # bypass queue
             self._log(data=data, step=step)
@@ -178,23 +178,23 @@ class Op:
             self._iface._update_status(
                 self.settings,
                 trace={
-                    "type": e.__class__.__name__,
-                    "message": str(e),
-                    "frames": [
+                    'type': e.__class__.__name__,
+                    'message': str(e),
+                    'frames': [
                         {
-                            "filename": frame.filename,
-                            "lineno": frame.lineno,
-                            "name": frame.name,
-                            "line": frame.line,
+                            'filename': frame.filename,
+                            'lineno': frame.lineno,
+                            'name': frame.name,
+                            'line': frame.line,
                         }
                         for frame in traceback.extract_tb(e.__traceback__)
                     ],
-                    "trace": traceback.format_exc(),
+                    'trace': traceback.format_exc(),
                 },
             ) if self._iface else None
-            logger.critical("%s: interrupted %s", tag, e)
-        logger.debug(f"{tag}: finished")
-        teardown_logger(logger, console=logging.getLogger("console"))
+            logger.critical('%s: interrupted %s', tag, e)
+        logger.debug(f'{tag}: finished')
+        teardown_logger(logger, console=logging.getLogger('console'))
 
         self.settings.meta = []
         mlop.ops = [
@@ -207,40 +207,40 @@ class Op:
         if any(
             b.__module__.startswith(
                 (
-                    "torch.nn",
-                    "lightning.pytorch",
-                    "pytorch_lightning.core.module",
-                    "transformers.models",
+                    'torch.nn',
+                    'lightning.pytorch',
+                    'pytorch_lightning.core.module',
+                    'transformers.models',
                 )
             )
             for b in module.__class__.__bases__
         ):
             return _watch_torch(module, op=self, **kwargs)
         else:
-            logger.error(f"{tag}: unsupported module type {module.__class__.__name__}")
+            logger.error(f'{tag}: unsupported module type {module.__class__.__name__}')
             return None
 
     def alert(
         self,
         message=None,
-        title=__name__.split(".")[0],
-        level="INFO",
+        title=__name__.split('.')[0],
+        level='INFO',
         wait=0,
         url=None,
         remote=True,
         **kwargs,
     ):
         # TODO: remove legacy compat
-        message = kwargs.get("text", message)
-        wait = kwargs.get("wait_duration", wait)
-        kwargs["email"] = kwargs.get("email", True)
+        message = kwargs.get('text', message)
+        wait = kwargs.get('wait_duration', wait)
+        kwargs['email'] = kwargs.get('email', True)
 
         url = url or self.settings.url_webhook or None
 
         t = time.time()
         time.sleep(wait)
         if logging._nameToLevel.get(level) is not None:
-            logger.log(logging._nameToLevel[level], f"{tag}: {title}: {message}")
+            logger.log(logging._nameToLevel[level], f'{tag}: {title}: {message}')
         if remote or not url:  # force remote alert
             self._iface._post_v1(
                 self.settings.url_alert,
@@ -253,19 +253,20 @@ class Op:
         else:
             self._iface._post_v1(
                 url,
-                {"Content-Type": "application/json"},
+                {'Content-Type': 'application/json'},
                 make_compat_webhook_v1(
                     t, level, title, message, self._step, self.settings.url_view
                 ),
                 self._iface.client,  # TODO: check client
             ) if self._iface else logger.warning(
-                f"{tag}: alert not sent since interface is disabled"
+                f'{tag}: alert not sent since interface is disabled'
             )
 
     def _worker(self, stop) -> None:
         while not stop() or not self._queue.empty():
             try:
-                # if queue seems empty, wait for x_internal_check_process before it considers it empty to save compute
+                # if queue seems empty, wait for x_internal_check_process before it
+                # considers it empty to save compute
                 self._log(
                     *self._queue.get(
                         block=True, timeout=self.settings.x_internal_check_process
@@ -275,18 +276,19 @@ class Op:
                 continue
             except Exception as e:
                 time.sleep(self.settings.x_internal_check_process)  # debounce
-                logger.critical("%s: failed: %s", tag, e)
+                logger.critical('%s: failed: %s', tag, e)
 
     def _log(self, data, step: Union[int, None], t: Union[float, None] = None) -> None:
         if not isinstance(data, Mapping):
             e = ValueError(
-                f"unsupported type for logged data: {type(data).__name__}, expected dict"
+                'unsupported type for logged data: '
+                f'{type(data).__name__}, expected dict'
             )
-            logger.critical("%s: failed: %s", tag, e)
+            logger.critical('%s: failed: %s', tag, e)
             raise e
         if any(not isinstance(k, str) for k in data.keys()):
-            e = ValueError("unsupported type for key in dict of logged data")
-            logger.critical("%s: failed: %s", tag, e)
+            e = ValueError('unsupported type for key in dict of logged data')
+            logger.critical('%s: failed: %s', tag, e)
             raise e
 
         self._step = self._step + 1 if step is None else step
@@ -320,11 +322,11 @@ class Op:
                 if v.__class__.__name__ not in fm:
                     fm[v.__class__.__name__] = []
                 fm[v.__class__.__name__].append(k)
-            elif isinstance(v, (int, float)) or v.__class__.__name__ == "Tensor":
+            elif isinstance(v, (int, float)) or v.__class__.__name__ == 'Tensor':
                 nm.append(k)
             self.settings.meta.append(k)
             # d[f"{self.settings.x_meta_label}{k}"] = 0
-            logger.debug(f"{tag}: added {k} at step {self._step}")
+            logger.debug(f'{tag}: added {k} at step {self._step}')
         return nm, fm
 
     def _op(self, n, d, f, k, v) -> None:

@@ -28,7 +28,7 @@ pynvml = ">=11.5"
 rich = ">=13.0"
 soundfile = ">=0.12"
 
-[tool.poetry.dev-dependencies]
+[tool.poetry.group.dev.dependencies]
 mypy = "^1.10.0"
 ruff = "^0.4.7"
 pytest = "^8.2.2"
@@ -59,4 +59,3 @@ quote-style = "single"
 
 [tool.mypy]
 python_version = "3.10"
-
