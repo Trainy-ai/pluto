@@ -1,0 +1,30 @@
+name: mypy
+
+on:
+    push:
+        branches:
+            - main
+            - 'releases/**'
+    pull_request:
+        branches:
+            - main
+            - 'releases/**'
+    workflow_dispatch:
+
+jobs:
+  mypy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: "Setup Python, Poetry and Dependencies"
+        uses: packetcoders/action-setup-cache-python-poetry@main
+        with:
+          python-version: "3.10"
+          poetry-version: "2.1.1"
+          install-args: "--with dev"
+      - name: Running mypy
+        run: |
+          poetry run python3 -m pip install types-PyYAML
+          poetry run mypy mlop

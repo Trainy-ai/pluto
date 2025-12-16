@@ -124,13 +124,13 @@ def read_sets_compat(args, tag):
         print(f"{tag}: Using alternative")
         try:
             module = keyring.get_password("mlop", "alternative")
-        except Exception as e:
+        except Exception:
             pass
         if not module or module == "":
             module = input("Enter name: ")
         try:
             keyring.set_password("mlop", "alternative", module)
-        except Exception as e:
+        except Exception:
             pass
         mlop = importlib.import_module(module)
 

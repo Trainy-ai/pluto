@@ -136,11 +136,11 @@ class System:
                     "name": repo.config_reader().get_value("user", "name"),
                     "email": repo.config_reader().get_value("user", "email"),
                 }
-            except Exception as e:
+            except Exception:
                 c = {}
             try:
                 c.update({"url": repo.remotes["origin"].url})
-            except Exception as e:
+            except Exception:
                 pass
             d = {
                 "root": repo.git.rev_parse("--show-toplevel"),

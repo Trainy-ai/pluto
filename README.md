@@ -6,6 +6,8 @@
 [![license](https://img.shields.io/github/license/mlop-ai/mlop)](https://github.com/mlop-ai/mlop/blob/main/LICENSE)
 <!-- [![build](https://img.shields.io/github/actions/workflow/status/mlop-ai/mlop/mlop.yml)](https://github.com/mlop-ai/mlop/actions/workflows/mlop.yml) -->
 
+## THIS README/REPO IS CURRENTLY UNDER CONSTRUCTION WHILE WE UPDATE THE REFERENCES IN OUR FORK
+
 **mlop** is a Machine Learning Operations (MLOps) framework. It provides [self-hostable superior experimental tracking capabilities and lifecycle management for training ML models](https://github.com/mlop-ai/server). To get started, [try out our introductory notebook](https://colab.research.google.com/github/mlop-ai/mlop/blob/main/examples/intro.ipynb) or [get an account with us today](https://app.mlop.ai/auth/sign-up)!
 
 ## 🎥 Demo
@@ -42,8 +44,28 @@ You may also learn more about **mlop** by checking out our [documentation](https
 
 You can try everything out in our [introductory tutorial](https://colab.research.google.com/github/mlop-ai/mlop/blob/main/examples/intro.ipynb) and [torch tutorial](https://colab.research.google.com/github/mlop-ai/mlop/blob/main/examples/torch.ipynb).  
 
+## 🛠️ Development Setup
+
+Want to contribute? Here's the quickest way to get the local toolchain (including the linters used in CI) running:
+
+```bash
+git clone https://github.com/mlop-ai/mlop.git
+cd mlop
+python -m venv .venv && source .venv/bin/activate   # or use your preferred environment manager
+python -m pip install --upgrade pip
+pip install -e ".[full]"
+```
+
+Linting commands (mirrors `.github/workflows/lint.yml`):
+
+```bash
+bash format.sh
+```
+
+Run these locally before sending a PR to match the automation that checks on every push and pull request.
+
 ## 🫡 Vision
 
-**mlop** is a platform built for and by ML engineers, supported by [our community](https://discord.gg/ybfVZgyFCX)! We were tired of the current state of the art in ML observability tools, and this tool was born to help mitigate the inefficiencies - specifically, we hope to better inform you about your model performance and training runs; and actually **save you**, instead of charging you, for your precious compute time! 
+**mlop** is a platform built for and by ML engineers, supported by [our community](https://discord.com/invite/HQUBJSVgAP)! We were tired of the current state of the art in ML observability tools, and this tool was born to help mitigate the inefficiencies - specifically, we hope to better inform you about your model performance and training runs; and actually **save you**, instead of charging you, for your precious compute time! 
 
 🌟 Be sure to star our repos if they help you ~

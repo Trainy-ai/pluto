@@ -1,6 +1,5 @@
 import atexit
 import logging
-import multiprocessing
 import os
 import queue
 import signal
@@ -25,7 +24,7 @@ from .iface import ServerInterface
 from .log import setup_logger, teardown_logger
 from .store import DataStore
 from .sys import System
-from .util import dict_to_json, get_char, get_val, to_json
+from .util import get_char, get_val, to_json
 
 logger = logging.getLogger(f"{__name__.split('.')[0]}")
 tag = "Operation"

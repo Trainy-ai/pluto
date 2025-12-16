@@ -4,7 +4,6 @@ import re
 import signal
 from datetime import datetime
 
-from .data import Histogram
 from .util import clean_dict, find_node
 
 logger = logging.getLogger(f"{__name__.split('.')[0]}")

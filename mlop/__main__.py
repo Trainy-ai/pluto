@@ -3,7 +3,7 @@
 import argparse
 import sys
 
-from . import __version__, _MLOP_COMMIT_SHA, _get_git_commit
+from . import __version__, _get_git_commit
 from .auth import login, logout
 
 
@@ -25,7 +25,7 @@ def main():
 
     p_login = subparsers.add_parser("login", help="login to mlop")
     p_login.add_argument("key", nargs="?", help="login key")
-    p_logout = subparsers.add_parser("logout", help="logout from mlop")
+    subparsers.add_parser("logout", help="logout from mlop")
 
     args = parser.parse_args()
 

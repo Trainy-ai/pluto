@@ -37,7 +37,7 @@ class ColorFormatter(logging.Formatter):
         # TODO: remove legacy compat
         if record.msg.startswith("Operation"):
             prefix = "\n" + prefix
-        
+
         return f"{prefix}{color}{style}{super().format(record)}{ANSI.reset}"
 
 

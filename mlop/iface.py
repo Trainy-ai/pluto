@@ -13,7 +13,6 @@ from .api import (
     make_compat_file_v1,
     make_compat_meta_v1,
     make_compat_num_v1,
-    make_compat_start_v1,
     make_compat_status_v1,
     make_compat_storage_v1,
 )
@@ -210,7 +209,7 @@ class ServerInterface:
                 logger.info(f"    {e}")
 
     def _update_status(self, settings, trace: Union[Any, None] = None):
-        r = self._post_v1(
+        self._post_v1(
             self.settings.url_stop,
             self.headers,
             make_compat_status_v1(self.settings, trace),
@@ -317,7 +316,7 @@ class ServerInterface:
 
     def _worker_meta(self, num=None, file=None):
         if num:
-            r = self._post_v1(
+            self._post_v1(
                 self.settings.url_meta,
                 self.headers,
                 make_compat_meta_v1(num, "num", self.settings),
@@ -325,7 +324,7 @@ class ServerInterface:
             )
         if file:
             for k, v in file.items():
-                r = self._post_v1(
+                self._post_v1(
                     self.settings.url_meta,
                     self.headers,
                     make_compat_meta_v1(v, k, self.settings),
