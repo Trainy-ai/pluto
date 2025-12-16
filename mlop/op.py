@@ -6,7 +6,7 @@ import signal
 import threading
 import time
 import traceback
-from typing import Any, Dict, Mapping, Union
+from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple, Union
 
 import mlop
 
@@ -29,13 +29,20 @@ from .util import get_char, get_val, to_json
 logger = logging.getLogger(f"{__name__.split('.')[0]}")
 tag = 'Operation'
 
+MetaNames = List[str]
+MetaFiles = Dict[str, List[str]]
+LoggedNumbers = Dict[str, Any]
+LoggedData = Dict[str, List[Data]]
+LoggedFiles = Dict[str, List[File]]
+QueueItem = Tuple[Dict[str, Any], Optional[int]]
+
 
 class OpMonitor:
     def __init__(self, op) -> None:
         self.op = op
         self._stop_event = threading.Event()
-        self._thread = None
-        self._thread_monitor = None
+        self._thread: Optional[threading.Thread] = None
+        self._thread_monitor: Optional[threading.Thread] = None
 
     def start(self) -> None:
         if self._thread is None:
@@ -53,10 +60,11 @@ class OpMonitor:
 
     def stop(self, code: Union[int, None] = None) -> None:
         self._stop_event.set()
-        for t in [self._thread, self._thread_monitor]:
-            if t is not None:
-                t.join()  # timeout=self.op.settings.x_sys_sampling_interval
-                t = None
+        for attr in ['_thread', '_thread_monitor']:
+            thread = getattr(self, attr)
+            if thread is not None:
+                thread.join()
+                setattr(self, attr, None)
         if isinstance(code, int):
             self.op.settings._op_status = code
         elif self.op.settings._op_status == -1:
@@ -125,18 +133,18 @@ class Op:
                 [self.settings._sys.get_info()], f'{self.settings.get_dir()}/sys.json'
             )
 
-        self._store = (
+        self._store: Optional[DataStore] = (
             DataStore(config=config, settings=settings)
             if not settings.disable_store
             else None
         )
-        self._iface = (
+        self._iface: Optional[ServerInterface] = (
             ServerInterface(config=config, settings=settings)
             if not settings.disable_iface
             else None
         )
         self._step = 0
-        self._queue = queue.Queue()
+        self._queue: queue.Queue[QueueItem] = queue.Queue()
         atexit.register(self.finish)
 
     def start(self) -> None:
@@ -197,9 +205,10 @@ class Op:
         teardown_logger(logger, console=logging.getLogger('console'))
 
         self.settings.meta = []
-        mlop.ops = [
-            op for op in mlop.ops if op.settings._op_id != self.settings._op_id
-        ]  # TODO: make more efficient
+        if mlop.ops is not None:
+            mlop.ops = [
+                op for op in mlop.ops if op.settings._op_id != self.settings._op_id
+            ]  # TODO: make more efficient
 
     def watch(self, module, **kwargs):
         from .compat.torch import _watch_torch
@@ -262,7 +271,7 @@ class Op:
                 f'{tag}: alert not sent since interface is disabled'
             )
 
-    def _worker(self, stop) -> None:
+    def _worker(self, stop: Callable[[], bool]) -> None:
         while not stop() or not self._queue.empty():
             try:
                 # if queue seems empty, wait for x_internal_check_process before it
@@ -278,7 +287,12 @@ class Op:
                 time.sleep(self.settings.x_internal_check_process)  # debounce
                 logger.critical('%s: failed: %s', tag, e)
 
-    def _log(self, data, step: Union[int, None], t: Union[float, None] = None) -> None:
+    def _log(
+        self,
+        data: Mapping[str, Any],
+        step: Optional[int],
+        t: Optional[float] = None,
+    ) -> None:
         if not isinstance(data, Mapping):
             e = ValueError(
                 'unsupported type for logged data: '
@@ -294,29 +308,34 @@ class Op:
         self._step = self._step + 1 if step is None else step
         t = time.time() if t is None else t
 
-        # data = data.copy()  # TODO: check mutability
-        n, d, f, nm, fm = {}, {}, {}, [], {}
+        numbers: LoggedNumbers = {}
+        datasets: LoggedData = {}
+        files: LoggedFiles = {}
+        nm: MetaNames = []
+        fm: MetaFiles = {}
         for k, v in data.items():
             k = get_char(k)  # TODO: remove validation
 
             if isinstance(v, list):
                 nm, fm = self._m(nm, fm, k, v[0])
                 for e in v:
-                    n, d, f = self._op(n, d, f, k, e)
+                    numbers, datasets, files = self._op(numbers, datasets, files, k, e)
             else:
                 nm, fm = self._m(nm, fm, k, v)
-                n, d, f = self._op(n, d, f, k, v)
+                numbers, datasets, files = self._op(numbers, datasets, files, k, v)
 
         # d = dict_to_json(d)  # TODO: add serialisation
         self._store.insert(
-            num=n, data=d, file=f, timestamp=t, step=self._step
+            num=numbers, data=datasets, file=files, timestamp=t, step=self._step
         ) if self._store else None
         self._iface.publish(
-            num=n, data=d, file=f, timestamp=t, step=self._step
+            num=numbers, data=datasets, file=files, timestamp=t, step=self._step
         ) if self._iface else None
         self._iface._update_meta(num=nm, df=fm) if (nm or fm) and self._iface else None
 
-    def _m(self, nm, fm, k, v) -> None:
+    def _m(
+        self, nm: MetaNames, fm: MetaFiles, k: str, v: Any
+    ) -> Tuple[MetaNames, MetaFiles]:
         if k not in self.settings.meta:
             if isinstance(v, File) or isinstance(v, Data):
                 if v.__class__.__name__ not in fm:
@@ -329,7 +348,14 @@ class Op:
             logger.debug(f'{tag}: added {k} at step {self._step}')
         return nm, fm
 
-    def _op(self, n, d, f, k, v) -> None:
+    def _op(
+        self,
+        n: LoggedNumbers,
+        d: LoggedData,
+        f: LoggedFiles,
+        k: str,
+        v: Any,
+    ) -> Tuple[LoggedNumbers, LoggedData, LoggedFiles]:
         if isinstance(v, File):
             if (
                 isinstance(v, Artifact)

@@ -2,7 +2,7 @@ import logging
 import queue
 import threading
 import time
-from typing import Any, Dict, List, Union
+from typing import Any, Dict, Iterable, List, Optional, Union
 
 import httpx
 from rich.console import Console
@@ -72,16 +72,16 @@ class ServerInterface:
 
         self._stop_event = threading.Event()
 
-        self._queue_num = queue.Queue()
-        self._thread_num = None
-        self._queue_data = queue.Queue()
-        self._thread_data = None
-        self._thread_file = None
-        self._thread_storage = None
-        self._thread_meta = None
+        self._queue_num: queue.Queue[Any] = queue.Queue()
+        self._thread_num: Optional[threading.Thread] = None
+        self._queue_data: queue.Queue[Any] = queue.Queue()
+        self._thread_data: Optional[threading.Thread] = None
+        self._thread_file: Optional[threading.Thread] = None
+        self._thread_storage: Optional[threading.Thread] = None
+        self._thread_meta: Optional[threading.Thread] = None
 
-        self._queue_message = self.settings.message
-        self._thread_message = None
+        self._queue_message: queue.Queue[Any] = self.settings.message
+        self._thread_message: Optional[threading.Thread] = None
 
         self._progress = Progress(
             SpinnerColumn(),
@@ -92,8 +92,8 @@ class ServerInterface:
             console=Console(file=_stderr),
             # redirect_stdout=False,
         )
-        self._progress_task = None
-        self._thread_progress = None
+        self._progress_task: Optional[Any] = None
+        self._thread_progress: Optional[threading.Thread] = None
         self._lock_progress = threading.Lock()
         self._total = 0
 
@@ -146,11 +146,11 @@ class ServerInterface:
 
     def publish(
         self,
-        num: Union[Dict[str, Any], None] = None,
-        data: Union[Dict[str, Any], None] = None,
-        file: Union[Dict[str, Any], None] = None,
-        timestamp: Union[int, None] = None,
-        step: Union[int, None] = None,
+        num: Optional[Dict[str, Any]] = None,
+        data: Optional[Dict[str, Any]] = None,
+        file: Optional[Dict[str, Any]] = None,
+        timestamp: Optional[float] = None,
+        step: Optional[int] = None,
     ) -> None:
         with self._lock_progress:  # enforce one thread at a time
             self._total += 1
@@ -335,7 +335,7 @@ class ServerInterface:
                     client=self.client_api,
                 )
 
-    def _queue_iter(self, q, b):
+    def _queue_iter(self, q: queue.Queue[Any], b: List[Any]) -> Iterable[Any]:
         s = time.time()
         while (
             len(b) < self.settings.x_file_stream_max_size
@@ -355,8 +355,8 @@ class ServerInterface:
         headers,
         content,
         name: Union[str, None] = None,
-        q: Union[queue.Queue, None] = None,
-        retry=0,
+        drained: Optional[List[Any]] = None,
+        retry: int = 0,
     ):
         if retry >= self.settings.x_file_stream_retry_max:
             logger.critical(f'{tag}: {name}: failed after {retry} retries')
@@ -368,7 +368,7 @@ class ServerInterface:
                 return r
             max_retry = self.settings.x_file_stream_retry_max
             status_code = r.status_code if r else 'N/A'
-            target = len(q) if q else 'request'
+            target = len(drained) if drained else 'request'
             response = r.text if r else 'N/A'
             logger.warning(
                 '%s: %s: retry %s/%s: response code %s for %s from %s: %s',
@@ -399,10 +399,9 @@ class ServerInterface:
             )
         )
 
-        if q is not None:  # requeue items
-            for i in q:
-                content.put(i, block=False)
-        return self._try(method, url, headers, content, name=name, q=q, retry=retry + 1)
+        return self._try(
+            method, url, headers, content, name=name, drained=drained, retry=retry + 1
+        )
 
     def _put_v1(self, url, headers, content, client, name='put'):
         return self._try(
@@ -414,7 +413,7 @@ class ServerInterface:
         )
 
     def _post_v1(self, url, headers, q, client, name: Union[str, None] = 'post'):
-        b, r = [], None
+        b: List[Any] = []
         content = self._queue_iter(q, b) if isinstance(q, queue.Queue) else q
 
         s = time.time()
@@ -424,7 +423,7 @@ class ServerInterface:
             headers,
             content,
             name=name,
-            q=b if isinstance(q, queue.Queue) else None,
+            drained=b if isinstance(q, queue.Queue) else None,
         )
 
         if (

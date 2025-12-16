@@ -3,6 +3,7 @@ import queue
 import sqlite3
 import threading
 import time
+from typing import Any, Dict, List, Optional, Tuple
 
 from .sets import Settings
 
@@ -24,11 +25,19 @@ class DataStore:
 
         self._stop_event = threading.Event()
         self._lock = threading.Lock()
-        self._queue = queue.Queue()
-        self._thread = None
+        self._queue: queue.Queue[
+            Tuple[
+                Optional[Dict[str, Any]],
+                Optional[Dict[str, Any]],
+                Optional[Dict[str, Any]],
+                Optional[float],
+                Optional[int],
+            ]
+        ] = queue.Queue()
+        self._thread: Optional[threading.Thread] = None
         self.start()
 
-    def start(self):
+    def start(self) -> None:
         if self._thread is None:
             self._thread = threading.Thread(target=self._worker, daemon=True)
             self._thread.start()
@@ -53,10 +62,17 @@ class DataStore:
         """)
         self.conn.commit()
 
-    def insert(self, num=None, data=None, file=None, timestamp=None, step=None):
+    def insert(
+        self,
+        num: Optional[Dict[str, Any]] = None,
+        data: Optional[Dict[str, Any]] = None,
+        file: Optional[Dict[str, Any]] = None,
+        timestamp: Optional[float] = None,
+        step: Optional[int] = None,
+    ) -> None:
         self._queue.put((num, data, file, timestamp, step))
 
-    def stop(self):
+    def stop(self) -> None:
         while not self._queue.empty():
             pass
         self._stop_event.set()
@@ -67,9 +83,10 @@ class DataStore:
         self.conn.close()
         logger.info(f'{tag}: find saved database at {self.db}')
 
-    def _worker(self):
+    def _worker(self) -> None:
         while not self._stop_event.is_set():
-            batch_num, batch_file = [], []
+            batch_num: List[Dict[str, Any]] = []
+            batch_file: List[Dict[str, Any]] = []
             start = time.time()
             while (
                 time.time() - start < self.settings.store_aggregate_interval
@@ -104,7 +121,7 @@ class DataStore:
                     continue
             self._insert(batch_num, batch_file)
 
-    def _insert(self, d, f):
+    def _insert(self, d: List[Dict[str, Any]], f: List[Dict[str, Any]]) -> None:
         with self._lock:
             self.conn.execute('BEGIN')
             try:

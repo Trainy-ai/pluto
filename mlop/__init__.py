@@ -1,5 +1,6 @@
 import os
 import subprocess
+from typing import Any, Callable, List, Optional
 
 from .auth import login, logout
 from .data import Data, Graph, Histogram, Table
@@ -8,8 +9,11 @@ from .init import finish, init
 from .sets import Settings, setup
 from .sys import System
 
-_hooks = []
-ops, log, watch, alert = None, None, None, None
+_hooks: List[Any] = []
+ops: Optional[List[Any]] = None
+log: Optional[Callable[..., Any]] = None
+watch: Optional[Callable[..., Any]] = None
+alert: Optional[Callable[..., Any]] = None
 
 __all__ = (
     'Data',

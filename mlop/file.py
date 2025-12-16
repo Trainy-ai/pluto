@@ -6,7 +6,7 @@ import re
 import shutil
 import uuid
 from pathlib import Path
-from typing import Union
+from typing import Any, Dict, Optional, Union
 
 import numpy as np
 import soundfile as sf
@@ -27,11 +27,12 @@ class File:
     def __init__(
         self,
         path: str,
-        name: Union[str, None] = None,
-        **kwargs,
+        name: Optional[str] = None,
+        **kwargs: Any,
     ) -> None:
-        self._path = os.path.abspath(path)
-        self._id = self._hash()
+        self._tmp: Optional[str] = None
+        self._path: Optional[str] = os.path.abspath(path)
+        self._id: str = self._hash()
 
         if not name:
             name = self._id
@@ -44,21 +45,27 @@ class File:
             logger.debug(f'{self.tag}: %s', e)
             name = INVALID_CHAR.sub('-', name)
         self._name = name
-        self._ext = os.path.splitext(self._path)[-1]
+        self._ext = os.path.splitext(path)[-1]
         self._type = self._mimetype()
-        self._stat = os.stat(self._path)  # os.path.getsize(self._path)
-        self._url = None
+        self._stat = os.stat(path)
+        self._url: Optional[str] = None
 
     def _mimetype(self) -> str:
+        if self._path is None:
+            return 'application/octet-stream'
         return mimetypes.guess_type(self._path)[0] or 'application/octet-stream'
 
     def _hash(self) -> str:  # do not truncate
+        if self._path is None:
+            raise ValueError('File path is not set')
         with open(self._path, 'rb') as f:
             return hashlib.sha256(f.read()).hexdigest()
 
-    def _mkcopy(self, dir) -> None:
+    def _mkcopy(self, dir: str) -> None:
         if not hasattr(self, '_tmp'):
             self._tmp = f'{dir}/files/{self._name}-{self._id}{self._ext}'
+            if self._path is None:
+                raise ValueError('File path is not set')
             shutil.copyfile(self._path, self._tmp)
             if hasattr(self, '_image'):
                 os.remove(self._path)
@@ -70,37 +77,41 @@ class Artifact(File):
 
     def __init__(
         self,
-        data: str = None,
-        caption: Union[str, None] = None,
-        metadata: dict = dict(),
-        **kwargs,
+        data: Optional[str] = None,
+        caption: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        **kwargs: Any,
     ) -> None:
         self._name = caption + f'.{uuid.uuid4()}' if caption else f'{uuid.uuid4()}'
         self._id = f'{uuid.uuid4()}{uuid.uuid4()}'.replace('-', '')
 
-        self._metadata = metadata
+        self._metadata: Dict[str, Any] = metadata or {}
+        self._path: Optional[str] = None
         if isinstance(data, str) and os.path.exists(data):
             self._path = os.path.abspath(data)
 
     # TODO: remove legacy compat
-    def add_file(self, path: str, name: str = None):
+    def add_file(self, path: str, name: Optional[str] = None) -> None:
         self._name = name + f'.{uuid.uuid4()}' if name else f'{uuid.uuid4()}'
         self._path = os.path.abspath(path)
 
-    def load(self, dir=None):
+    def load(self, dir: Optional[str] = None) -> None:
         if not self._path:
             logger.critical(f'{self.tag}: failed to load artifact')
         else:
+            if self._path is None:
+                raise ValueError('Artifact has no path to load')
             super().__init__(path=self._path, name=self._name)
 
 
 class Text(File):
     tag = 'Text'
 
-    def __init__(self, data: str, caption: Union[str, None] = None) -> None:
+    def __init__(self, data: Union[str, Any], caption: Optional[str] = None) -> None:
         self._name = caption + f'.{uuid.uuid4()}' if caption else f'{uuid.uuid4()}'
         self._id = f'{uuid.uuid4()}{uuid.uuid4()}'.replace('-', '')
         self._ext = '.txt'
+        self._path: Optional[str] = None
 
         if isinstance(data, str):
             if os.path.exists(data):
@@ -110,7 +121,7 @@ class Text(File):
         else:
             self._text = str(data)
 
-    def load(self, dir=None):
+    def load(self, dir: Optional[str] = None) -> None:
         if not self._path:
             if dir:
                 self._tmp = f'{dir}/files/{self._name}-{self._id}{self._ext}'
@@ -118,6 +129,8 @@ class Text(File):
                     f.write(self._text)
                 self._path = os.path.abspath(self._tmp)
 
+        if self._path is None:
+            raise ValueError('Text has no path to load')
         super().__init__(path=self._path, name=self._name)
 
 
@@ -127,18 +140,20 @@ class Image(File):
     def __init__(
         self,
         data: Union[str, 'PILImage.Image', np.ndarray],
-        caption: Union[str, None] = None,
+        caption: Optional[str] = None,
     ) -> None:
         self._name = caption + f'.{uuid.uuid4()}' if caption else f'{uuid.uuid4()}'
         self._id = f'{uuid.uuid4()}{uuid.uuid4()}'.replace('-', '')
         self._ext = '.png'
+        self._image: Any = None
+        self._path: Optional[str] = None
+        self._matplotlib = False
 
         if isinstance(data, str):
             logger.debug(f'{self.tag}: used file')
             self._image = 'file'  # self._image = PILImage.open(data)
             self._path = os.path.abspath(data)
         else:
-            self._path = None
             class_name = get_class(data)
             if class_name.startswith('PIL.Image.Image'):
                 logger.debug(f'{self.tag}: used PILImage')
@@ -156,7 +171,7 @@ class Image(File):
                 logger.debug(f'{self.tag}: attempted conversion from array')
                 self._image = make_compat_image_numpy(data)
 
-    def load(self, dir=None):
+    def load(self, dir: Optional[str] = None) -> None:
         if not self._path:
             if dir:
                 self._tmp = f'{dir}/files/{self._name}-{self._id}{self._ext}'
@@ -166,6 +181,8 @@ class Image(File):
                     self._image.save(self._tmp, format=self._ext[1:])
                 self._path = os.path.abspath(self._tmp)
 
+        if self._path is None:
+            raise ValueError('Image has no path to load')
         super().__init__(path=self._path, name=self._name)
         if not self._type.startswith('image/'):
             logger.error(
@@ -180,9 +197,9 @@ class Audio(File):
     def __init__(
         self,
         data: Union[str, np.ndarray],
-        rate: Union[int, None] = 48000,
-        caption: Union[str, None] = None,
-        **kwargs,
+        rate: Optional[int] = 48000,
+        caption: Optional[str] = None,
+        **kwargs: Any,
     ) -> None:
         # TODO: remove legacy compat
         rate = kwargs.get('sample_rate', rate)
@@ -190,27 +207,30 @@ class Audio(File):
         self._name = caption + f'.{uuid.uuid4()}' if caption else f'{uuid.uuid4()}'
         self._id = f'{uuid.uuid4()}{uuid.uuid4()}'.replace('-', '')
         self._ext = '.wav'
+        self._audio: Union[str, np.ndarray]
+        self._path: Optional[str] = None
+        self._rate: int = int(rate) if rate is not None else 48000
 
         if isinstance(data, str):
             logger.debug(f'{self.tag}: used file')
             self._audio = 'file'
             self._path = os.path.abspath(data)
         else:
-            self._path = None
             if isinstance(data, np.ndarray):
                 logger.debug(f'{self.tag}: used numpy array')
                 self._audio = data
-                self._rate = rate
             else:
                 logger.critical(f'{self.tag}: unsupported data type: %s', type(data))
 
-    def load(self, dir=None):
+    def load(self, dir: Optional[str] = None) -> None:
         if not self._path:
             if dir:
                 self._tmp = f'{dir}/files/{self._name}-{self._id}{self._ext}'
                 sf.write(file=self._tmp, data=self._audio, samplerate=self._rate)
                 self._path = os.path.abspath(self._tmp)
 
+        if self._path is None:
+            raise ValueError('Audio has no path to load')
         super().__init__(path=self._path, name=self._name)
 
 
@@ -220,23 +240,26 @@ class Video(File):
     def __init__(
         self,
         data: Union[str, np.ndarray],
-        rate: Union[int, None] = 30,
-        caption: Union[str, None] = None,
-        format: Union[str, None] = None,
-        **kwargs,
+        rate: Optional[int] = 30,
+        caption: Optional[str] = None,
+        format: Optional[str] = None,
+        **kwargs: Any,
     ) -> None:
         rate = kwargs.get('fps', rate)
 
         self._name = caption + f'.{uuid.uuid4()}' if caption else f'{uuid.uuid4()}'
         self._id = f'{uuid.uuid4()}{uuid.uuid4()}'.replace('-', '')
         self._ext = f'.{format}' if format in ['mp4', 'webm', 'ogg', 'gif'] else '.mp4'
+        self._path: Optional[str] = None
+        self._video: Any = None
+        self._data: Optional[np.ndarray] = None
+        self._rate: int = int(rate) if rate is not None else 30
 
         if isinstance(data, str):
             logger.debug(f'{self.tag}: used file')
             self._video = 'file'
             self._path = os.path.abspath(data)
         else:
-            self._path = None
             if hasattr(data, 'numpy') or isinstance(data, np.ndarray):
                 if hasattr(data, 'numpy'):
                     logger.debug(f'{self.tag}: used tensor')
@@ -244,12 +267,12 @@ class Video(File):
                 else:
                     logger.debug(f'{self.tag}: used numpy array')
                     self._data = data
-                self._rate = rate
-                self._video = make_compat_video_moviepy(self._data, self._rate)
+                if self._data is not None:
+                    self._video = make_compat_video_moviepy(self._data, self._rate)
             else:
                 logger.critical(f'{self.tag}: unsupported data type: %s', type(data))
 
-    def load(self, dir=None):
+    def load(self, dir: Optional[str] = None) -> None:
         if not self._path:
             if dir:
                 self._tmp = f'{dir}/files/{self._name}-{self._id}{self._ext}'
@@ -262,10 +285,12 @@ class Video(File):
                     logger.critical('%s: failed to write video: %s', self.tag, e)
                 self._path = os.path.abspath(self._tmp)
 
+        if self._path is None:
+            raise ValueError('Video has no path to load')
         super().__init__(path=self._path, name=self._name)
 
 
-def make_compat_video_imageio(f, clip, rate):
+def make_compat_video_imageio(f: str, clip: Any, rate: int) -> None:
     import imageio
 
     writer = imageio.save(f, fps=rate)
@@ -274,7 +299,7 @@ def make_compat_video_imageio(f, clip, rate):
     writer.close()
 
 
-def make_compat_video_moviepy(v: any, rate: int) -> any:
+def make_compat_video_moviepy(v: Any, rate: int) -> Any:
     from moviepy.editor import ImageSequenceClip
 
     t = make_compat_video_numpy(v)
@@ -283,15 +308,14 @@ def make_compat_video_moviepy(v: any, rate: int) -> any:
     return clip
 
 
-def make_compat_video_numpy(v: any) -> any:
+def make_compat_video_numpy(v: Any) -> np.ndarray:
     import numpy as np
 
     if v.ndim < 4:
-        logger.critical(
+        raise ValueError(
             f'{tag}: video data must have at least 4 dimensions: '
             'time, channel, height, width'
         )
-        return None
     elif v.ndim == 4:
         v = v.reshape(1, *v.shape)
     b, t, c, h, w = v.shape
@@ -309,7 +333,7 @@ def make_compat_video_numpy(v: any) -> any:
     return v
 
 
-def make_compat_image_matplotlib(f, val: any) -> any:
+def make_compat_image_matplotlib(f: str, val: Any) -> None:
     # from matplotlib.spines import Spine # only required for is_frame_like workaround
     import matplotlib.pyplot as plt
     from matplotlib.figure import Figure
@@ -330,7 +354,7 @@ def make_compat_image_matplotlib(f, val: any) -> any:
     val.savefig(f, format='png')
 
 
-def make_compat_image_torch(val: any) -> any:
+def make_compat_image_torch(val: Any) -> PILImage.Image:
     from torchvision.utils import make_grid
 
     if hasattr(val, 'requires_grad') and val.requires_grad:
@@ -344,7 +368,7 @@ def make_compat_image_torch(val: any) -> any:
     return image
 
 
-def make_compat_image_numpy(val: any) -> any:
+def make_compat_image_numpy(val: Any) -> PILImage.Image:
     import numpy as np
 
     if hasattr(val, 'numpy'):
@@ -356,7 +380,7 @@ def make_compat_image_numpy(val: any) -> any:
         val = (val - np.min(val)) / (np.max(val) - np.min(val))
     if np.max(val) <= 1:
         val = (val * 255).astype(np.int32)
-    val.clip(0, 255).astype(np.uint8)
+    val = val.clip(0, 255).astype(np.uint8)
 
     image = PILImage.fromarray(val, mode='RGBA' if val.shape[-1] == 4 else 'RGB')
     return image

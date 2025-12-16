@@ -1,8 +1,9 @@
+import importlib
 import logging
 import os
 import queue
 import sys
-from typing import Any, Dict, List, Union
+from typing import Any, Dict, List, Optional, Union
 
 logger = logging.getLogger(f"{__name__.split('.')[0]}")
 tag = 'Settings'
@@ -12,20 +13,20 @@ class Settings:
     tag: str = f"{__name__.split('.')[0]}"
     dir: str = str(os.path.abspath(os.getcwd()))
 
-    _auth: str = None
-    _sys: Dict[str, Any] = {}
+    _auth: Optional[str] = None
+    _sys: Any = {}
     compat: Dict[str, Any] = {}
     project: str = tag
     mode: str = 'perf'  # noop | debug | perf
     meta: List[str] = []
-    message: queue.Queue = queue.Queue()
+    message: queue.Queue[Any] = queue.Queue()
     disable_store: bool = True  # TODO: make false
     disable_iface: bool = False
     disable_progress: bool = True
     disable_console: bool = False  # disable file-based logging
 
-    _op_name: str = None
-    _op_id: int = None
+    _op_name: Optional[str] = None
+    _op_id: Optional[int] = None
     _op_status: int = -1
 
     store_db: str = 'store.db'
@@ -34,8 +35,8 @@ class Settings:
     store_max_size: int = 2**14
     store_aggregate_interval: float = 2 ** (-1)
 
-    http_proxy: str = None
-    https_proxy: str = None
+    http_proxy: Optional[str] = None
+    https_proxy: Optional[str] = None
     insecure_disable_ssl: bool = False
 
     x_log_level: int = 2**4  # logging.NOTSET
@@ -52,18 +53,18 @@ class Settings:
     x_grad_label: str = 'grad'
     x_param_label: str = 'param'
 
-    host: str = None
-    url_view: str = None
-    url_webhook: str = None
+    host: Optional[str] = None
+    url_view: Optional[str] = None
+    url_webhook: Optional[str] = None
 
-    def update(self, settings) -> None:
+    def update(self, settings: Union['Settings', Dict[str, Any]]) -> None:
         if isinstance(settings, Settings):
             settings = settings.to_dict()
         for key, value in settings.items():
             setattr(self, key, value)
         self.update_host()
 
-    def update_host(self):
+    def update_host(self) -> None:
         if self.host is not None:
             self.url_app = f'http://{self.host}:3000'
             self.url_api = f'http://{self.host}:3001'
@@ -81,7 +82,7 @@ class Settings:
             self.url_py = 'https://trakkur-py.trainy.ai'
         self.update_url()
 
-    def update_url(self):
+    def update_url(self) -> None:
         self.url_token = f'{self.url_app}/api-keys'
         self.url_login = f'{self.url_api}/api/slug'
         self.url_start = f'{self.url_api}/api/runs/create'
@@ -99,11 +100,12 @@ class Settings:
         return {key: getattr(self, key) for key in self.__annotations__.keys()}
 
     def get_dir(self) -> str:
+        op_segment = self._op_name or str(self._op_id or 'run')
         return os.path.join(
             self.dir,
             '.' + self.tag,
             self.project,
-            self._op_name,  # str(self._op_id)
+            op_segment,
         )
 
     def _nb(self) -> bool:
@@ -126,12 +128,13 @@ class Settings:
 
 def get_console() -> str:
     try:
-        from IPython import get_ipython
-
-        ipython = get_ipython()
-        if ipython is None:
-            return 'python'
+        ipython_module = importlib.import_module('IPython')
     except ImportError:
+        return 'python'
+
+    get_ipython = getattr(ipython_module, 'get_ipython', None)
+    ipython = get_ipython() if callable(get_ipython) else None
+    if ipython is None:
         return 'python'
 
     if 'spyder' in sys.modules or 'terminal' in ipython.__module__:
@@ -147,8 +150,14 @@ def get_console() -> str:
         return 'jupyter'
 
 
-def setup(settings: Union[Settings, Dict[str, Any], None] = None) -> None:
-    if not isinstance(settings, Settings):
-        settings = Settings()
-    settings.update(settings)
-    return settings
+def setup(settings: Union[Settings, Dict[str, Any], None] = None) -> Settings:
+    if isinstance(settings, Settings):
+        settings.update(settings)
+        return settings
+
+    new_settings = Settings()
+    if isinstance(settings, dict):
+        new_settings.update(settings)
+    else:
+        new_settings.update({})
+    return new_settings

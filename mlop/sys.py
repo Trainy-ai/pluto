@@ -3,7 +3,7 @@ import logging
 import os
 import platform
 import time
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Mapping, Optional, Union, cast
 
 import psutil
 from git import Repo
@@ -52,11 +52,15 @@ class System:
             self.proc_child: List[psutil.Process] = self.proc.children(recursive=True)
             self.pid_child: List[int] = [p.pid for p in self.proc_child] + [self.pid]
 
-        self.requirements: List[str] = [
-            f"{p.metadata.get('Name')}=={p.version}"
-            for p in importlib.metadata.distributions()
-            if p.metadata
-        ]
+        self.requirements: List[str] = []
+        for dist in importlib.metadata.distributions():
+            metadata = dist.metadata
+            if not metadata:
+                continue
+            metadata_map = cast(Mapping[str, Any], metadata)
+            name = metadata_map.get('Name')
+            if isinstance(name, str):
+                self.requirements.append(f'{name}=={dist.version}')
         if self.settings.mode == 'debug':  # privacy guard
             self.environ: Dict[str, str] = self.proc.environ()
 
@@ -142,10 +146,11 @@ class System:
                 c.update({'url': repo.remotes['origin'].url})
             except Exception:
                 pass
+            branch_name = getattr(getattr(repo.head, 'ref', None), 'name', None)
             d = {
                 'root': repo.git.rev_parse('--show-toplevel'),
                 'dirty': repo.is_dirty(),
-                'branch': repo.head.ref.name,
+                'branch': branch_name or '',
                 'commit': repo.head.commit.hexsha,
                 **c,
             }

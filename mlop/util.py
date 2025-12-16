@@ -208,6 +208,7 @@ def val_to_json(val: Any) -> Union[Sequence, Dict, Any]:
         return val
     elif isinstance(val, (list, tuple, range)):
         raise NotImplementedError()  # TODO: for files
+    return val
 
 
 def get_char(v: str) -> str:
@@ -218,7 +219,7 @@ def get_char(v: str) -> str:
         return INVALID_CHAR.sub('-', v)
 
 
-def get_class(val: any) -> str:
+def get_class(val: Any) -> str:
     module_class = val.__class__.__module__ + '.' + val.__class__.__name__
     return (
         val.__name__
@@ -264,7 +265,7 @@ def get_val(v: Any):
             if isinstance(v, np.generic) and (
                 v.dtype.kind == 'f' or v.dtype == 'bfloat16'
             ):
-                v = float(v)
+                v = float(v)  # type: ignore[arg-type]
         elif isinstance(v, bytes):
             v = v.decode('utf-8')
 
