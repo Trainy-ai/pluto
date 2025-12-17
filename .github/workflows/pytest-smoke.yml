@@ -1,0 +1,40 @@
+name: format
+
+on:
+    push:
+        branches:
+            - main
+            - 'releases/**'
+    pull_request:
+        branches:
+            - main
+            - 'releases/**'
+    workflow_dispatch:
+
+jobs:
+  test:
+    strategy:
+      matrix:
+        python-version: [3.10, 3.11, 3.12]
+        poetry-version: [2.1.1]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: "Setup Python, Poetry and Dependencies"
+        uses: packetcoders/action-setup-cache-python-poetry@main
+        with:
+          python-version: ${{matrix.python-version}}
+          poetry-version: ${{matrix.poetry-version}}
+          install-args: "--with dev"
+      
+      - name: login
+        run: |
+          set -euox pipefail
+          poetry run mlop login ${{ secrets.MLOP_API_KEY }}
+
+      - name: Run pytest smoke tests
+        run: |
+          set -euox pipefail
+          poetry run pytest -n auto tests
