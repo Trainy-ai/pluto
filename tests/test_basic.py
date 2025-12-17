@@ -19,7 +19,7 @@ except ImportError:  # pragma: no cover - optional dependency
 import numpy as np
 
 import mlop
-from tests.utils import get_task_name, init_run
+from tests.utils import get_task_name
 
 try:
     import torch
