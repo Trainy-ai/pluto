@@ -38,4 +38,4 @@ jobs:
       - name: Run pytest smoke tests
         run: |
           set -euox pipefail
-          poetry run pytest -n auto tests
+          poetry run pytest -n auto -rs tests

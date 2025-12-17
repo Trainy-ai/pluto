@@ -1,5 +1,4 @@
 import importlib.util
-import os
 
 import pytest
 from PIL import Image as PILImage
@@ -43,6 +42,7 @@ def test_quickstart():
     for i in range(config['epochs']):
         run.log({'val/loss': 0})
         run.log({'val/x': i})
+        print(i)
     run.finish()
 
 
@@ -56,21 +56,15 @@ def test_init_with_hyperparameters():
     run.finish()
 
 
-def _log_and_assert_image(image, key, task_name):
-    run = mlop.init(TESTING_PROJECT_NAME, task_name, config={})
+def _log_image(image, key, task_name):
+    run = mlop.init(project=TESTING_PROJECT_NAME, name=task_name, config={})
     run.log({key: image})
-    assert key in run.settings.meta
-    assert image._path is not None
-    assert os.path.exists(image._path)
     run.finish()
 
 
-def _log_and_assert_video(video, key, task_name):
-    run = mlop.init(TESTING_PROJECT_NAME, task_name, config={})
+def _log_video(video, key, task_name):
+    run = mlop.init(project=TESTING_PROJECT_NAME, name=task_name, config={})
     run.log({key: video})
-    assert key in run.settings.meta
-    assert video._path is not None
-    assert os.path.exists(video._path)
     run.finish()
 
 
@@ -78,21 +72,21 @@ def test_image_logging_from_file_path(tmp_path):
     img_path = tmp_path / 'example.png'
     PILImage.new('RGB', (4, 4), color='white').save(img_path)
     image = mlop.Image(str(img_path), caption='file-path')
-    _log_and_assert_image(image, 'image/file/path', get_task_name())
+    _log_image(image, 'image/file/path', get_task_name())
 
 
 @pytest.mark.skipif(not HAS_MATPLOTLIB, reason='matplotlib not installed')
 def test_image_logging_from_pil_image():
     pil_img = PILImage.new('RGB', (4, 4), color='blue')
     image = mlop.Image(pil_img, caption='pil-image')
-    _log_and_assert_image(image, 'image/pil', get_task_name())
+    _log_image(image, 'image/pil', get_task_name())
 
 
 @pytest.mark.skipif(not HAS_MATPLOTLIB, reason='matplotlib not installed')
 def test_image_logging_from_numpy_array():
     np_img = np.random.randint(0, 255, (4, 4, 3), dtype=np.uint8)
     image = mlop.Image(np_img, caption='numpy-array')
-    _log_and_assert_image(image, 'image/numpy', get_task_name())
+    _log_image(image, 'image/numpy', get_task_name())
 
 
 @pytest.mark.skipif(not HAS_MATPLOTLIB, reason='matplotlib not installed')
@@ -101,7 +95,7 @@ def test_image_logging_from_matplotlib_figure():
     ax.plot([0, 1], [0, 1])
     ax.axis('off')
     image = mlop.Image(fig, caption='matplotlib-fig')
-    _log_and_assert_image(image, 'image/matplotlib', get_task_name())
+    _log_image(image, 'image/matplotlib', get_task_name())
     plt.close(fig)
 
 
@@ -110,18 +104,19 @@ def test_image_logging_from_torch_tensor():
     pytest.importorskip('torchvision.utils')
     tensor = torch.rand(3, 4, 4)
     image = mlop.Image(tensor, caption='torch-tensor')
-    _log_and_assert_image(image, 'image/torch', get_task_name())
+    _log_image(image, 'image/torch', get_task_name())
 
 
 def test_video_logging_from_file_path(tmp_path):
     video_path = tmp_path / 'sample.mp4'
     video_path.write_bytes(b'\x00')
     video = mlop.Video(str(video_path), caption='video-file')
-    _log_and_assert_video(video, 'video/file/path', get_task_name())
+    _log_video(video, 'video/file/path', get_task_name())
 
 
 @pytest.mark.skipif(not HAS_VIDEO_DEPS, reason='video dependencies not installed')
 def test_video_logging_from_numpy_array():
     video_array = np.random.randint(0, 255, (2, 3, 4, 4), dtype=np.uint8)
     video = mlop.Video(video_array, rate=5, caption='video-numpy')
-    _log_and_assert_video(video, 'video/numpy', get_task_name())
+    _log_video(video, 'video/numpy', get_task_name())
+

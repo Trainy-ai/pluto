@@ -175,7 +175,7 @@ class Image(File):
         if not self._path:
             if dir:
                 self._tmp = f'{dir}/files/{self._name}-{self._id}{self._ext}'
-                if hasattr(self, '_matplotlib'):
+                if getattr(self, '_matplotlib', False):
                     make_compat_image_matplotlib(self._tmp, self._image)
                 else:
                     self._image.save(self._tmp, format=self._ext[1:])
