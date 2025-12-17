@@ -32,6 +32,7 @@ jobs:
       - name: login
         run: |
           set -euox pipefail
+          pip install -e ".[full]"
           poetry run mlop login ${{ secrets.MLOP_API_KEY }}
 
       - name: Run pytest smoke tests
