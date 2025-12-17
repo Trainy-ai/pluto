@@ -57,7 +57,7 @@ def test_init_with_hyperparameters():
 
 
 def _log_and_assert_image(image, key, task_name):
-    run = init_run(TESTING_PROJECT_NAME, task_name, config={})
+    run = mlop.init(TESTING_PROJECT_NAME, task_name, config={})
     run.log({key: image})
     assert key in run.settings.meta
     assert image._path is not None
@@ -66,7 +66,7 @@ def _log_and_assert_image(image, key, task_name):
 
 
 def _log_and_assert_video(video, key, task_name):
-    run = init_run(TESTING_PROJECT_NAME, task_name, config={})
+    run = mlop.init(TESTING_PROJECT_NAME, task_name, config={})
     run.log({key: video})
     assert key in run.settings.meta
     assert video._path is not None
