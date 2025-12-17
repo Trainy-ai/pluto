@@ -1,4 +1,4 @@
-name: format
+name: tests
 
 on:
     push:
@@ -15,8 +15,8 @@ jobs:
   test:
     strategy:
       matrix:
-        python-version: [3.10, 3.11, 3.12]
-        poetry-version: [2.1.1]
+        python-version: ["3.10", "3.11", "3.12"]
+        poetry-version: ["2.1.1"]
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code

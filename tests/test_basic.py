@@ -19,7 +19,7 @@ except ImportError:  # pragma: no cover - optional dependency
 import numpy as np
 
 import mlop
-from tests.utils import get_task_name, init_run, test_id
+from tests.utils import get_task_name, init_run
 
 try:
     import torch
@@ -41,7 +41,7 @@ def test_quickstart():
     config = {'lr': 0.001, 'epochs': 100}
     run = mlop.init(project=TESTING_PROJECT_NAME, name=task_name, config=config)
     for i in range(config['epochs']):
-        run.log({f'val/loss': 0})
+        run.log({'val/loss': 0})
         run.log({'val/x': i})
     run.finish()
 
