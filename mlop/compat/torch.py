@@ -1,5 +1,5 @@
 import logging
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Any, Optional, cast
 
 import mlop
 from mlop.api import make_compat_graph_nodes_v1, make_compat_graph_v1
@@ -36,25 +36,31 @@ def _watch_torch(
         return
     else:
         op = mlop.ops[-1] if not op else op
-        op._torch, module._nodes = module, {}
+        module_with_attrs = cast(Any, module)
+        op._torch = module_with_attrs
+        module_with_attrs._nodes = []
 
-    if not disable_grad and not hasattr(module, '_hook_grad'):
-        module._hook_grad = []
-        for name, param in module.named_parameters():
+    module_with_attrs = cast(Any, module)
+
+    if not disable_grad and not hasattr(module_with_attrs, '_hook_grad'):
+        module_with_attrs._hook_grad = []
+        for name, param in module_with_attrs.named_parameters():
             if param.requires_grad and check_param(param, name):
-                module._hook_grad.append(
+                module_with_attrs._hook_grad.append(
                     param.register_hook(_backward(op, name, freq, bins))
                 )
 
-    if not disable_param and not hasattr(module, '_hook_param'):
-        module._hook_param = [module.register_forward_hook(_forward(op, freq, bins))]
+    if not disable_param and not hasattr(module_with_attrs, '_hook_param'):
+        module_with_attrs._hook_param = [
+            module_with_attrs.register_forward_hook(_forward(op, freq, bins))
+        ]
 
-    if not hasattr(module, '_hook_graph'):
-        module._hook_graph = []
+    if not hasattr(module_with_attrs, '_hook_graph'):
+        module_with_attrs._hook_graph = []
         if not disable_graph:
-            module._hook_graph.append(module.apply(_add_hooks))
-        module._hook_graph.append(
-            module.register_forward_hook(_forward_module(op, disable_graph))
+            module_with_attrs._hook_graph.append(module_with_attrs.apply(_add_hooks))
+        module_with_attrs._hook_graph.append(
+            module_with_attrs.register_forward_hook(_forward_module(op, disable_graph))
         )
 
 
