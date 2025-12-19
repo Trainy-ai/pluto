@@ -24,7 +24,7 @@ keyring = ">=24.0"
 keyrings-alt = ">=5.0"
 pillow = ">=10.0"
 psutil = ">=5.9"
-pynvml = ">=11.5"
+nvidia-ml-py = ">=11.515.0"
 rich = ">=13.0"
 soundfile = ">=0.12"
 
@@ -42,11 +42,14 @@ numpy = "^2.0"
 torch = "*"
 matplotlib = "^3.10"
 pillow = ">=10.0"
+torchvision = "*"
+imageio = "^2.37.0"
+moviepy = "^1.0.3"
 
 
 [tool.poetry.extras]
 full = [
-  "pynvml",
+  "nvidia-ml-py",
 ]
 
 [tool.poetry.scripts]
@@ -67,3 +70,7 @@ quote-style = "single"
 python_version = "3.10"
 ignore_missing_imports = true
 
+[tool.pytest.ini_options]
+markers = [
+    "distributed: tests that require multi-rank torch.distributed setup",
+]
