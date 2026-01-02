@@ -74,15 +74,16 @@ jobs:
         run: |
           set -euox pipefail
           # Test with real Neptune client (without mlop)
-          poetry run pytest tests/test_neptune_compat.py::TestNeptuneRealBackend::test_real_neptune_without_mlop -v -rs || echo "Real Neptune tests skipped (credentials not configured)"
-          poetry run pytest tests/test_neptune_compat.py::TestNeptuneRealBackend::test_real_neptune_context_manager -v -rs || echo "Real Neptune context manager tests skipped (credentials not configured)"
+          # These tests MUST pass - no fallback to echo
+          poetry run pytest tests/test_neptune_compat.py::TestNeptuneRealBackend::test_real_neptune_without_mlop -v -rs
+          poetry run pytest tests/test_neptune_compat.py::TestNeptuneRealBackend::test_real_neptune_context_manager -v -rs
 
       - name: Setup mlop credentials for dual-logging tests
         env:
           MLOP_API_TOKEN: ${{ secrets.MLOP_API_TOKEN }}
         run: |
           set -euox pipefail
-          mlop login "${MLOP_API_TOKEN}" || echo "mlop login failed, dual-logging tests will be skipped"
+          mlop login "${MLOP_API_TOKEN}"
 
       - name: Run Neptune dual-logging integration tests
         env:
@@ -93,11 +94,12 @@ jobs:
         run: |
           set -euox pipefail
           # Test dual-logging to both Neptune (mock) and mlop (real)
-          poetry run pytest tests/test_neptune_compat.py::TestNeptuneCompatDualLogging -v -rs || echo "Dual-logging tests skipped (mlop not configured)"
-          poetry run pytest tests/test_neptune_compat.py::TestNeptuneCompatIntegration -v -rs || echo "Integration tests skipped (mlop not configured)"
+          # These tests MUST pass - no fallback to echo
+          poetry run pytest tests/test_neptune_compat.py::TestNeptuneCompatDualLogging -v -rs
+          poetry run pytest tests/test_neptune_compat.py::TestNeptuneCompatIntegration -v -rs
           # Test full dual-logging with both real Neptune and mlop
-          poetry run pytest tests/test_neptune_compat.py::TestNeptuneRealBackend::test_real_neptune_with_mlop_dual_logging -v -rs || echo "Full dual-logging tests skipped (credentials not configured)"
-          poetry run pytest tests/test_neptune_compat.py::TestNeptuneRealBackend::test_real_neptune_mlop_resilience -v -rs || echo "Resilience tests skipped (credentials not configured)"
+          poetry run pytest tests/test_neptune_compat.py::TestNeptuneRealBackend::test_real_neptune_with_mlop_dual_logging -v -rs
+          poetry run pytest tests/test_neptune_compat.py::TestNeptuneRealBackend::test_real_neptune_mlop_resilience -v -rs
 
       - name: Report test results
         if: always()

@@ -621,8 +621,9 @@ class TestNeptuneRealBackend:
         # Should have no mlop run
         assert run._mlop_run is None
 
-        # Wait for Neptune to upload files before closing
-        run.wait_for_submission()
+        # Wait for Neptune to finish all operations before closing
+        # Use verbose=False to prevent logging errors when pytest captures stdout
+        run.wait_for_processing(verbose=False)
 
         # Close Neptune run
         run.close()
@@ -712,8 +713,9 @@ class TestNeptuneRealBackend:
         assert run._neptune_run is not None
         assert run._mlop_run is not None
 
-        # Wait for Neptune to upload files before closing
-        run.wait_for_submission()
+        # Wait for Neptune to finish all operations before closing
+        # Use verbose=False to prevent logging errors when pytest captures stdout
+        run.wait_for_processing(verbose=False)
 
         # Close both
         run.close()
@@ -775,6 +777,10 @@ class TestNeptuneRealBackend:
         # Neptune should still work!
         run.log_metrics({'test/metric2': 2.0}, step=1)
         run.log_metrics({'test/metric3': 3.0}, step=2)
+
+        # Wait for Neptune to finish all operations before closing
+        # Use verbose=False to prevent logging errors when pytest captures stdout
+        run.wait_for_processing(verbose=False)
 
         # Close should still work
         run.close()

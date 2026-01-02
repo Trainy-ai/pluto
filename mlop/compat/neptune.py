@@ -332,8 +332,9 @@ class NeptuneRunWrapper:
                     try:
                         mlop_file = _convert_neptune_file_to_mlop(file_obj, self._mlop)
                         mlop_files[key] = mlop_file
+                        mlop_type = type(mlop_file).__name__
                         logger.info(
-                            f'mlop.compat.neptune: Converted file {key} to {type(mlop_file).__name__}'
+                            f'mlop.compat.neptune: Converted file {key} to {mlop_type}'
                         )
                     except Exception as e:
                         logger.warning(
@@ -369,8 +370,10 @@ class NeptuneRunWrapper:
                     try:
                         mlop_file = _convert_neptune_file_to_mlop(file_obj, self._mlop)
                         mlop_files[key] = mlop_file
+                        mlop_type = type(mlop_file).__name__
                         logger.info(
-                            f'mlop.compat.neptune: Converted file {key} at step {step} to {type(mlop_file).__name__}'
+                            f'mlop.compat.neptune: Converted {key} at step '
+                            f'{step} to {mlop_type}'
                         )
                     except Exception as e:
                         logger.warning(
@@ -380,7 +383,8 @@ class NeptuneRunWrapper:
                 if mlop_files:
                     self._mlop_run.log(mlop_files, step=step)
                     logger.info(
-                        f'mlop.compat.neptune: Logged {len(mlop_files)} files to mlop at step {step}'
+                        f'mlop.compat.neptune: Logged {len(mlop_files)} files '
+                        f'to mlop at step {step}'
                     )
             except Exception as e:
                 logger.warning(f'mlop.compat.neptune: Failed to log files to mlop: {e}')
@@ -564,6 +568,12 @@ class NeptuneRunWrapper:
                 logger.warning(
                     f'mlop.compat.neptune: Failed to close mlop run on exit: {e}'
                 )
+        # Wait for processing with verbose=False before exit to prevent
+        # logging errors when pytest or other tools capture stdout/stderr
+        try:
+            self._neptune_run.wait_for_processing(verbose=False)
+        except Exception:
+            pass  # Ignore errors during wait, __exit__ will handle cleanup
         return self._neptune_run.__exit__(exc_type, exc_val, exc_tb)
 
 
