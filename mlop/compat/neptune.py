@@ -177,8 +177,7 @@ class NeptuneRunWrapper:
         """
         # Import neptune_scale to get the original Run class
         try:
-            from neptune_scale import Run as OriginalNeptuneRun
-            self._neptune_run = OriginalNeptuneRun(*args, **kwargs)
+            self._neptune_run = _original_neptune_run(*args, **kwargs)
         except Exception as e:
             # If Neptune itself fails, we can't do anything
             logger.error(f'mlop.compat.neptune: Failed to initialize Neptune Run: {e}')
