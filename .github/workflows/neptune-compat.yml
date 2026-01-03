@@ -75,8 +75,9 @@ jobs:
           set -euox pipefail
           # Test with real Neptune client (without mlop)
           # These tests MUST pass - no fallback to echo
-          poetry run pytest tests/test_neptune_compat.py::TestNeptuneRealBackend::test_real_neptune_without_mlop -v -rs
-          poetry run pytest tests/test_neptune_compat.py::TestNeptuneRealBackend::test_real_neptune_context_manager -v -rs
+          # Use -s to disable output capture and prevent I/O errors from Neptune's logger
+          poetry run pytest tests/test_neptune_compat.py::TestNeptuneRealBackend::test_real_neptune_without_mlop -v -rs -s
+          poetry run pytest tests/test_neptune_compat.py::TestNeptuneRealBackend::test_real_neptune_context_manager -v -rs -s
 
       - name: Setup mlop credentials for dual-logging tests
         env:
@@ -98,8 +99,9 @@ jobs:
           poetry run pytest tests/test_neptune_compat.py::TestNeptuneCompatDualLogging -v -rs
           poetry run pytest tests/test_neptune_compat.py::TestNeptuneCompatIntegration -v -rs
           # Test full dual-logging with both real Neptune and mlop
-          poetry run pytest tests/test_neptune_compat.py::TestNeptuneRealBackend::test_real_neptune_with_mlop_dual_logging -v -rs
-          poetry run pytest tests/test_neptune_compat.py::TestNeptuneRealBackend::test_real_neptune_mlop_resilience -v -rs
+          # Use -s to disable output capture and prevent I/O errors from Neptune's logger
+          poetry run pytest tests/test_neptune_compat.py::TestNeptuneRealBackend::test_real_neptune_with_mlop_dual_logging -v -rs -s
+          poetry run pytest tests/test_neptune_compat.py::TestNeptuneRealBackend::test_real_neptune_mlop_resilience -v -rs -s
 
       - name: Report test results
         if: always()
