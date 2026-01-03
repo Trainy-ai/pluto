@@ -10,16 +10,10 @@ These tests validate that:
 """
 
 import logging
-import os
-from typing import Any, Dict
-from unittest import mock
 
-import pytest
-
-# Prevent Python's logging module from printing error messages when
+# CRITICAL: Set this FIRST, before any other imports that might configure logging.
+# This prevents Python's logging module from printing error messages when
 # handlers fail (e.g., "I/O operation on closed file" errors).
-# This is critical for Neptune tests where async operations may try to
-# log after pytest has closed stdout/stderr.
 logging.raiseExceptions = False
 
 # Suppress neptune_scale logging BEFORE importing neptune_scale
@@ -28,10 +22,16 @@ logging.raiseExceptions = False
 # after the streams are closed.
 for logger_name in ['neptune_scale', 'neptune_scale.util.logger',
                     'neptune_scale.api.run', 'neptune']:
-    logger = logging.getLogger(logger_name)
-    logger.setLevel(logging.CRITICAL + 1)
-    logger.disabled = True
-    logger.addHandler(logging.NullHandler())
+    _logger = logging.getLogger(logger_name)
+    _logger.setLevel(logging.CRITICAL + 1)
+    _logger.disabled = True
+    _logger.addHandler(logging.NullHandler())
+
+import os
+from typing import Any, Dict
+from unittest import mock
+
+import pytest
 
 # Test both with and without neptune installed
 pytest.importorskip('neptune_scale')
