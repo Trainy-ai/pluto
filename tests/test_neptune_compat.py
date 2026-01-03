@@ -153,6 +153,29 @@ def clean_env():
             del os.environ[var]
 
 
+@pytest.fixture
+def suppress_neptune_logging():
+    """
+    Suppress Neptune's internal logging to prevent I/O errors.
+
+    Neptune's close() method internally calls wait_for_processing() which
+    logs status messages. When pytest captures stdout/stderr, these streams
+    are closed before Neptune finishes, causing "I/O operation on closed file"
+    errors. This fixture disables Neptune's logger during tests.
+    """
+    import logging
+
+    # Get Neptune's logger and disable it
+    neptune_logger = logging.getLogger('neptune_scale')
+    original_level = neptune_logger.level
+    neptune_logger.setLevel(logging.CRITICAL + 1)  # Disable all logging
+
+    yield
+
+    # Restore original level
+    neptune_logger.setLevel(original_level)
+
+
 class TestNeptuneCompatBasic:
     """Test basic Neptune API functionality is preserved."""
 
@@ -569,7 +592,9 @@ class TestNeptuneRealBackend:
         or not os.environ.get('NEPTUNE_PROJECT'),
         reason='Requires NEPTUNE_API_TOKEN and NEPTUNE_PROJECT env vars',
     )
-    def test_real_neptune_without_mlop(self, clean_env, tmp_path):
+    def test_real_neptune_without_mlop(
+        self, clean_env, tmp_path, suppress_neptune_logging
+    ):
         """
         Test with real Neptune backend, no mlop dual-logging.
 
@@ -641,7 +666,9 @@ class TestNeptuneRealBackend:
         or not os.environ.get('MLOP_PROJECT'),
         reason='Requires NEPTUNE_API_TOKEN, NEPTUNE_PROJECT, and MLOP_PROJECT',
     )
-    def test_real_neptune_with_mlop_dual_logging(self, tmp_path):
+    def test_real_neptune_with_mlop_dual_logging(
+        self, tmp_path, suppress_neptune_logging
+    ):
         """
         Full integration test with BOTH real Neptune and real mlop.
 
@@ -737,7 +764,7 @@ class TestNeptuneRealBackend:
         or not os.environ.get('NEPTUNE_PROJECT'),
         reason='Requires NEPTUNE_API_TOKEN and NEPTUNE_PROJECT env vars',
     )
-    def test_real_neptune_context_manager(self, clean_env):
+    def test_real_neptune_context_manager(self, clean_env, suppress_neptune_logging):
         """Test context manager protocol with real Neptune."""
         # Apply monkeypatch BEFORE importing Run
         import mlop.compat.neptune  # noqa: F401, I001
@@ -760,7 +787,7 @@ class TestNeptuneRealBackend:
         or not os.environ.get('MLOP_PROJECT'),
         reason='Requires NEPTUNE_API_TOKEN, NEPTUNE_PROJECT, and MLOP_PROJECT',
     )
-    def test_real_neptune_mlop_resilience(self):
+    def test_real_neptune_mlop_resilience(self, suppress_neptune_logging):
         """
         Test that Neptune works even if mlop fails during the run.
 
