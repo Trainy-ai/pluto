@@ -84,7 +84,7 @@ jobs:
           MLOP_API_TOKEN: ${{ secrets.MLOP_API_TOKEN }}
         run: |
           set -euox pipefail
-          mlop login "${MLOP_API_TOKEN}"
+          poetry run mlop login "${MLOP_API_TOKEN}"
 
       - name: Run Neptune dual-logging integration tests
         env:
