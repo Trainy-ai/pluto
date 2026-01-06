@@ -97,7 +97,7 @@ class ServerInterface:
         self._lock_progress = threading.Lock()
         self._total = 0
 
-        self._last_error_info = ""  # Track last error for failure logging
+        self._last_error_info = ''  # Track last error for failure logging
         self._lock_failure_log = threading.Lock()  # Thread-safe file writes
 
     def start(self) -> None:
@@ -401,7 +401,7 @@ class ServerInterface:
             logger.critical(f'{tag}: {name}: failed after {retry} retries')
 
             # Log failure details to file
-            payload_info = f"{len(drained)} items" if drained else "single request"
+            payload_info = f'{len(drained)} items' if drained else 'single request'
             self._log_failed_request(
                 request_type=name or 'unknown',
                 url=url,
@@ -418,7 +418,7 @@ class ServerInterface:
                 return r
 
             # Store error info for potential failure logging
-            self._last_error_info = f"HTTP {r.status_code}: {r.text[:100]}"
+            self._last_error_info = f'HTTP {r.status_code}: {r.text[:100]}'
 
             max_retry = self.settings.x_file_stream_retry_max
             status_code = r.status_code if r else 'N/A'
@@ -437,7 +437,7 @@ class ServerInterface:
             )
         except Exception as e:
             # Store error info for potential failure logging
-            self._last_error_info = f"{type(e).__name__}: {str(e)}"
+            self._last_error_info = f'{type(e).__name__}: {str(e)}'
 
             logger.debug(
                 '%s: %s: retry %s/%s: no response from %s: %s: %s',
