@@ -1,10 +1,14 @@
+import httpx
+import json
 import logging
 import queue
 import threading
 import time
+
+from datetime import datetime
 from typing import Any, Dict, Iterable, List, Optional, Union
 
-import httpx
+
 from rich.console import Console
 from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn
 
@@ -366,9 +370,6 @@ class ServerInterface:
             return
 
         failure_log_path = f'{self.settings.get_dir()}/failed_requests.log'
-
-        import json
-        from datetime import datetime
 
         log_entry = {
             'timestamp': datetime.utcnow().isoformat() + 'Z',
