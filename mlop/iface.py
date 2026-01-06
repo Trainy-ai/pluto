@@ -97,6 +97,9 @@ class ServerInterface:
         self._lock_progress = threading.Lock()
         self._total = 0
 
+        self._last_error_info = ""  # Track last error for failure logging
+        self._lock_failure_log = threading.Lock()  # Thread-safe file writes
+
     def start(self) -> None:
         logger.info(f'{tag}: find live updates at {print_url(self.settings.url_view)}')
         if self._thread_num is None:
@@ -348,6 +351,42 @@ class ServerInterface:
             except queue.Empty:
                 break
 
+    def _log_failed_request(
+        self,
+        request_type: str,
+        url: str,
+        payload_info: str,
+        error_info: str,
+        retry_count: int,
+    ) -> None:
+        """Log failed requests to file after all retries exhausted."""
+
+        # Only log failures in DEBUG mode
+        if self.settings.x_log_level > logging.DEBUG:
+            return
+
+        failure_log_path = f'{self.settings.get_dir()}/failed_requests.log'
+
+        import json
+        from datetime import datetime
+
+        log_entry = {
+            'timestamp': datetime.utcnow().isoformat() + 'Z',
+            'request_type': request_type,
+            'url': url,
+            'payload_info': payload_info,
+            'error_info': error_info,
+            'retries_attempted': retry_count,
+        }
+
+        try:
+            with self._lock_failure_log:
+                with open(failure_log_path, 'a') as f:
+                    json.dump(log_entry, f)
+                    f.write('\n')
+        except Exception as e:
+            logger.debug(f'{tag}: failed to write failure log: {e}')
+
     def _try(
         self,
         method,
@@ -360,12 +399,27 @@ class ServerInterface:
     ):
         if retry >= self.settings.x_file_stream_retry_max:
             logger.critical(f'{tag}: {name}: failed after {retry} retries')
+
+            # Log failure details to file
+            payload_info = f"{len(drained)} items" if drained else "single request"
+            self._log_failed_request(
+                request_type=name or 'unknown',
+                url=url,
+                payload_info=payload_info,
+                error_info=self._last_error_info,
+                retry_count=retry,
+            )
+
             return None
 
         try:
             r = method(url, content=content, headers=headers)
             if r.status_code in [200, 201]:
                 return r
+
+            # Store error info for potential failure logging
+            self._last_error_info = f"HTTP {r.status_code}: {r.text[:100]}"
+
             max_retry = self.settings.x_file_stream_retry_max
             status_code = r.status_code if r else 'N/A'
             target = len(drained) if drained else 'request'
@@ -382,6 +436,9 @@ class ServerInterface:
                 response,
             )
         except Exception as e:
+            # Store error info for potential failure logging
+            self._last_error_info = f"{type(e).__name__}: {str(e)}"
+
             logger.debug(
                 '%s: %s: retry %s/%s: no response from %s: %s: %s',
                 tag,

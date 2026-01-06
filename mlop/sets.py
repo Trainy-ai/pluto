@@ -156,6 +156,27 @@ def setup(settings: Union[Settings, Dict[str, Any], None] = None) -> Settings:
         return settings
 
     new_settings = Settings()
+
+    # Read MLOP_DEBUG_LEVEL environment variable
+    env_log_level = os.getenv('MLOP_DEBUG_LEVEL')
+    if env_log_level is not None:
+        level_map = {
+            'DEBUG': 10,
+            'INFO': 20,
+            'WARNING': 30,
+            'ERROR': 40,
+            'CRITICAL': 50,
+        }
+        if env_log_level.upper() in level_map:
+            new_settings.x_log_level = level_map[env_log_level.upper()]
+        elif env_log_level.isdigit():
+            new_settings.x_log_level = int(env_log_level)
+        else:
+            logger.warning(
+                f'{tag}: invalid MLOP_DEBUG_LEVEL "{env_log_level}", using default. '
+                f'Valid values: DEBUG, INFO, WARNING, ERROR, CRITICAL'
+            )
+
     if isinstance(settings, dict):
         new_settings.update(settings)
     else:
