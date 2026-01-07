@@ -96,9 +96,19 @@ run.close()       ──→     NeptuneRunWrapper.close()       ──→     Ne
 
 ### Prerequisites
 
-- Python 3.10+
-- Existing Neptune installation (`neptune-scale`)
-- mlop package
+- **Python**: 3.10, 3.11, or 3.12
+- **Neptune Scale**: `>= 0.30.0` (tested with `0.30.0`)
+- **mlop package**: Latest version (`pip install trainy-mlop`)
+
+**Compatibility Matrix**:
+
+| Component | Version | Status |
+|-----------|---------|--------|
+| Python | 3.10 | ✅ Tested in CI |
+| Python | 3.11 | ✅ Tested in CI |
+| Python | 3.12 | ✅ Tested in CI |
+| neptune-scale | 0.30.0 | ✅ Tested in CI |
+| mlop | Latest | ✅ Compatible |
 
 ### Install mlop
 
@@ -190,13 +200,41 @@ with Run(experiment_name="context-test") as run:
 
 ### Environment Variables
 
-| Variable | Required | Default | Description |
-|----------|----------|---------|-------------|
-| `MLOP_PROJECT` | **Yes** | None | mlop project name (e.g., `"my-team-project"`) |
-| `MLOP_API_KEY` | No | Uses keyring | API key for mlop authentication |
-| `MLOP_URL_APP` | No | `trakkur.trainy.ai` | Custom mlop app URL |
-| `MLOP_URL_API` | No | `trakkur-api.trainy.ai` | Custom mlop API URL |
-| `MLOP_URL_INGEST` | No | `trakkur-ingest.trainy.ai` | Custom mlop ingest URL |
+| Variable | Required | Default | Description | Code Location |
+|----------|----------|---------|-------------|---------------|
+| `MLOP_PROJECT` | **Yes** | None | mlop project name (e.g., `"my-team-project"`). **Required for dual-logging**. Passed to `mlop.init(project=...)`. | `neptune.py:49` |
+| `MLOP_API_KEY` | No | Keyring | API key for mlop authentication. Falls back to keyring if not set. Passed as `settings['_auth']` to mlop. | `neptune.py:56` |
+| `MLOP_URL_APP` | No | `trakkur.trainy.ai` | Custom mlop app URL for self-hosted instances. Passed as `settings['url_app']`. | `neptune.py:60` |
+| `MLOP_URL_API` | No | `trakkur-api.trainy.ai` | Custom mlop API URL for self-hosted instances. Passed as `settings['url_api']`. | `neptune.py:62` |
+| `MLOP_URL_INGEST` | No | `trakkur-ingest.trainy.ai` | Custom mlop ingest URL for self-hosted instances. Passed as `settings['url_ingest']`. | `neptune.py:64` |
+| `DISABLE_NEPTUNE_LOGGING` | No | `false` | **Post-sunset kill switch**. Set to `true`, `1`, or `yes` to disable all Neptune API calls. Only logs to mlop. | `neptune.py:198` |
+
+#### How Environment Variables Work
+
+**MLOP_PROJECT** (Required):
+- Read at `mlop/compat/neptune.py:49`
+- If not set: Logs INFO message, dual-logging disabled, Neptune-only mode
+- If set: Passed to `mlop.init(project=...)` to create mlop run
+- **This is the master switch for dual-logging**
+
+**MLOP_API_KEY** (Optional):
+- Read at `mlop/compat/neptune.py:56`
+- If not set: Falls back to keyring (from `mlop login <token>`)
+- If set: Passed as `settings['_auth']` to mlop
+- Used in HTTP headers: `Authorization: Bearer {MLOP_API_KEY}`
+- **Verified**: Works correctly (see `mlop/auth.py:26`, `mlop/iface.py:39`)
+
+**MLOP_URL_* Variables** (Optional):
+- All three URLs are read and passed to mlop settings
+- Used for self-hosted mlop instances
+- Default to production Trakkur URLs if not set
+- **Verified**: All three work correctly (see `mlop/sets.py`)
+
+**DISABLE_NEPTUNE_LOGGING** (Optional):
+- Read at `mlop/compat/neptune.py:198-200`
+- Accepts: `"true"`, `"1"`, `"yes"` (case-insensitive)
+- When enabled: All Neptune API calls become no-ops
+- **Use case**: Post-Neptune-sunset to avoid errors from dead Neptune API
 
 ### Configuration Methods
 
