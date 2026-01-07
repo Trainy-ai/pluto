@@ -147,8 +147,8 @@ jobs:
           # Check that documentation exists and has required sections
           test -f examples/neptune_migration_README.md
           grep -q "Quick Start" examples/neptune_migration_README.md
-          grep -q "Configuration Options" examples/neptune_migration_README.md
-          grep -q "Supported Neptune Features" examples/neptune_migration_README.md
+          grep -q "Example Files" examples/neptune_migration_README.md
+          grep -q "What Gets Logged to Both Systems" examples/neptune_migration_README.md
           echo "✓ Migration documentation is complete"
 
   # This job serves as a status check gate
