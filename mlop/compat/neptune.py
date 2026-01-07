@@ -194,16 +194,33 @@ class NeptuneRunWrapper:
         Neptune args/kwargs are passed through unchanged.
         mlop is configured via environment variables.
         """
-        # Use the saved original Run class (not the wrapper!)
-        global _original_neptune_run
-        try:
-            if _original_neptune_run is None:
-                raise RuntimeError('Neptune monkeypatch not applied correctly')
-            self._neptune_run = _original_neptune_run(*args, **kwargs)
-        except Exception as e:
-            # If Neptune itself fails, we can't do anything
-            logger.error(f'mlop.compat.neptune: Failed to initialize Neptune Run: {e}')
-            raise
+        # Check if Neptune logging is disabled
+        self._neptune_disabled = os.environ.get(
+            'DISABLE_NEPTUNE_LOGGING', ''
+        ).lower() in ('true', '1', 'yes')
+
+        if self._neptune_disabled:
+            logger.info(
+                'mlop.compat.neptune: DISABLE_NEPTUNE_LOGGING=true, '
+                'skipping Neptune initialization. Only mlop logging will occur.'
+            )
+            self._neptune_run = None
+            # Store args/kwargs for compatibility (e.g., get_run_url)
+            self._neptune_args = args
+            self._neptune_kwargs = kwargs
+        else:
+            # Use the saved original Run class (not the wrapper!)
+            global _original_neptune_run
+            try:
+                if _original_neptune_run is None:
+                    raise RuntimeError('Neptune monkeypatch not applied correctly')
+                self._neptune_run = _original_neptune_run(*args, **kwargs)
+            except Exception as e:
+                # If Neptune itself fails, we can't do anything
+                logger.error(
+                    f'mlop.compat.neptune: Failed to initialize Neptune Run: {e}'
+                )
+                raise
 
         # Try to initialize mlop (silent failure)
         self._mlop_run = None
@@ -271,10 +288,12 @@ class NeptuneRunWrapper:
         Neptune's explicit step is mapped to mlop's auto-incrementing step
         by calling log() multiple times if needed.
         """
-        # Always call Neptune first
-        result = self._neptune_run.log_metrics(
-            data=data, step=step, timestamp=timestamp, **kwargs
-        )
+        # Call Neptune first (unless disabled)
+        result = None
+        if not self._neptune_disabled:
+            result = self._neptune_run.log_metrics(
+                data=data, step=step, timestamp=timestamp, **kwargs
+            )
 
         # Try to log to mlop
         if self._mlop_run:
@@ -294,8 +313,10 @@ class NeptuneRunWrapper:
 
         In mlop, configs are set during init, so we update the run's config.
         """
-        # Always call Neptune first
-        result = self._neptune_run.log_configs(data=data, **kwargs)
+        # Call Neptune first (unless disabled)
+        result = None
+        if not self._neptune_disabled:
+            result = self._neptune_run.log_configs(data=data, **kwargs)
 
         # Try to log to mlop
         if self._mlop_run:
@@ -321,8 +342,10 @@ class NeptuneRunWrapper:
 
         Converts Neptune File objects to appropriate mlop types.
         """
-        # Always call Neptune first
-        result = self._neptune_run.assign_files(files=files, **kwargs)
+        # Call Neptune first (unless disabled)
+        result = None
+        if not self._neptune_disabled:
+            result = self._neptune_run.assign_files(files=files, **kwargs)
 
         # Try to log to mlop
         if self._mlop_run and self._mlop:
@@ -357,10 +380,12 @@ class NeptuneRunWrapper:
         """
         Log files as a series to both Neptune and mlop.
         """
-        # Always call Neptune first
-        result = self._neptune_run.log_files(
-            files=files, step=step, timestamp=timestamp, **kwargs
-        )
+        # Call Neptune first (unless disabled)
+        result = None
+        if not self._neptune_disabled:
+            result = self._neptune_run.log_files(
+                files=files, step=step, timestamp=timestamp, **kwargs
+            )
 
         # Try to log to mlop
         if self._mlop_run and self._mlop:
@@ -397,10 +422,12 @@ class NeptuneRunWrapper:
         """
         Log histograms to both Neptune and mlop.
         """
-        # Always call Neptune first
-        result = self._neptune_run.log_histograms(
-            histograms=histograms, step=step, timestamp=timestamp, **kwargs
-        )
+        # Call Neptune first (unless disabled)
+        result = None
+        if not self._neptune_disabled:
+            result = self._neptune_run.log_histograms(
+                histograms=histograms, step=step, timestamp=timestamp, **kwargs
+            )
 
         # Try to log to mlop
         if self._mlop_run and self._mlop:
@@ -433,8 +460,10 @@ class NeptuneRunWrapper:
 
         mlop doesn't have direct tag support, so we log them as metadata.
         """
-        # Always call Neptune first
-        result = self._neptune_run.add_tags(tags=tags, **kwargs)
+        # Call Neptune first (unless disabled)
+        result = None
+        if not self._neptune_disabled:
+            result = self._neptune_run.add_tags(tags=tags, **kwargs)
 
         # Try to log to mlop as metadata
         if self._mlop_run:
@@ -456,7 +485,9 @@ class NeptuneRunWrapper:
 
     def remove_tags(self, tags: List[str], **kwargs):
         """Remove tags from Neptune run."""
-        result = self._neptune_run.remove_tags(tags=tags, **kwargs)
+        result = None
+        if not self._neptune_disabled:
+            result = self._neptune_run.remove_tags(tags=tags, **kwargs)
 
         if self._mlop_run:
             try:
@@ -485,8 +516,10 @@ class NeptuneRunWrapper:
             except Exception as e:
                 logger.warning(f'mlop.compat.neptune: Failed to close mlop run: {e}')
 
-        # Always close Neptune
-        return self._neptune_run.close(**kwargs)
+        # Close Neptune (unless disabled)
+        if not self._neptune_disabled:
+            return self._neptune_run.close(**kwargs)
+        return None
 
     def terminate(self, **kwargs):
         """Terminate both runs immediately."""
@@ -496,37 +529,51 @@ class NeptuneRunWrapper:
             except Exception as e:
                 logger.debug(f'mlop.compat.neptune: Failed to terminate mlop run: {e}')
 
-        return self._neptune_run.terminate(**kwargs)
+        if not self._neptune_disabled:
+            return self._neptune_run.terminate(**kwargs)
+        return None
 
     def wait_for_submission(self, **kwargs):
         """Wait for Neptune submission (mlop not applicable)."""
-        return self._neptune_run.wait_for_submission(**kwargs)
+        if not self._neptune_disabled:
+            return self._neptune_run.wait_for_submission(**kwargs)
+        return None
 
     def wait_for_processing(self, **kwargs):
         """Wait for Neptune processing (mlop not applicable)."""
-        return self._neptune_run.wait_for_processing(**kwargs)
+        if not self._neptune_disabled:
+            return self._neptune_run.wait_for_processing(**kwargs)
+        return None
 
     def get_run_url(self):
         """Get Neptune run URL."""
-        return self._neptune_run.get_run_url()
+        if not self._neptune_disabled:
+            return self._neptune_run.get_run_url()
+        # Return placeholder when Neptune is disabled
+        return "neptune://disabled"
 
     def get_experiment_url(self):
         """Get Neptune experiment URL."""
-        return self._neptune_run.get_experiment_url()
+        if not self._neptune_disabled:
+            return self._neptune_run.get_experiment_url()
+        # Return placeholder when Neptune is disabled
+        return "neptune://disabled"
 
     def log_string_series(
         self, data: Dict[str, str], step: int, timestamp=None, **kwargs
     ):
         """Log string series to Neptune (mlop doesn't support this directly)."""
-        result = self._neptune_run.log_string_series(
-            data=data, step=step, timestamp=timestamp, **kwargs
-        )
+        result = None
+        if not self._neptune_disabled:
+            result = self._neptune_run.log_string_series(
+                data=data, step=step, timestamp=timestamp, **kwargs
+            )
 
-        # mlop doesn't have string series support, skip silently
-        logger.debug(
-            'mlop.compat.neptune: String series not supported in mlop, '
-            'logged to Neptune only'
-        )
+            # mlop doesn't have string series support, skip silently
+            logger.debug(
+                'mlop.compat.neptune: String series not supported in mlop, '
+                'logged to Neptune only'
+            )
 
         return result
 

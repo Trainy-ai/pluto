@@ -73,6 +73,17 @@ The script includes several example functions:
 | `add_tags()` | `mlop.log()` (as metadata) | ✅ Supported |
 | `assign_files()` | `mlop.Image` | ✅ Supported |
 
+## Post-Sunset: Disabling Neptune
+
+After Neptune's sunset, you can disable Neptune API calls while keeping mlop logging active:
+
+```bash
+export DISABLE_NEPTUNE_LOGGING=true
+python examples/neptune_migration_example.py  # Only logs to mlop
+```
+
+This prevents errors from failed Neptune requests. See the [main guide](../NEPTUNE_MIGRATION.md#disabling-neptune-post-sunset) for details.
+
 ## Troubleshooting
 
 For detailed troubleshooting, migration strategies, and advanced usage, see the [main migration guide](../NEPTUNE_MIGRATION.md).

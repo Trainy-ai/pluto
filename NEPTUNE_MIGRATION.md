@@ -228,6 +228,51 @@ python train.py  # Uses stored credentials
 python train.py  # Works with Neptune only, no dual-logging
 ```
 
+## Disabling Neptune (Post-Sunset)
+
+After Neptune's sunset, you can disable all Neptune API calls while keeping mlop logging active. This prevents errors from failed Neptune requests.
+
+### Usage
+
+Set the `DISABLE_NEPTUNE_LOGGING` environment variable:
+
+```bash
+export DISABLE_NEPTUNE_LOGGING=true  # or "1" or "yes"
+```
+
+### What Happens
+
+- ✅ **mlop logging continues normally** - All metrics, configs, and files go to mlop
+- ✅ **Neptune calls are no-ops** - No API requests to Neptune servers
+- ✅ **No code changes needed** - Your existing Neptune code still works
+- ✅ **No errors** - Silent fallback, one INFO log at startup
+
+### Example
+
+```python
+import mlop.compat.neptune
+from neptune_scale import Run
+
+# With DISABLE_NEPTUNE_LOGGING=true, this only logs to mlop
+run = Run(experiment_name='post-sunset-training')
+run.log_metrics({'loss': 0.5}, step=0)  # → mlop only
+run.close()
+```
+
+### When to Use
+
+| Scenario | Recommendation |
+|----------|---------------|
+| **Neptune sunset completed** | Set `DISABLE_NEPTUNE_LOGGING=true` |
+| **During migration** | Keep it disabled (dual-logging) |
+| **Testing mlop-only mode** | Temporarily enable to test post-sunset behavior |
+
+### Notes
+
+- Methods like `get_run_url()` return placeholder values when Neptune is disabled
+- This is a kill switch for the transition period after Neptune sunset
+- Eventually, you should migrate to the mlop API directly
+
 ## Supported Features
 
 ### Full Compatibility Matrix

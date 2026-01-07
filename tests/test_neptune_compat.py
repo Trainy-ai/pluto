@@ -589,6 +589,44 @@ class TestNeptuneCompatFallbackBehavior:
             # Neptune should work fine
             assert run._neptune_run.closed
 
+    def test_disable_neptune_logging(self, mock_neptune_backend, clean_env):
+        """
+        Test DISABLE_NEPTUNE_LOGGING environment variable.
+
+        When set, Neptune calls should be skipped entirely.
+        """
+        os.environ['DISABLE_NEPTUNE_LOGGING'] = 'true'
+        os.environ['MLOP_PROJECT'] = 'test-project'
+
+        # Mock mlop so we can verify it was called
+        with mock.patch('mlop.init') as mock_mlop_init, mock.patch('mlop.log'):
+            # Create mock mlop run
+            mock_run = mock.MagicMock()
+            mock_mlop_init.return_value = mock_run
+
+            from neptune_scale import Run
+
+            run = Run(experiment_name='neptune-disabled-test')
+
+            # Verify Neptune was NOT initialized
+            assert run._neptune_run is None
+            assert run._neptune_disabled is True
+
+            # Log some metrics
+            run.log_metrics({'loss': 0.5}, step=0)
+            run.log_configs({'lr': 0.001})
+            run.add_tags(['test', 'disabled'])
+
+            # Verify mlop was called (dual-logging to mlop only)
+            assert run._mlop_run is not None
+
+            # Close should work without errors
+            run.close()
+
+            # get_run_url should return placeholder
+            url = run.get_run_url()
+            assert url == 'neptune://disabled'
+
 
 class TestNeptuneCompatAPIForwarding:
     """Test that unknown Neptune API methods are forwarded correctly."""
