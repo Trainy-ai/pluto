@@ -228,57 +228,6 @@ python train.py  # Uses stored credentials
 python train.py  # Works with Neptune only, no dual-logging
 ```
 
-### Docker Example
-
-```dockerfile
-FROM python:3.10
-
-RUN pip install neptune-scale trainy-mlop
-
-COPY train.py /app/train.py
-WORKDIR /app
-
-# Set mlop config
-ENV MLOP_PROJECT="docker-project"
-ENV MLOP_API_KEY="your-key"
-
-CMD ["python", "train.py"]
-```
-
-### Kubernetes ConfigMap Example
-
-```yaml
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: mlop-config
-data:
-  MLOP_PROJECT: "k8s-training-project"
-
----
-apiVersion: v1
-kind: Secret
-metadata:
-  name: mlop-secret
-type: Opaque
-stringData:
-  MLOP_API_KEY: "mlop_api_xxxxx"
-
----
-# Use in your Pod
-env:
-  - name: MLOP_PROJECT
-    valueFrom:
-      configMapKeyRef:
-        name: mlop-config
-        key: MLOP_PROJECT
-  - name: MLOP_API_KEY
-    valueFrom:
-      secretKeyRef:
-        name: mlop-secret
-        key: MLOP_API_KEY
-```
-
 ## Supported Features
 
 ### Full Compatibility Matrix
