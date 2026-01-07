@@ -490,8 +490,13 @@ python your_training_script.py  # Should still work with Neptune
 # 1. Check MLOP_PROJECT is set
 echo $MLOP_PROJECT
 
-# 2. Check credentials
-mlop auth status
+# 2. Check credentials (MLOP_API_KEY or keyring)
+if [ -n "$MLOP_API_KEY" ]; then
+    echo "✓ MLOP_API_KEY is set"
+else
+    echo "⚠ MLOP_API_KEY not set, checking keyring..."
+    python -c "import keyring; key = keyring.get_password('mlop', 'mlop'); print('✓ Keyring has credentials' if key else '✗ No keyring credentials')"
+fi
 
 # 3. Enable debug logging
 python -c "
