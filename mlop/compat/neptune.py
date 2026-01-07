@@ -419,7 +419,7 @@ class NeptuneRunWrapper:
                         )
 
                 if mlop_histograms:
-                    self._mlop_run.log(mlop_histograms)
+                    self._mlop_run.log(mlop_histograms, step=step)
             except Exception as e:
                 logger.debug(
                     f'mlop.compat.neptune: Failed to log histograms to mlop: {e}'

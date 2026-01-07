@@ -105,9 +105,10 @@ def migrated_dual_logging_script():
     Only difference: added one import line at the top.
     """
     # ADD THIS LINE to enable dual-logging to mlop
-    from neptune_scale import Run
+    # CRITICAL: This import MUST come before Neptune imports for monkeypatch to work
+    import mlop.compat.neptune  # noqa: F401, I001
 
-    import mlop.compat.neptune  # noqa: F401
+    from neptune_scale import Run
 
     # Rest of the code is IDENTICAL to the original
     run = Run(
@@ -211,22 +212,44 @@ def image_logging_example():
     """
     Example showing how image logging works during migration.
     """
+    # CRITICAL: mlop.compat.neptune MUST be imported before Neptune imports
+    import mlop.compat.neptune  # noqa: F401, I001
+
+    import tempfile
+    from pathlib import Path
+
+    import numpy as np
     from neptune_scale import Run
     from neptune_scale.types import File
 
-    import mlop.compat.neptune  # noqa: F401
+    try:
+        from PIL import Image
+    except ImportError:
+        print('PIL not available, skipping image logging example')
+        return
 
     run = Run(experiment_name='image-logging-test')
 
-    # Log an image using Neptune's File API
-    # This will be automatically converted to mlop.Image
-    sample_image = File(source='path/to/image.png', mime_type='image/png')
-    run.assign_files({'samples/image1': sample_image})
+    # Create a temporary directory for dummy images
+    with tempfile.TemporaryDirectory() as tmpdir:
+        # Log an image using Neptune's File API
+        # This will be automatically converted to mlop.Image
+        # Create a dummy image (64x64 RGB)
+        dummy_img = np.random.randint(0, 255, (64, 64, 3), dtype=np.uint8)
+        img_path = Path(tmpdir) / 'sample_image.png'
+        Image.fromarray(dummy_img).save(img_path)
 
-    # Or log a series of images
-    for i in range(5):
-        image_path = f'path/to/image_{i}.png'
-        run.log_files({'training/samples': File(source=image_path)}, step=i)
+        sample_image = File(source=str(img_path), mime_type='image/png')
+        run.assign_files({'samples/image1': sample_image})
+
+        # Or log a series of images
+        for i in range(5):
+            # Create unique dummy images for each step
+            dummy_img = np.random.randint(0, 255, (64, 64, 3), dtype=np.uint8)
+            image_path = Path(tmpdir) / f'image_{i}.png'
+            Image.fromarray(dummy_img).save(image_path)
+
+            run.log_files({'training/samples': File(source=str(image_path))}, step=i)
 
     run.close()
 
@@ -236,11 +259,12 @@ def histogram_logging_example():
     """
     Example showing how histogram logging works during migration.
     """
+    # CRITICAL: mlop.compat.neptune MUST be imported before Neptune imports
+    import mlop.compat.neptune  # noqa: F401, I001
+
     import numpy as np
     from neptune_scale import Run
     from neptune_scale.types import Histogram
-
-    import mlop.compat.neptune  # noqa: F401
 
     run = Run(experiment_name='histogram-test')
 
