@@ -435,12 +435,21 @@ To see mlop errors during development:
 ```python
 import logging
 
-# See all mlop warnings
-logging.basicConfig(level=logging.WARNING)
+# Configure mlop logger to show warnings
+logging.getLogger('mlop').setLevel(logging.WARNING)
 
-# See detailed mlop debug info
+# See detailed debug info from Neptune compatibility layer
 logging.getLogger('mlop.compat.neptune').setLevel(logging.DEBUG)
+
+# Ensure logs are displayed (adds console handler if needed)
+mlop_logger = logging.getLogger('mlop')
+if not mlop_logger.handlers:
+    handler = logging.StreamHandler()
+    handler.setFormatter(logging.Formatter('%(name)s: %(levelname)s - %(message)s'))
+    mlop_logger.addHandler(handler)
 ```
+
+**Note**: If you're using mlop for dual-logging, the logging system is automatically configured when you initialize a run. The above is only needed if you want to see debug messages before initialization or if mlop initialization fails.
 
 ## Testing
 
