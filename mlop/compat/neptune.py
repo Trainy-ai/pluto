@@ -536,14 +536,14 @@ class NeptuneRunWrapper:
         if not self._neptune_disabled:
             return self._neptune_run.get_run_url()
         # Return placeholder when Neptune is disabled
-        return "neptune://disabled"
+        return 'neptune://disabled'
 
     def get_experiment_url(self):
         """Get Neptune experiment URL."""
         if not self._neptune_disabled:
             return self._neptune_run.get_experiment_url()
         # Return placeholder when Neptune is disabled
-        return "neptune://disabled"
+        return 'neptune://disabled'
 
     def log_string_series(
         self, data: Dict[str, str], step: int, timestamp=None, **kwargs
