@@ -158,6 +158,7 @@ def clean_env():
         'MLOP_URL_APP',
         'MLOP_URL_API',
         'MLOP_URL_INGEST',
+        'DISABLE_NEPTUNE_LOGGING',
     ]
     original_values = {}
     for var in env_vars:
