@@ -492,9 +492,13 @@ class TestNeptuneCompatIntegration:
         not os.environ.get('MLOP_PROJECT') or not os.environ.get('CI'),
         reason='Requires MLOP_PROJECT env var and CI environment',
     )
-    def test_real_dual_logging_integration(self, mock_neptune_backend):
+    def test_real_mlop_with_mock_neptune(self, mock_neptune_backend):
         """
-        Integration test with real mlop backend.
+        Integration test with real mlop backend and mocked Neptune.
+
+        Tests that the compat layer correctly forwards data to a real mlop
+        backend while Neptune is mocked. This verifies mlop integration
+        without requiring Neptune credentials.
 
         This test requires:
         - MLOP_PROJECT environment variable
@@ -505,7 +509,7 @@ class TestNeptuneCompatIntegration:
 
         task_name = get_task_name()
 
-        # This should log to both mock Neptune and real mlop
+        # Log to mock Neptune and real mlop
         run = Run(experiment_name=task_name)
 
         # Log various data types
@@ -526,7 +530,7 @@ class TestNeptuneCompatIntegration:
         if run._mlop_run:
             # Verify mlop was initialized successfully
             assert run._mlop_run is not None
-            print('✓ Integration test passed - dual-logged to Neptune and mlop')
+            print('✓ Integration test passed - logged to real mlop with mock Neptune')
         else:
             pytest.skip('mlop not configured, skipping integration validation')
 
