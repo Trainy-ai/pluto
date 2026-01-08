@@ -139,17 +139,17 @@ run.remove_tags(["deprecated", "archived"])
   - Tags stored as `List[str]` on Op instance
   - Duplicate tags automatically prevented
   - Initial tags sent via `POST /api/runs/create` endpoint
-  - Dynamic updates sent via tRPC `runs.updateTags` mutation
+  - Dynamic updates sent via HTTP POST to `/api/runs/tags/update`
 
-- **Server synchronization** (mlop/iface.py, mlop/util.py):
-  - SQID encoding for run IDs (matches backend format)
+- **Server synchronization** (mlop/iface.py, mlop/sets.py):
   - Full tags array sent on each update (not incremental)
   - Graceful error handling (logs debug, doesn't break on failure)
-  - URL: `{url_api}/trpc/runs.updateTags`
+  - URL: `{url_api}/api/runs/tags/update`
 
 - **Backend integration**:
-  - tRPC mutation: `runs.updateTags({ runId, projectName, tags })`
-  - Requires encoded run ID (SQID format)
+  - HTTP POST endpoint: `/api/runs/tags/update`
+  - Payload: `{ "runId": <numeric_id>, "tags": [...] }`
+  - Uses numeric run ID (not SQID-encoded)
   - Replaces entire tags array (idempotent)
   - See: https://github.com/Trainy-ai/server-private/pull/15
 

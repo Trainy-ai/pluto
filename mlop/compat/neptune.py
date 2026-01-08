@@ -297,7 +297,7 @@ class NeptuneRunWrapper:
         # Try to log to mlop with the same step value
         if self._mlop_run:
             try:
-                # Pass Neptune's explicit step to mlop to maintain alignment during dual-logging
+                # Pass Neptune's explicit step to mlop to maintain alignment
                 self._mlop_run.log(data, step=step)
             except Exception as e:
                 logger.debug(f'mlop.compat.neptune: Failed to log metrics to mlop: {e}')
@@ -586,7 +586,8 @@ class NeptuneRunWrapper:
 
     def __enter__(self):
         """Support context manager protocol."""
-        self._neptune_run.__enter__()
+        if not self._neptune_disabled:
+            self._neptune_run.__enter__()
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
@@ -598,6 +599,10 @@ class NeptuneRunWrapper:
                 logger.warning(
                     f'mlop.compat.neptune: Failed to close mlop run on exit: {e}'
                 )
+
+        if self._neptune_disabled:
+            return False
+
         # Wait for processing with verbose=False before exit to prevent
         # logging errors when pytest or other tools capture stdout/stderr
         try:
