@@ -149,7 +149,9 @@ def test_histogram_logging_from_numpy_array():
 
 def test_tags_initialization_with_string():
     """Test initializing a run with a single tag string."""
-    run = mlop.init(project=TESTING_PROJECT_NAME, name=get_task_name(), tags='experiment')
+    run = mlop.init(
+        project=TESTING_PROJECT_NAME, name=get_task_name(), tags='experiment'
+    )
     assert 'experiment' in run.tags
     assert len(run.tags) == 1
     run.finish()
@@ -158,7 +160,9 @@ def test_tags_initialization_with_string():
 def test_tags_initialization_with_list():
     """Test initializing a run with multiple tags."""
     run = mlop.init(
-        project=TESTING_PROJECT_NAME, name=get_task_name(), tags=['production', 'v2', 'baseline']
+        project=TESTING_PROJECT_NAME,
+        name=get_task_name(),
+        tags=['production', 'v2', 'baseline'],
     )
     assert 'production' in run.tags
     assert 'v2' in run.tags
@@ -195,7 +199,9 @@ def test_add_tags_list():
 
 def test_add_tags_duplicate():
     """Test that adding duplicate tags doesn't create duplicates."""
-    run = mlop.init(project=TESTING_PROJECT_NAME, name=get_task_name(), tags=['experiment'])
+    run = mlop.init(
+        project=TESTING_PROJECT_NAME, name=get_task_name(), tags=['experiment']
+    )
     assert len(run.tags) == 1
 
     run.add_tags('experiment')  # Try to add same tag
