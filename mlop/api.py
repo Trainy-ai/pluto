@@ -69,6 +69,15 @@ def make_compat_update_tags_v1(settings, tags):
     ).encode()
 
 
+def make_compat_update_config_v1(settings, config):
+    return json.dumps(
+        {
+            'runId': settings._op_id,
+            'config': json.dumps(config) if config else None,
+        }
+    ).encode()
+
+
 def make_compat_meta_v1(meta, dtype, settings):
     return json.dumps(
         {

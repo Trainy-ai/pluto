@@ -329,6 +329,28 @@ class TestNeptuneCompatDualLogging:
             assert mock_mlop_run.config['lr'] == 0.001
             assert mock_mlop_run.config['epochs'] == 100
 
+    def test_dual_logging_configs_calls_server_sync(
+        self, mock_neptune_backend, mlop_config_env
+    ):
+        """Test that log_configs calls _iface._update_config to sync to server."""
+        mock_iface = mock.MagicMock()
+        mock_mlop_run = mock.MagicMock()
+        mock_mlop_run.config = {}
+        mock_mlop_run._iface = mock_iface
+        mock_mlop_run.finish = mock.MagicMock()
+
+        with mock.patch('mlop.init', return_value=mock_mlop_run):
+            from neptune_scale import Run
+
+            run = Run(experiment_name='config-sync-test')
+            run.log_configs({'lr': 0.001, 'model': 'resnet50'})
+            run.close()
+
+            # Verify _update_config was called on the interface
+            mock_iface._update_config.assert_called_once_with(
+                {'lr': 0.001, 'model': 'resnet50'}
+            )
+
 
 class TestNeptuneCompatErrorHandling:
     """Test that Neptune never fails due to mlop errors."""

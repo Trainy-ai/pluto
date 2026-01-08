@@ -284,6 +284,32 @@ class Op:
             except Exception as e:
                 logger.debug(f'{tag}: failed to sync tags to server: {e}')
 
+    def update_config(self, config: Dict[str, Any]) -> None:
+        """
+        Update config on the current run.
+
+        Config updates are merged with existing config (new keys override existing).
+
+        Args:
+            config: Dictionary of config key-value pairs to add/update
+
+        Example:
+            run.update_config({'epochs': 100})
+            run.update_config({'lr': 0.01, 'model': 'resnet50'})
+        """
+        if self.config is None:
+            self.config = {}
+        self.config.update(config)
+
+        logger.debug(f'{tag}: updated config: {config}')
+
+        # Sync config to server
+        if self._iface:
+            try:
+                self._iface._update_config(config)
+            except Exception as e:
+                logger.debug(f'{tag}: failed to sync config to server: {e}')
+
     def alert(
         self,
         message=None,

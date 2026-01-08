@@ -260,3 +260,61 @@ def test_remove_tags_nonexistent():
     assert len(run.tags) == 0  # Only 'exp' should be removed
 
     run.finish()
+
+
+def test_update_config_basic():
+    """Test updating config after run initialization."""
+    run = mlop.init(
+        project=TESTING_PROJECT_NAME, name=get_task_name(), config={'lr': 0.001}
+    )
+    assert run.config['lr'] == 0.001
+
+    run.update_config({'epochs': 100, 'model': 'resnet50'})
+    assert run.config['lr'] == 0.001  # Original preserved
+    assert run.config['epochs'] == 100
+    assert run.config['model'] == 'resnet50'
+
+    run.finish()
+
+
+def test_update_config_override():
+    """Test that update_config overrides existing keys."""
+    run = mlop.init(
+        project=TESTING_PROJECT_NAME,
+        name=get_task_name(),
+        config={'lr': 0.001, 'batch_size': 32},
+    )
+    assert run.config['lr'] == 0.001
+
+    run.update_config({'lr': 0.01})  # Override lr
+    assert run.config['lr'] == 0.01
+    assert run.config['batch_size'] == 32  # Unchanged
+
+    run.finish()
+
+
+def test_update_config_on_empty():
+    """Test update_config when initial config is empty."""
+    run = mlop.init(project=TESTING_PROJECT_NAME, name=get_task_name(), config={})
+    assert run.config == {}
+
+    run.update_config({'model': 'gpt-4', 'temperature': 0.7})
+    assert run.config['model'] == 'gpt-4'
+    assert run.config['temperature'] == 0.7
+
+    run.finish()
+
+
+def test_update_config_multiple_calls():
+    """Test multiple update_config calls accumulate correctly."""
+    run = mlop.init(project=TESTING_PROJECT_NAME, name=get_task_name(), config={})
+
+    run.update_config({'lr': 0.001})
+    run.update_config({'epochs': 100})
+    run.update_config({'model': 'resnet50', 'lr': 0.01})  # Override lr
+
+    assert run.config['lr'] == 0.01
+    assert run.config['epochs'] == 100
+    assert run.config['model'] == 'resnet50'
+
+    run.finish()

@@ -17,6 +17,7 @@ from .api import (
     make_compat_num_v1,
     make_compat_status_v1,
     make_compat_storage_v1,
+    make_compat_update_config_v1,
     make_compat_update_tags_v1,
 )
 from .log import _stderr
@@ -231,6 +232,15 @@ class ServerInterface:
             self.settings.url_update_tags,
             self.headers,
             make_compat_update_tags_v1(self.settings, tags),
+            client=self.client_api,
+        )
+
+    def _update_config(self, config: Dict[str, Any]):
+        """Update config on the server via HTTP API."""
+        self._post_v1(
+            self.settings.url_update_config,
+            self.headers,
+            make_compat_update_config_v1(self.settings, config),
             client=self.client_api,
         )
 

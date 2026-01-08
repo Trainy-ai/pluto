@@ -308,7 +308,7 @@ class NeptuneRunWrapper:
         """
         Log configuration/hyperparameters to both Neptune and mlop.
 
-        In mlop, configs are set during init, so we update the run's config.
+        Config updates are synced to the mlop server via the config update endpoint.
         """
         # Call Neptune first (unless disabled)
         result = None
@@ -318,16 +318,14 @@ class NeptuneRunWrapper:
         # Try to log to mlop
         if self._mlop_run:
             try:
-                # Update mlop's config
+                # Update mlop's config locally
                 if hasattr(self._mlop_run, 'config'):
+                    if self._mlop_run.config is None:
+                        self._mlop_run.config = {}
                     self._mlop_run.config.update(data)
-                # Also log as a special metric for visibility
-                # Flatten nested dicts for logging
-                flattened = self._flatten_dict(data)
-                # Log each config as a constant metric (step 0)
-                for key, value in flattened.items():
-                    if isinstance(value, (int, float, bool)):
-                        self._mlop_run.log({f'config/{key}': float(value)})
+                # Sync to server
+                if hasattr(self._mlop_run, '_iface') and self._mlop_run._iface:
+                    self._mlop_run._iface._update_config(data)
             except Exception as e:
                 logger.debug(f'mlop.compat.neptune: Failed to log configs to mlop: {e}')
 
