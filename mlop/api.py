@@ -33,7 +33,7 @@ def make_compat_trigger_v1(settings):
     ).encode()
 
 
-def make_compat_start_v1(config, settings, info):
+def make_compat_start_v1(config, settings, info, tags=None):
     return json.dumps(
         {
             # "runId": settings._op_id,
@@ -42,6 +42,7 @@ def make_compat_start_v1(config, settings, info):
             'config': json.dumps(config) if config is not None else None,
             'loggerSettings': json.dumps(clean_dict(settings.to_dict())),
             'systemMetadata': json.dumps(info) if info is not None else None,
+            'tags': tags if tags else None,
             'createdAt': settings.compat.get('createdAt'),
             'updatedAt': settings.compat.get('updatedAt'),
         }
@@ -55,6 +56,24 @@ def make_compat_status_v1(settings, trace=None):
             'status': STATUS[settings._op_status],
             # "metadata": json.dumps(settings.meta),
             'statusMetadata': json.dumps(trace) if trace is not None else None,
+        }
+    ).encode()
+
+
+def make_compat_update_tags_v1(settings, tags):
+    return json.dumps(
+        {
+            'runId': settings._op_id,
+            'tags': tags,
+        }
+    ).encode()
+
+
+def make_compat_update_config_v1(settings, config):
+    return json.dumps(
+        {
+            'runId': settings._op_id,
+            'config': json.dumps(config) if config else None,
         }
     ).encode()
 

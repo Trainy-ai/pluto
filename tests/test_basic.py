@@ -145,3 +145,176 @@ def test_histogram_logging_from_numpy_array():
     run.log({'metrics/histogram': histogram})
     assert histogram.to_dict()['shape'] == 'uniform'
     run.finish()
+
+
+def test_tags_initialization_with_string():
+    """Test initializing a run with a single tag string."""
+    run = mlop.init(
+        project=TESTING_PROJECT_NAME, name=get_task_name(), tags='experiment'
+    )
+    assert 'experiment' in run.tags
+    assert len(run.tags) == 1
+    run.finish()
+
+
+def test_tags_initialization_with_list():
+    """Test initializing a run with multiple tags."""
+    run = mlop.init(
+        project=TESTING_PROJECT_NAME,
+        name=get_task_name(),
+        tags=['production', 'v2', 'baseline'],
+    )
+    assert 'production' in run.tags
+    assert 'v2' in run.tags
+    assert 'baseline' in run.tags
+    assert len(run.tags) == 3
+    run.finish()
+
+
+def test_add_tags_single_string():
+    """Test adding a single tag as a string."""
+    run = mlop.init(project=TESTING_PROJECT_NAME, name=get_task_name())
+    assert len(run.tags) == 0
+
+    run.add_tags('experiment')
+    assert 'experiment' in run.tags
+    assert len(run.tags) == 1
+
+    run.finish()
+
+
+def test_add_tags_list():
+    """Test adding multiple tags as a list."""
+    run = mlop.init(project=TESTING_PROJECT_NAME, name=get_task_name(), tags='initial')
+    assert len(run.tags) == 1
+
+    run.add_tags(['production', 'v2'])
+    assert 'initial' in run.tags
+    assert 'production' in run.tags
+    assert 'v2' in run.tags
+    assert len(run.tags) == 3
+
+    run.finish()
+
+
+def test_add_tags_duplicate():
+    """Test that adding duplicate tags doesn't create duplicates."""
+    run = mlop.init(
+        project=TESTING_PROJECT_NAME, name=get_task_name(), tags=['experiment']
+    )
+    assert len(run.tags) == 1
+
+    run.add_tags('experiment')  # Try to add same tag
+    assert len(run.tags) == 1  # Should still be 1
+
+    run.add_tags(['experiment', 'new-tag'])
+    assert len(run.tags) == 2  # Should add only 'new-tag'
+    assert 'experiment' in run.tags
+    assert 'new-tag' in run.tags
+
+    run.finish()
+
+
+def test_remove_tags_single_string():
+    """Test removing a single tag."""
+    run = mlop.init(
+        project=TESTING_PROJECT_NAME, name=get_task_name(), tags=['exp', 'prod', 'v1']
+    )
+    assert len(run.tags) == 3
+
+    run.remove_tags('exp')
+    assert 'exp' not in run.tags
+    assert len(run.tags) == 2
+
+    run.finish()
+
+
+def test_remove_tags_list():
+    """Test removing multiple tags."""
+    run = mlop.init(
+        project=TESTING_PROJECT_NAME,
+        name=get_task_name(),
+        tags=['exp', 'prod', 'v1', 'baseline'],
+    )
+    assert len(run.tags) == 4
+
+    run.remove_tags(['exp', 'v1'])
+    assert 'exp' not in run.tags
+    assert 'v1' not in run.tags
+    assert 'prod' in run.tags
+    assert 'baseline' in run.tags
+    assert len(run.tags) == 2
+
+    run.finish()
+
+
+def test_remove_tags_nonexistent():
+    """Test that removing nonexistent tags doesn't cause errors."""
+    run = mlop.init(project=TESTING_PROJECT_NAME, name=get_task_name(), tags=['exp'])
+    assert len(run.tags) == 1
+
+    run.remove_tags('nonexistent')  # Should not raise error
+    assert len(run.tags) == 1
+
+    run.remove_tags(['exp', 'also-nonexistent'])
+    assert len(run.tags) == 0  # Only 'exp' should be removed
+
+    run.finish()
+
+
+def test_update_config_basic():
+    """Test updating config after run initialization."""
+    run = mlop.init(
+        project=TESTING_PROJECT_NAME, name=get_task_name(), config={'lr': 0.001}
+    )
+    assert run.config['lr'] == 0.001
+
+    run.update_config({'epochs': 100, 'model': 'resnet50'})
+    assert run.config['lr'] == 0.001  # Original preserved
+    assert run.config['epochs'] == 100
+    assert run.config['model'] == 'resnet50'
+
+    run.finish()
+
+
+def test_update_config_override():
+    """Test that update_config overrides existing keys."""
+    run = mlop.init(
+        project=TESTING_PROJECT_NAME,
+        name=get_task_name(),
+        config={'lr': 0.001, 'batch_size': 32},
+    )
+    assert run.config['lr'] == 0.001
+
+    run.update_config({'lr': 0.01})  # Override lr
+    assert run.config['lr'] == 0.01
+    assert run.config['batch_size'] == 32  # Unchanged
+
+    run.finish()
+
+
+def test_update_config_on_empty():
+    """Test update_config when initial config is empty."""
+    run = mlop.init(project=TESTING_PROJECT_NAME, name=get_task_name(), config={})
+    assert run.config == {}
+
+    run.update_config({'model': 'gpt-4', 'temperature': 0.7})
+    assert run.config['model'] == 'gpt-4'
+    assert run.config['temperature'] == 0.7
+
+    run.finish()
+
+
+def test_update_config_multiple_calls():
+    """Test multiple update_config calls accumulate correctly."""
+    run = mlop.init(project=TESTING_PROJECT_NAME, name=get_task_name(), config={})
+
+    run.update_config({'lr': 0.001})
+    run.update_config({'epochs': 100})
+    run.update_config({'model': 'resnet50', 'lr': 0.01})  # Override lr
+
+    assert run.config['lr'] == 0.01
+    assert run.config['epochs'] == 100
+    assert run.config['model'] == 'resnet50'
+
+    run.finish()

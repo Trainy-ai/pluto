@@ -22,6 +22,7 @@ GitPython = ">=3.1"
 httpx = { extras = ["http2"], version = ">=0.24" }
 keyring = ">=24.0"
 keyrings-alt = ">=5.0"
+numpy = "^2.0"
 pillow = ">=10.0"
 psutil = ">=5.9"
 nvidia-ml-py = ">=11.515.0"
@@ -38,13 +39,12 @@ types-requests = "<2.31.0.7"
 types-pyyaml = "^6.0.12.20241230"
 
 # only needed for testing
-numpy = "^2.0"
 torch = "*"
 matplotlib = "^3.10"
-pillow = ">=10.0"
 torchvision = "*"
 imageio = "^2.37.0"
 moviepy = "^1.0.3"
+neptune-scale = ">=0.30.0"  # for testing Neptune compatibility layer (tested with 0.30.0)
 
 
 [tool.poetry.extras]
@@ -53,7 +53,7 @@ full = [
 ]
 
 [tool.poetry.scripts]
-mlop = 'mlop:__main__.main'
+mlop = 'mlop.__main__:main'
 
 [tool.ruff]
 line-length = 88
@@ -61,6 +61,12 @@ line-length = 88
 [tool.ruff.lint]
 # pyflakes, pycodestyle, isort
 select = ["F", "E", "W", "I001"]
+
+[tool.ruff.lint.per-file-ignores]
+# E402: Module level import not at top of file
+# Required in test_neptune_compat.py because logging must be configured
+# before importing neptune_scale to prevent I/O errors
+"tests/test_neptune_compat.py" = ["E402"]
 
 [tool.ruff.format]
 # 5. Use single quotes in `ruff format`.
@@ -73,4 +79,5 @@ ignore_missing_imports = true
 [tool.pytest.ini_options]
 markers = [
     "distributed: tests that require multi-rank torch.distributed setup",
+    "neptune: tests that require real Neptune API credentials",
 ]

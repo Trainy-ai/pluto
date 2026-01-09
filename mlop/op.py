@@ -97,9 +97,10 @@ class OpMonitor:
 
 
 class Op:
-    def __init__(self, config, settings) -> None:
+    def __init__(self, config, settings, tags=None) -> None:
         self.config = config
         self.settings = settings
+        self.tags: List[str] = tags if tags else []  # Use provided tags or empty list
         self._monitor = OpMonitor(op=self)
 
         if self.settings.mode == 'noop':
@@ -115,7 +116,7 @@ class Op:
                 self.settings.url_start,  # create-run
                 tmp_iface.headers,
                 make_compat_start_v1(
-                    self.config, self.settings, self.settings._sys.get_info()
+                    self.config, self.settings, self.settings._sys.get_info(), self.tags
                 ),
                 client=tmp_iface.client_api,
             )
@@ -228,6 +229,86 @@ class Op:
         else:
             logger.error(f'{tag}: unsupported module type {module.__class__.__name__}')
             return None
+
+    def add_tags(self, tags: Union[str, List[str]]) -> None:
+        """
+        Add tags to the current run.
+
+        Args:
+            tags: Single tag string or list of tag strings to add
+
+        Example:
+            run.add_tags('experiment')
+            run.add_tags(['production', 'v2'])
+        """
+        if isinstance(tags, str):
+            tags = [tags]
+
+        for tag_item in tags:
+            if tag_item not in self.tags:
+                self.tags.append(tag_item)
+
+        logger.debug(f'{tag}: added tags: {tags}')
+
+        # Sync full tags array to server
+        if self._iface:
+            try:
+                self._iface._update_tags(self.tags)
+            except Exception as e:
+                logger.debug(f'{tag}: failed to sync tags to server: {e}')
+
+    def remove_tags(self, tags: Union[str, List[str]]) -> None:
+        """
+        Remove tags from the current run.
+
+        Args:
+            tags: Single tag string or list of tag strings to remove
+
+        Example:
+            run.remove_tags('experiment')
+            run.remove_tags(['v1', 'old'])
+        """
+        if isinstance(tags, str):
+            tags = [tags]
+
+        for tag_item in tags:
+            if tag_item in self.tags:
+                self.tags.remove(tag_item)
+
+        logger.debug(f'{tag}: removed tags: {tags}')
+
+        # Sync full tags array to server
+        if self._iface:
+            try:
+                self._iface._update_tags(self.tags)
+            except Exception as e:
+                logger.debug(f'{tag}: failed to sync tags to server: {e}')
+
+    def update_config(self, config: Dict[str, Any]) -> None:
+        """
+        Update config on the current run.
+
+        Config updates are merged with existing config (new keys override existing).
+
+        Args:
+            config: Dictionary of config key-value pairs to add/update
+
+        Example:
+            run.update_config({'epochs': 100})
+            run.update_config({'lr': 0.01, 'model': 'resnet50'})
+        """
+        if self.config is None:
+            self.config = {}
+        self.config.update(config)
+
+        logger.debug(f'{tag}: updated config: {config}')
+
+        # Sync config to server
+        if self._iface:
+            try:
+                self._iface._update_config(config)
+            except Exception as e:
+                logger.debug(f'{tag}: failed to sync config to server: {e}')
 
     def alert(
         self,

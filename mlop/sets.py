@@ -89,6 +89,8 @@ class Settings:
         self.url_stop = f'{self.url_api}/api/runs/status/update'
         self.url_meta = f'{self.url_api}/api/runs/logName/add'
         self.url_graph = f'{self.url_api}/api/runs/modelGraph/create'
+        self.url_update_tags = f'{self.url_api}/api/runs/tags/update'
+        self.url_update_config = f'{self.url_api}/api/runs/config/update'
         self.url_num = f'{self.url_ingest}/ingest/metrics'
         self.url_data = f'{self.url_ingest}/ingest/data'
         self.url_file = f'{self.url_ingest}/files'
