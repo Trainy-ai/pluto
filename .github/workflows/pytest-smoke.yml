@@ -34,7 +34,7 @@ jobs:
           set -euox pipefail
           poetry install --with dev --extras full
           pip install -e ".[dev,full]"
-          pluto login ${{ secrets.PLUTO_API_TOKEN }}
+          pluto login ${{ secrets.MLOP_API_TOKEN }}
 
       - name: Run pytest smoke tests
         run: |
@@ -61,12 +61,12 @@ jobs:
 
       - name: Install deps and login
         env:
-          PLUTO_API_TOKEN: ${{ secrets.PLUTO_API_TOKEN }}
+          MLOP_API_TOKEN: ${{ secrets.MLOP_API_TOKEN }}
         run: |
           set -euox pipefail
           poetry install --with dev --extras full
           pip install -e ".[dev,full]"
-          pluto login "${PLUTO_API_TOKEN}"
+          pluto login "${MLOP_API_TOKEN}"
 
       - name: Run DDP watch tests
         run: |
