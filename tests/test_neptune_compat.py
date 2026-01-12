@@ -548,21 +548,21 @@ class TestNeptuneCompatIntegration:
         assert len(run._neptune_run.tags) == 2
         assert run._neptune_run.closed
 
-        # mlop run should also be finished
-        if run._mlop_run:
-            # Verify mlop was initialized successfully
-            assert run._mlop_run is not None
-            print('✓ Integration test passed - logged to real mlop with mock Neptune')
+        # pluto run should also be finished
+        if run._pluto_run:
+            # Verify pluto was initialized successfully
+            assert run._pluto_run is not None
+            print('✓ Integration test passed - logged to real pluto with mock Neptune')
         else:
-            pytest.skip('mlop not configured, skipping integration validation')
+            pytest.skip('pluto not configured, skipping integration validation')
 
 
 class TestNeptuneCompatFallbackBehavior:
     """Test various fallback scenarios."""
 
-    def test_no_mlop_project_env_var(self, mock_neptune_backend, clean_env):
+    def test_no_pluto_project_env_var(self, mock_neptune_backend, clean_env):
         """
-        Test that monkeypatch works but doesn't init mlop when
+        Test that monkeypatch works but doesn't init pluto when
         PLUTO_PROJECT is not set.
         """
         # No PLUTO_PROJECT set
@@ -572,8 +572,8 @@ class TestNeptuneCompatFallbackBehavior:
         run.log_metrics({'loss': 0.5}, step=0)
         run.close()
 
-        # Should have no mlop run
-        assert run._mlop_run is None
+        # Should have no pluto run
+        assert run._pluto_run is None
 
         # Neptune should work fine
         assert run._neptune_run.closed
@@ -594,8 +594,8 @@ class TestNeptuneCompatFallbackBehavior:
             run.log_metrics({'loss': 0.5}, step=0)
             run.close()
 
-            # mlop should have failed silently
-            assert run._mlop_run is None
+            # pluto should have failed silently
+            assert run._pluto_run is None
 
             # Neptune should work fine
             assert run._neptune_run.closed
@@ -628,8 +628,8 @@ class TestNeptuneCompatFallbackBehavior:
             run.log_configs({'lr': 0.001})
             run.add_tags(['test', 'disabled'])
 
-            # Verify mlop was called (dual-logging to mlop only)
-            assert run._mlop_run is not None
+            # Verify pluto was called (dual-logging to pluto only)
+            assert run._pluto_run is not None
 
             # Close should work without errors
             run.close()
@@ -737,8 +737,8 @@ class TestNeptuneRealBackend:
 
         run.add_tags(['real-neptune-test', 'neptune-only'])
 
-        # Should have no mlop run
-        assert run._mlop_run is None
+        # Should have no pluto run
+        assert run._pluto_run is None
 
         # Wait for Neptune to finish all operations before closing
         # Use verbose=False to prevent logging errors when pytest captures stdout
@@ -760,10 +760,10 @@ class TestNeptuneRealBackend:
     )
     def test_real_neptune_with_pluto_dual_logging(self, tmp_path):
         """
-        Full integration test with BOTH real Neptune and real mlop.
+        Full integration test with BOTH real Neptune and real pluto.
 
         This is the ultimate validation that dual-logging works in production.
-        Requires both Neptune and mlop credentials.
+        Requires both Neptune and pluto credentials.
         """
         # Apply monkeypatch BEFORE importing Run
         import pluto.compat.neptune  # noqa: F401, I001
@@ -832,7 +832,7 @@ class TestNeptuneRealBackend:
 
         # Both runs should be active
         assert run._neptune_run is not None
-        assert run._mlop_run is not None
+        assert run._pluto_run is not None
 
         # Wait for Neptune to finish all operations before closing
         # Use verbose=False to prevent logging errors when pytest captures stdout
@@ -847,7 +847,7 @@ class TestNeptuneRealBackend:
 
         print('✓ Full dual-logging test passed!')
         print(f'  Neptune: {neptune_url}')
-        print('  mlop run successfully logged')
+        print('  pluto run successfully logged')
 
     @pytest.mark.skipif(
         not os.environ.get('NEPTUNE_API_TOKEN')
@@ -864,7 +864,7 @@ class TestNeptuneRealBackend:
 
         with Run(experiment_name=task_name) as run:
             run.log_metrics({'test/ctx': 1.0}, step=0)
-            assert run._mlop_run is None  # No mlop configured
+            assert run._pluto_run is None  # No pluto configured
 
         # Neptune should be closed automatically
         url = run.get_run_url()
@@ -895,9 +895,9 @@ class TestNeptuneRealBackend:
         run.log_configs({'test': 'resilience'})
         run.log_metrics({'test/metric1': 1.0}, step=0)
 
-        # Simulate mlop failure by breaking the run object
-        if run._mlop_run:
-            run._mlop_run.log = mock.MagicMock(side_effect=Exception('mlop down'))
+        # Simulate pluto failure by breaking the run object
+        if run._pluto_run:
+            run._pluto_run.log = mock.MagicMock(side_effect=Exception('pluto down'))
 
         # Neptune should still work!
         run.log_metrics({'test/metric2': 2.0}, step=1)
