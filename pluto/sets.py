@@ -230,6 +230,18 @@ def setup(settings: Union[Settings, Dict[str, Any], None] = None) -> Settings:
                     env_value if env_value is not None else default_value
                 )
 
+    # Read PLUTO_API_TOKEN environment variable (with MLOP_API_TOKEN fallback)
+    # Only apply if not already set via function parameters
+    env_api_token = _get_env_with_deprecation('PLUTO_API_TOKEN', 'MLOP_API_TOKEN')
+    if env_api_token is not None and '_auth' not in settings_dict:
+        new_settings._auth = env_api_token
+
+    # Read PLUTO_PROJECT environment variable (with MLOP_PROJECT fallback)
+    # Only apply if not already set via function parameters
+    env_project = _get_env_with_deprecation('PLUTO_PROJECT', 'MLOP_PROJECT')
+    if env_project is not None and 'project' not in settings_dict:
+        new_settings.project = env_project
+
     # Apply all settings (user params override env vars)
     new_settings.update(settings_dict)
 

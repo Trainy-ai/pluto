@@ -175,10 +175,18 @@ Settings can be provided via:
 4. Default values in Settings class
 
 ### Environment Variables
-Environment variables use the `PLUTO_*` prefix. The old `MLOP_*` prefix is supported with deprecation warnings:
-- `PLUTO_API_TOKEN` / `MLOP_API_TOKEN` (deprecated)
-- `PLUTO_DEBUG_LEVEL` / `MLOP_DEBUG_LEVEL` (deprecated)
-- `PLUTO_URL_APP`, `PLUTO_URL_API`, `PLUTO_URL_INGEST`, `PLUTO_URL_PY`
+Environment variables use the `PLUTO_*` prefix. The old `MLOP_*` prefix is supported with deprecation warnings.
+
+**Authentication & Project:**
+- `PLUTO_API_TOKEN` - API token for authentication (alternative to `pluto login`)
+- `PLUTO_PROJECT` - Default project name (alternative to `pluto.init(project="...")`)
+
+**Configuration:**
+- `PLUTO_DEBUG_LEVEL` - Log level (DEBUG, INFO, WARNING, ERROR, CRITICAL)
+- `PLUTO_URL_APP`, `PLUTO_URL_API`, `PLUTO_URL_INGEST`, `PLUTO_URL_PY` - Server URLs
+
+**Deprecated (still supported with warnings):**
+- `MLOP_API_TOKEN`, `MLOP_PROJECT`, `MLOP_DEBUG_LEVEL`, `MLOP_URL_*`
 
 ### Testing Notes
 - Tests run against production server by default
