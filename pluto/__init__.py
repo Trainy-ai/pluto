@@ -70,4 +70,4 @@ def _get_git_commit():
             commit_hash += '-dirty'
         return commit_hash
     except Exception:  # pylint: disable=broad-except
-        return _MLOP_COMMIT_SHA
+        return _PLUTO_COMMIT_SHA

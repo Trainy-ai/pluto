@@ -150,7 +150,13 @@ class TestPLUTOURLEnvironmentVariables:
     def test_default_urls_when_not_set(self):
         """Test default URLs when env vars not set"""
         # Make sure env vars are not set
-        for var in ['PLUTO_URL_APP', 'PLUTO_URL_API', 'PLUTO_URL_INGEST', 'PLUTO_URL_PY']:
+        url_vars = [
+            'PLUTO_URL_APP',
+            'PLUTO_URL_API',
+            'PLUTO_URL_INGEST',
+            'PLUTO_URL_PY',
+        ]
+        for var in url_vars:
             if var in os.environ:
                 del os.environ[var]
 

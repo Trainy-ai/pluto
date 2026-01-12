@@ -50,10 +50,10 @@ def _get_env_with_deprecation(new_key: str, old_key: str) -> Optional[str]:
         old_value = os.environ.get(old_key)
         if old_value is not None:
             warnings.warn(
-                f"Environment variable {old_key} is deprecated. "
-                f"Use {new_key} instead.",
+                f'Environment variable {old_key} is deprecated. '
+                f'Use {new_key} instead.',
                 DeprecationWarning,
-                stacklevel=3
+                stacklevel=3,
             )
             return old_value
     return value
@@ -291,7 +291,8 @@ class NeptuneRunWrapper:
             self._pluto_run = self._pluto.init(**pluto_init_kwargs)
             logger.info(
                 f'pluto.compat.neptune: Successfully initialized pluto run '
-                f'for project={pluto_config["project"]}, name={pluto_init_kwargs["name"]}'
+                f'for project={pluto_config["project"]}, '
+                f'name={pluto_init_kwargs["name"]}'
             )
 
         except Exception as e:
@@ -320,7 +321,9 @@ class NeptuneRunWrapper:
                 # Pass Neptune's explicit step to pluto to maintain alignment
                 self._pluto_run.log(data, step=step)
             except Exception as e:
-                logger.debug(f'pluto.compat.neptune: Failed to log metrics to pluto: {e}')
+                logger.debug(
+                    f'pluto.compat.neptune: Failed to log metrics to pluto: {e}'
+                )
 
         return result
 
@@ -347,7 +350,9 @@ class NeptuneRunWrapper:
                 if hasattr(self._pluto_run, '_iface') and self._pluto_run._iface:
                     self._pluto_run._iface._update_config(data)
             except Exception as e:
-                logger.debug(f'pluto.compat.neptune: Failed to log configs to pluto: {e}')
+                logger.debug(
+                    f'pluto.compat.neptune: Failed to log configs to pluto: {e}'
+                )
 
         return result
 
@@ -368,11 +373,14 @@ class NeptuneRunWrapper:
                 pluto_files = {}
                 for key, file_obj in files.items():
                     try:
-                        pluto_file = _convert_neptune_file_to_pluto(file_obj, self._pluto)
+                        pluto_file = _convert_neptune_file_to_pluto(
+                            file_obj, self._pluto
+                        )
                         pluto_files[key] = pluto_file
                         pluto_type = type(pluto_file).__name__
                         logger.info(
-                            f'pluto.compat.neptune: Converted file {key} to {pluto_type}'
+                            f'pluto.compat.neptune: Converted file {key} '
+                            f'to {pluto_type}'
                         )
                     except Exception as e:
                         logger.warning(
@@ -382,7 +390,8 @@ class NeptuneRunWrapper:
                 if pluto_files:
                     self._pluto_run.log(pluto_files)
                     logger.info(
-                        f'pluto.compat.neptune: Logged {len(pluto_files)} files to pluto'
+                        f'pluto.compat.neptune: Logged {len(pluto_files)} files '
+                        f'to pluto'
                     )
             except Exception as e:
                 logger.warning(
@@ -408,7 +417,9 @@ class NeptuneRunWrapper:
                 pluto_files = {}
                 for key, file_obj in files.items():
                     try:
-                        pluto_file = _convert_neptune_file_to_pluto(file_obj, self._pluto)
+                        pluto_file = _convert_neptune_file_to_pluto(
+                            file_obj, self._pluto
+                        )
                         pluto_files[key] = pluto_file
                         pluto_type = type(pluto_file).__name__
                         logger.info(
@@ -417,7 +428,8 @@ class NeptuneRunWrapper:
                         )
                     except Exception as e:
                         logger.warning(
-                            f'pluto.compat.neptune: Failed to convert file {key}: {e}'
+                            f'pluto.compat.neptune: Failed to convert '
+                            f'file {key}: {e}'
                         )
 
                 if pluto_files:
@@ -427,7 +439,9 @@ class NeptuneRunWrapper:
                         f'to pluto at step {step}'
                     )
             except Exception as e:
-                logger.warning(f'pluto.compat.neptune: Failed to log files to pluto: {e}')
+                logger.warning(
+                    f'pluto.compat.neptune: Failed to log files to pluto: {e}'
+                )
 
         return result
 
@@ -528,7 +542,9 @@ class NeptuneRunWrapper:
             try:
                 self._pluto_run.finish()
             except Exception as e:
-                logger.debug(f'pluto.compat.neptune: Failed to terminate pluto run: {e}')
+                logger.debug(
+                    f'pluto.compat.neptune: Failed to terminate pluto run: {e}'
+                )
 
         if not self._neptune_disabled:
             return self._neptune_run.terminate(**kwargs)

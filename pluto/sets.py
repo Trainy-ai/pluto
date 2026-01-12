@@ -17,10 +17,10 @@ def _get_env_with_deprecation(new_key: str, old_key: str) -> Optional[str]:
         old_value = os.environ.get(old_key)
         if old_value is not None:
             warnings.warn(
-                f"Environment variable {old_key} is deprecated. "
-                f"Use {new_key} instead.",
+                f'Environment variable {old_key} is deprecated. '
+                f'Use {new_key} instead.',
                 DeprecationWarning,
-                stacklevel=3
+                stacklevel=3,
             )
             return old_value
     return value
