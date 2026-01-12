@@ -2,7 +2,7 @@
 
 ## THIS README/REPO IS CURRENTLY UNDER CONSTRUCTION WHILE WE UPDATE THE REFERENCES IN OUR FORK
 
-**Pluto** is a Machine Learning Operations (MLOps) framework. It provides [self-hostable superior experimental tracking capabilities and lifecycle management for training ML models](https://github.com/mlop-ai/server). To get started, [try out our introductory notebook](https://colab.research.google.com/github/mlop-ai/mlop/blob/main/examples/intro.ipynb) or [get an account with us today](https://pluto.trainy.ai/auth/sign-up)!
+**Pluto** is a Machine Learning Operations (MLOps) framework. It provides [self-hostable superior experimental tracking capabilities and lifecycle management for training ML models](https://github.com/mlop-ai/server). To get started, [try out our introductory notebook](https://colab.research.google.com/github/Trainy-ai/pluto/blob/main/examples/intro.ipynb) or [get an account with us today](https://pluto.trainy.ai/auth/sign-up)!
 
 ## 🎥 Demo
 
@@ -15,7 +15,7 @@
 
 ## 🚀 Getting Started
 
-- Try **Pluto** on our platform in [a notebook](https://colab.research.google.com/github/mlop-ai/mlop/blob/main/examples/intro.ipynb) & start integrating in just 5 lines of Python code:
+- Try **Pluto** on our platform in [a notebook](https://colab.research.google.com/github/Trainy-ai/pluto/blob/main/examples/intro.ipynb) & start integrating in just 5 lines of Python code:
 
 ```python
 %pip install -Uq "pluto-ml[full]"
@@ -36,15 +36,15 @@ sudo docker-compose --env-file .env up --build
 
 You may also learn more about **Pluto** by checking out our [documentation](https://docs.pluto.trainy.ai/).
 
-You can try everything out in our [introductory tutorial](https://colab.research.google.com/github/mlop-ai/mlop/blob/main/examples/intro.ipynb) and [torch tutorial](https://colab.research.google.com/github/mlop-ai/mlop/blob/main/examples/torch.ipynb).
+You can try everything out in our [introductory tutorial](https://colab.research.google.com/github/Trainy-ai/pluto/blob/main/examples/intro.ipynb) and [torch tutorial](https://colab.research.google.com/github/Trainy-ai/pluto/blob/main/examples/torch.ipynb).
 
 ## 🛠️ Development Setup
 
 Want to contribute? Here's the quickest way to get the local toolchain (including the linters used in CI) running:
 
 ```bash
-git clone https://github.com/mlop-ai/mlop.git
-cd mlop
+git clone https://github.com/Trainy-ai/pluto.git
+cd pluto
 python -m venv .venv && source .venv/bin/activate   # or use your preferred environment manager
 python -m pip install --upgrade pip
 pip install -e ".[full]"

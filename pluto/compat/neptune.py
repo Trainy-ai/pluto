@@ -253,7 +253,7 @@ class NeptuneRunWrapper:
             pluto_config = _get_pluto_config_from_env()
             if pluto_config is None:
                 logger.info(
-                    'pluto.compat.neptune: MLOP_PROJECT not set, '
+                    'pluto.compat.neptune: PLUTO_PROJECT not set, '
                     'continuing with Neptune-only logging'
                 )
                 return

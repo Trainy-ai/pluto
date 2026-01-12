@@ -41,14 +41,14 @@ __version__ = '0.0.2'
 
 
 # Replaced with the current commit when building the wheels.
-_MLOP_COMMIT_SHA = '{{MLOP_COMMIT_SHA}}'
+_PLUTO_COMMIT_SHA = '{{PLUTO_COMMIT_SHA}}'
 
 
 def _get_git_commit():
-    if 'MLOP_COMMIT_SHA' not in _MLOP_COMMIT_SHA:
+    if 'PLUTO_COMMIT_SHA' not in _PLUTO_COMMIT_SHA:
         # This is a release build, so we don't need to get the commit hash from
         # git, as it's already been set.
-        return _MLOP_COMMIT_SHA
+        return _PLUTO_COMMIT_SHA
 
     # This is a development build (pip install -e .), so we need to get the
     # commit hash from git.
