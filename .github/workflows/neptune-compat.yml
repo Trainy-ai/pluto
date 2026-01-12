@@ -43,6 +43,8 @@ jobs:
       - name: Install dependencies including neptune-scale
         run: |
           set -euox pipefail
+          # Clear stale cached venv that may be missing dev dependencies
+          rm -rf .venv
           poetry install --with dev --extras full
           # Verify neptune-scale is installed
           poetry run python -c "import importlib.metadata; import neptune_scale; print(f'neptune-scale version: {importlib.metadata.version(\"neptune-scale\")}')"
@@ -131,6 +133,8 @@ jobs:
       - name: Install dependencies
         run: |
           set -euox pipefail
+          # Clear stale cached venv that may be missing dev dependencies
+          rm -rf .venv
           poetry install --with dev --extras full
           pip install -e ".[dev,full]"
 

@@ -24,19 +24,15 @@ jobs:
           python-version: "3.10"
           poetry-version: "2.1.1"
           install-args: "--with dev"
+      - name: Force reinstall dependencies
+        run: |
+          set -euxo pipefail
+          # Clear stale cached venv that may be missing dev dependencies
+          rm -rf .venv
+          poetry install --with dev
+
       - name: Running mypy
         run: |
           set -euxo pipefail
           poetry run python3 -m pip install types-PyYAML
-          echo "=== Python version ==="
-          poetry run python --version
-          echo "=== mypy version ==="
-          poetry run mypy --version
-          echo "=== Listing pluto directory ==="
-          ls -la pluto/
-          echo "=== Running mypy ==="
-          poetry run mypy pluto 2>&1 | tee mypy_output.txt || true
-          echo "=== mypy output ==="
-          cat mypy_output.txt
-          echo "=== Checking exit code ==="
           poetry run mypy pluto
