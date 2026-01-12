@@ -2,7 +2,7 @@
 
 ## THIS README/REPO IS CURRENTLY UNDER CONSTRUCTION WHILE WE UPDATE THE REFERENCES IN OUR FORK
 
-**Pluto** is a Machine Learning Operations (MLOps) framework. It provides [self-hostable superior experimental tracking capabilities and lifecycle management for training ML models](https://github.com/mlop-ai/server). To get started, [try out our introductory notebook](https://colab.research.google.com/github/Trainy-ai/pluto/blob/main/examples/intro.ipynb) or [get an account with us today](https://pluto.trainy.ai/auth/sign-up)!
+**Pluto** is a Machine Learning Operations (MLOps) framework. It provides [self-hostable superior experimental tracking capabilities and lifecycle management for training ML models](https://docs.trainy.ai/pluto). To get started, [try out our introductory notebook](https://colab.research.google.com/github/Trainy-ai/pluto/blob/main/examples/intro.ipynb) or [get an account with us today](https://pluto.trainy.ai/auth/sign-up)!
 
 ## 🎥 Demo
 
@@ -34,9 +34,9 @@ cp .env.example .env
 sudo docker-compose --env-file .env up --build
 ```
 
-You may also learn more about **Pluto** by checking out our [documentation](https://docs.pluto.trainy.ai/).
+You may also learn more about **Pluto** by checking out our [documentation](https://docs.trainy.ai/pluto).
 
-You can try everything out in our [introductory tutorial](https://colab.research.google.com/github/Trainy-ai/pluto/blob/main/examples/intro.ipynb) and [torch tutorial](https://colab.research.google.com/github/Trainy-ai/pluto/blob/main/examples/torch.ipynb).
+<!-- You can try everything out in our [introductory tutorial](https://colab.research.google.com/github/Trainy-ai/pluto/blob/main/examples/intro.ipynb) and [torch tutorial](https://colab.research.google.com/github/Trainy-ai/pluto/blob/main/examples/torch.ipynb). -->
 
 ## 🛠️ Development Setup
 
