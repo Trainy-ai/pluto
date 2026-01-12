@@ -1,8 +1,9 @@
 [tool.poetry]
-name = "trainy-mlop"
+name = "pluto-ml"
 version = "0.0.2"
-description = "Trainy MLOp"
+description = "Pluto ML - Machine Learning Operations Framework"
 packages = [
+    {include = "pluto"},
     {include = "mlop"}
 ]
 authors = [
@@ -53,6 +54,7 @@ full = [
 ]
 
 [tool.poetry.scripts]
+pluto = 'pluto.__main__:main'
 mlop = 'mlop.__main__:main'
 
 [tool.ruff]

@@ -4,7 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-**mlop** is a Machine Learning Operations (MLOps) framework providing experimental tracking and lifecycle management for ML models. This is the Python client library that communicates with the mlop server infrastructure.
+**Pluto** is a Machine Learning Operations (MLOps) framework providing experimental tracking and lifecycle management for ML models. This is the Python client library that communicates with the Pluto server infrastructure.
+
+Note: The package was recently renamed from `mlop` to `pluto`. The `mlop` import is still supported for backward compatibility but is deprecated.
 
 ## Development Commands
 
@@ -29,7 +31,7 @@ poetry run pytest tests/test_basic.py
 poetry run pytest tests/test_basic.py::test_name
 
 # Run distributed tests (DDP)
-poetry run torchrun --standalone --nproc-per-node=2 -m pytest tests/test_pytorch.py -k test_mlop_watch_on_ddp_model -m distributed -rs
+poetry run torchrun --standalone --nproc-per-node=2 -m pytest tests/test_pytorch.py -k test_pluto_watch_on_ddp_model -m distributed -rs
 ```
 
 ### Linting and Formatting
@@ -38,36 +40,36 @@ poetry run torchrun --standalone --nproc-per-node=2 -m pytest tests/test_pytorch
 bash format.sh
 
 # Individual commands
-poetry run ruff check --fix mlop tests
-poetry run ruff format mlop tests
-poetry run mypy mlop
+poetry run ruff check --fix pluto mlop tests
+poetry run ruff format pluto mlop tests
+poetry run mypy pluto
 ```
 
 ### Authentication
 ```bash
 # Login with API token
-mlop login <token>
+pluto login <token>
 
 # Logout
-mlop logout
+pluto logout
 ```
 
 ## Architecture
 
 ### Core Components
 
-**Op (Operation)**: Central abstraction representing a training run or experiment (mlop/op.py)
+**Op (Operation)**: Central abstraction representing a training run or experiment (pluto/op.py)
 - Manages lifecycle: start, logging, finish
 - Coordinates between data storage, server interface, and system monitoring
 - Runs background workers for async data transmission and system monitoring
 
-**Settings**: Configuration management (mlop/sets.py)
+**Settings**: Configuration management (pluto/sets.py)
 - Controls client behavior, API endpoints, and feature flags
-- Default server: `https://trakkur.trainy.ai` (production)
+- Default server: `https://pluto.trainy.ai` (production)
 - Can be overridden with `host` parameter for self-hosted instances
 - URL endpoints: `url_app`, `url_api`, `url_ingest`, `url_py`
 
-**ServerInterface (iface.py)**: HTTP communication layer with mlop server
+**ServerInterface (iface.py)**: HTTP communication layer with Pluto server
 - Uses httpx with HTTP/2 support for efficient data streaming
 - Handles retries, timeouts, and connection pooling
 - Publishes metrics, files, graphs, and system stats
@@ -82,25 +84,26 @@ mlop logout
 
 ### Data Types
 
-**File types** (mlop/file.py): Image, Audio, Video, Text, Artifact
+**File types** (pluto/file.py): Image, Audio, Video, Text, Artifact
 - All inherit from base `File` class
 - Support both file paths and in-memory data
 - Auto-detects format/extension
 
-**Data types** (mlop/data.py): Graph, Histogram, Table
+**Data types** (pluto/data.py): Graph, Histogram, Table
 - Structured data for visualization
 - Graph: network/tree visualizations
 - Histogram: distribution data
 - Table: tabular data with pandas-like API
 
-### Compatibility Layer (mlop/compat/)
+### Compatibility Layer (pluto/compat/)
 
 Integration hooks for popular ML frameworks:
 - **torch.py**: PyTorch model watching (gradients, parameters, model graphs)
 - **lightning.py**: PyTorch Lightning callback integration
 - **transformers.py**: Hugging Face Transformers callback
+- **neptune.py**: Neptune-to-Pluto migration compatibility layer
 
-### API Communication (mlop/api.py)
+### API Communication (pluto/api.py)
 
 Contains `make_compat_*_v1` functions that format data for server API v1:
 - Converts Python objects to JSON payloads
@@ -109,12 +112,12 @@ Contains `make_compat_*_v1` functions that format data for server API v1:
 
 ## Typical Workflow
 
-1. **Initialize**: `mlop.init(project="name")` creates an Op instance
-2. **Log**: `mlop.log({"metric": value})` queues data for transmission
-3. **Watch** (optional): `mlop.watch(model)` for PyTorch model tracking
-4. **Finish**: `mlop.finish()` flushes buffers and marks run complete
+1. **Initialize**: `pluto.init(project="name")` creates an Op instance
+2. **Log**: `pluto.log({"metric": value})` queues data for transmission
+3. **Watch** (optional): `pluto.watch(model)` for PyTorch model tracking
+4. **Finish**: `pluto.finish()` flushes buffers and marks run complete
 
-The Op instance is stored in `mlop.ops` list and made available globally. Background threads handle async data transmission.
+The Op instance is stored in `pluto.ops` list and made available globally. Background threads handle async data transmission.
 
 ### Tags Support
 
@@ -122,8 +125,8 @@ Tags enable categorizing and filtering runs. Tags automatically sync to the serv
 
 ```python
 # Initialize with tags
-run = mlop.init(project="name", tags="experiment")
-run = mlop.init(project="name", tags=["production", "v2", "baseline"])
+run = pluto.init(project="name", tags="experiment")
+run = pluto.init(project="name", tags=["production", "v2", "baseline"])
 
 # Add tags dynamically (syncs to server)
 run.add_tags("new-feature")
@@ -135,13 +138,13 @@ run.remove_tags(["deprecated", "archived"])
 ```
 
 **Implementation details**:
-- **Client-side** (mlop/op.py, mlop/init.py, mlop/api.py):
+- **Client-side** (pluto/op.py, pluto/init.py, pluto/api.py):
   - Tags stored as `List[str]` on Op instance
   - Duplicate tags automatically prevented
   - Initial tags sent via `POST /api/runs/create` endpoint
   - Dynamic updates sent via HTTP POST to `/api/runs/tags/update`
 
-- **Server synchronization** (mlop/iface.py, mlop/sets.py):
+- **Server synchronization** (pluto/iface.py, pluto/sets.py):
   - Full tags array sent on each update (not incremental)
   - Graceful error handling (logs debug, doesn't break on failure)
   - URL: `{url_api}/api/runs/tags/update`
@@ -171,9 +174,23 @@ Settings can be provided via:
 3. Environment variables (via `setup()` function)
 4. Default values in Settings class
 
+### Environment Variables
+Environment variables use the `PLUTO_*` prefix. The old `MLOP_*` prefix is supported with deprecation warnings.
+
+**Authentication & Project:**
+- `PLUTO_API_TOKEN` - API token for authentication (alternative to `pluto login`)
+- `PLUTO_PROJECT` - Default project name (alternative to `pluto.init(project="...")`)
+
+**Configuration:**
+- `PLUTO_DEBUG_LEVEL` - Log level (DEBUG, INFO, WARNING, ERROR, CRITICAL)
+- `PLUTO_URL_APP`, `PLUTO_URL_API`, `PLUTO_URL_INGEST`, `PLUTO_URL_PY` - Server URLs
+
+**Deprecated (still supported with warnings):**
+- `MLOP_API_TOKEN`, `MLOP_PROJECT`, `MLOP_DEBUG_LEVEL`, `MLOP_URL_*`
+
 ### Testing Notes
 - Tests run against production server by default
-- Requires authentication via `MLOP_API_TOKEN` environment variable
+- Requires authentication via `PLUTO_API_TOKEN` environment variable
 - Tests marked with `@pytest.mark.distributed` require multi-rank torch setup
 - Use `HAS_TORCH`, `HAS_MATPLOTLIB` flags for optional dependency tests
 
@@ -183,5 +200,5 @@ Settings can be provided via:
 - Configurable via `x_file_stream_*` settings
 
 ### Versioning
-- Version defined in `pyproject.toml` and `mlop/__init__.py`
+- Version defined in `pyproject.toml` and `pluto/__init__.py`
 - Git commit SHA embedded in builds for traceability

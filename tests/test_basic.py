@@ -18,7 +18,7 @@ except ImportError:  # pragma: no cover - optional dependency
 
 import numpy as np
 
-import mlop
+import pluto
 from tests.utils import get_task_name
 
 try:
@@ -39,7 +39,7 @@ TESTING_PROJECT_NAME = 'testing-ci'
 def test_quickstart():
     task_name = get_task_name()
     config = {'lr': 0.001, 'epochs': 100}
-    run = mlop.init(project=TESTING_PROJECT_NAME, name=task_name, config=config)
+    run = pluto.init(project=TESTING_PROJECT_NAME, name=task_name, config=config)
     for i in range(config['epochs']):
         run.log({'val/loss': 0})
         run.log({'val/x': i})
@@ -50,7 +50,7 @@ def test_quickstart():
 def test_init_with_hyperparameters():
     task_name = get_task_name()
     config = {'lr': 0.01, 'batch_size': 32, 'epochs': 50}
-    run = mlop.init(project=TESTING_PROJECT_NAME, name=task_name, config=config)
+    run = pluto.init(project=TESTING_PROJECT_NAME, name=task_name, config=config)
     assert run.config['lr'] == 0.01
     assert run.config['batch_size'] == 32
     assert run.config['epochs'] == 50
@@ -58,13 +58,13 @@ def test_init_with_hyperparameters():
 
 
 def _log_image(image, key, task_name):
-    run = mlop.init(project=TESTING_PROJECT_NAME, name=task_name, config={})
+    run = pluto.init(project=TESTING_PROJECT_NAME, name=task_name, config={})
     run.log({key: image})
     run.finish()
 
 
 def _log_video(video, key, task_name):
-    run = mlop.init(project=TESTING_PROJECT_NAME, name=task_name, config={})
+    run = pluto.init(project=TESTING_PROJECT_NAME, name=task_name, config={})
     run.log({key: video})
     run.finish()
 
@@ -72,21 +72,21 @@ def _log_video(video, key, task_name):
 def test_image_logging_from_file_path(tmp_path):
     img_path = tmp_path / 'example.png'
     PILImage.new('RGB', (4, 4), color='white').save(img_path)
-    image = mlop.Image(str(img_path), caption='file-path')
+    image = pluto.Image(str(img_path), caption='file-path')
     _log_image(image, 'image/file/path', get_task_name())
 
 
 @pytest.mark.skipif(not HAS_MATPLOTLIB, reason='matplotlib not installed')
 def test_image_logging_from_pil_image():
     pil_img = PILImage.new('RGB', (4, 4), color='blue')
-    image = mlop.Image(pil_img, caption='pil-image')
+    image = pluto.Image(pil_img, caption='pil-image')
     _log_image(image, 'image/pil', get_task_name())
 
 
 @pytest.mark.skipif(not HAS_MATPLOTLIB, reason='matplotlib not installed')
 def test_image_logging_from_numpy_array():
     np_img = np.random.randint(0, 255, (4, 4, 3), dtype=np.uint8)
-    image = mlop.Image(np_img, caption='numpy-array')
+    image = pluto.Image(np_img, caption='numpy-array')
     _log_image(image, 'image/numpy', get_task_name())
 
 
@@ -95,7 +95,7 @@ def test_image_logging_from_matplotlib_figure():
     fig, ax = plt.subplots()
     ax.plot([0, 1], [0, 1])
     ax.axis('off')
-    image = mlop.Image(fig, caption='matplotlib-fig')
+    image = pluto.Image(fig, caption='matplotlib-fig')
     _log_image(image, 'image/matplotlib', get_task_name())
     plt.close(fig)
 
@@ -104,21 +104,21 @@ def test_image_logging_from_matplotlib_figure():
 def test_image_logging_from_torch_tensor():
     pytest.importorskip('torchvision.utils')
     tensor = torch.rand(3, 4, 4)
-    image = mlop.Image(tensor, caption='torch-tensor')
+    image = pluto.Image(tensor, caption='torch-tensor')
     _log_image(image, 'image/torch', get_task_name())
 
 
 def test_video_logging_from_file_path(tmp_path):
     video_path = tmp_path / 'sample.mp4'
     video_path.write_bytes(b'\x00')
-    video = mlop.Video(str(video_path), caption='video-file')
+    video = pluto.Video(str(video_path), caption='video-file')
     _log_video(video, 'video/file/path', get_task_name())
 
 
 @pytest.mark.skipif(not HAS_VIDEO_DEPS, reason='video dependencies not installed')
 def test_video_logging_from_numpy_array():
     video_array = np.random.randint(0, 255, (2, 3, 4, 4), dtype=np.uint8)
-    video = mlop.Video(video_array, rate=5, caption='video-numpy')
+    video = pluto.Video(video_array, rate=5, caption='video-numpy')
     _log_video(video, 'video/numpy', get_task_name())
 
 
@@ -132,16 +132,16 @@ def test_audio_logging_from_downloaded_file(tmp_path):
         pytest.skip(f'Audio download failed: {exc}')
 
     audio_path.write_bytes(response.content)
-    audio = mlop.Audio(str(audio_path))
-    run = mlop.init(project=TESTING_PROJECT_NAME, name=get_task_name(), config={})
+    audio = pluto.Audio(str(audio_path))
+    run = pluto.init(project=TESTING_PROJECT_NAME, name=get_task_name(), config={})
     run.log({'audio': audio})
     run.finish()
 
 
 def test_histogram_logging_from_numpy_array():
     data = np.random.normal(loc=0.0, scale=1.0, size=1000)
-    histogram = mlop.Histogram(data=data, bins=32)
-    run = mlop.init(project=TESTING_PROJECT_NAME, name=get_task_name(), config={})
+    histogram = pluto.Histogram(data=data, bins=32)
+    run = pluto.init(project=TESTING_PROJECT_NAME, name=get_task_name(), config={})
     run.log({'metrics/histogram': histogram})
     assert histogram.to_dict()['shape'] == 'uniform'
     run.finish()
@@ -149,7 +149,7 @@ def test_histogram_logging_from_numpy_array():
 
 def test_tags_initialization_with_string():
     """Test initializing a run with a single tag string."""
-    run = mlop.init(
+    run = pluto.init(
         project=TESTING_PROJECT_NAME, name=get_task_name(), tags='experiment'
     )
     assert 'experiment' in run.tags
@@ -159,7 +159,7 @@ def test_tags_initialization_with_string():
 
 def test_tags_initialization_with_list():
     """Test initializing a run with multiple tags."""
-    run = mlop.init(
+    run = pluto.init(
         project=TESTING_PROJECT_NAME,
         name=get_task_name(),
         tags=['production', 'v2', 'baseline'],
@@ -173,7 +173,7 @@ def test_tags_initialization_with_list():
 
 def test_add_tags_single_string():
     """Test adding a single tag as a string."""
-    run = mlop.init(project=TESTING_PROJECT_NAME, name=get_task_name())
+    run = pluto.init(project=TESTING_PROJECT_NAME, name=get_task_name())
     assert len(run.tags) == 0
 
     run.add_tags('experiment')
@@ -185,7 +185,7 @@ def test_add_tags_single_string():
 
 def test_add_tags_list():
     """Test adding multiple tags as a list."""
-    run = mlop.init(project=TESTING_PROJECT_NAME, name=get_task_name(), tags='initial')
+    run = pluto.init(project=TESTING_PROJECT_NAME, name=get_task_name(), tags='initial')
     assert len(run.tags) == 1
 
     run.add_tags(['production', 'v2'])
@@ -199,7 +199,7 @@ def test_add_tags_list():
 
 def test_add_tags_duplicate():
     """Test that adding duplicate tags doesn't create duplicates."""
-    run = mlop.init(
+    run = pluto.init(
         project=TESTING_PROJECT_NAME, name=get_task_name(), tags=['experiment']
     )
     assert len(run.tags) == 1
@@ -217,7 +217,7 @@ def test_add_tags_duplicate():
 
 def test_remove_tags_single_string():
     """Test removing a single tag."""
-    run = mlop.init(
+    run = pluto.init(
         project=TESTING_PROJECT_NAME, name=get_task_name(), tags=['exp', 'prod', 'v1']
     )
     assert len(run.tags) == 3
@@ -231,7 +231,7 @@ def test_remove_tags_single_string():
 
 def test_remove_tags_list():
     """Test removing multiple tags."""
-    run = mlop.init(
+    run = pluto.init(
         project=TESTING_PROJECT_NAME,
         name=get_task_name(),
         tags=['exp', 'prod', 'v1', 'baseline'],
@@ -250,7 +250,7 @@ def test_remove_tags_list():
 
 def test_remove_tags_nonexistent():
     """Test that removing nonexistent tags doesn't cause errors."""
-    run = mlop.init(project=TESTING_PROJECT_NAME, name=get_task_name(), tags=['exp'])
+    run = pluto.init(project=TESTING_PROJECT_NAME, name=get_task_name(), tags=['exp'])
     assert len(run.tags) == 1
 
     run.remove_tags('nonexistent')  # Should not raise error
@@ -264,7 +264,7 @@ def test_remove_tags_nonexistent():
 
 def test_update_config_basic():
     """Test updating config after run initialization."""
-    run = mlop.init(
+    run = pluto.init(
         project=TESTING_PROJECT_NAME, name=get_task_name(), config={'lr': 0.001}
     )
     assert run.config['lr'] == 0.001
@@ -279,7 +279,7 @@ def test_update_config_basic():
 
 def test_update_config_override():
     """Test that update_config overrides existing keys."""
-    run = mlop.init(
+    run = pluto.init(
         project=TESTING_PROJECT_NAME,
         name=get_task_name(),
         config={'lr': 0.001, 'batch_size': 32},
@@ -295,7 +295,7 @@ def test_update_config_override():
 
 def test_update_config_on_empty():
     """Test update_config when initial config is empty."""
-    run = mlop.init(project=TESTING_PROJECT_NAME, name=get_task_name(), config={})
+    run = pluto.init(project=TESTING_PROJECT_NAME, name=get_task_name(), config={})
     assert run.config == {}
 
     run.update_config({'model': 'gpt-4', 'temperature': 0.7})
@@ -307,7 +307,7 @@ def test_update_config_on_empty():
 
 def test_update_config_multiple_calls():
     """Test multiple update_config calls accumulate correctly."""
-    run = mlop.init(project=TESTING_PROJECT_NAME, name=get_task_name(), config={})
+    run = pluto.init(project=TESTING_PROJECT_NAME, name=get_task_name(), config={})
 
     run.update_config({'lr': 0.001})
     run.update_config({'epochs': 100})

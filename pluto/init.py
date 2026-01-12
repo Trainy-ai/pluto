@@ -1,7 +1,7 @@
 import logging
 from typing import Any, Dict, Optional, Union
 
-import mlop
+import pluto
 
 from .op import Op
 from .sets import Settings, setup
@@ -70,6 +70,6 @@ def finish(op: Optional[Op] = None) -> None:
     if op:
         op.finish()
     else:
-        if mlop.ops:
-            for existing_op in mlop.ops:
+        if pluto.ops:
+            for existing_op in pluto.ops:
                 existing_op.finish()

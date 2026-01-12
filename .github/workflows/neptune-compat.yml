@@ -1,10 +1,10 @@
 name: Neptune Compatibility Tests
 
-# This workflow tests the Neptune-to-mlop compatibility layer during the migration period
+# This workflow tests the Neptune-to-pluto compatibility layer during the migration period
 # It ensures that:
 # 1. Neptune API calls continue to work unchanged
-# 2. Dual-logging to mlop works when configured
-# 3. Fallback behavior is correct when mlop fails
+# 2. Dual-logging to pluto works when configured
+# 3. Fallback behavior is correct when pluto fails
 # 4. No breaking changes are introduced during the 2-month transition
 
 on:
@@ -34,7 +34,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: "Setup Python, Poetry and Dependencies"
-        uses: packetcoders/action-setup-cache-python-poetry@main
+        uses: packetcoders/action-setup-cache-python-poetry@v1.2.0
         with:
           python-version: ${{ matrix.python-version }}
           poetry-version: ${{ matrix.poetry-version }}
@@ -43,14 +43,16 @@ jobs:
       - name: Install dependencies including neptune-scale
         run: |
           set -euox pipefail
+          # Clear stale cached venv that may be missing dev dependencies
+          rm -rf .venv
           poetry install --with dev --extras full
           # Verify neptune-scale is installed
           poetry run python -c "import importlib.metadata; import neptune_scale; print(f'neptune-scale version: {importlib.metadata.version(\"neptune-scale\")}')"
 
-      - name: Run Neptune compatibility tests (without mlop config)
+      - name: Run Neptune compatibility tests (without pluto config)
         run: |
           set -euox pipefail
-          # Test that Neptune works normally without mlop configuration
+          # Test that Neptune works normally without pluto configuration
           poetry run pytest tests/test_neptune_compat.py::TestNeptuneCompatBasic -v -rs
           poetry run pytest tests/test_neptune_compat.py::TestNeptuneCompatAPIForwarding -v -rs
           poetry run pytest tests/test_neptune_compat.py::TestNeptuneCompatFallbackBehavior -v -rs
@@ -58,7 +60,7 @@ jobs:
       - name: Run Neptune error handling tests
         run: |
           set -euox pipefail
-          # Test that Neptune never fails due to mlop errors
+          # Test that Neptune never fails due to pluto errors
           poetry run pytest tests/test_neptune_compat.py::TestNeptuneCompatErrorHandling -v -rs
 
       - name: Run Neptune file conversion tests
@@ -73,35 +75,35 @@ jobs:
           NEPTUNE_PROJECT: "asai/test"
         run: |
           set -euox pipefail
-          # Test with real Neptune client (without mlop)
+          # Test with real Neptune client (without pluto)
           # These tests MUST pass - no fallback to echo
           # Use -s to disable output capture and prevent I/O errors from Neptune's logger
-          poetry run pytest tests/test_neptune_compat.py::TestNeptuneRealBackend::test_real_neptune_without_mlop -v -rs -s
+          poetry run pytest tests/test_neptune_compat.py::TestNeptuneRealBackend::test_real_neptune_without_pluto -v -rs -s
           poetry run pytest tests/test_neptune_compat.py::TestNeptuneRealBackend::test_real_neptune_context_manager -v -rs -s
 
-      - name: Setup mlop credentials for dual-logging tests
+      - name: Setup pluto credentials for dual-logging tests
         env:
-          MLOP_API_TOKEN: ${{ secrets.MLOP_API_TOKEN }}
+          PLUTO_API_TOKEN: ${{ secrets.MLOP_API_TOKEN }}
         run: |
           set -euox pipefail
-          poetry run mlop login "${MLOP_API_TOKEN}"
+          poetry run pluto login "${PLUTO_API_TOKEN}"
 
       - name: Run Neptune dual-logging integration tests
         env:
           NEPTUNE_API_TOKEN: ${{ secrets.NEPTUNE_API_TOKEN }}
           NEPTUNE_PROJECT: "asai/test"
-          MLOP_PROJECT: "testing-ci"
+          PLUTO_PROJECT: "testing-ci"
           CI: "true"
         run: |
           set -euox pipefail
-          # Test dual-logging to both Neptune (mock) and mlop (real)
+          # Test dual-logging to both Neptune (mock) and pluto (real)
           # These tests MUST pass - no fallback to echo
           poetry run pytest tests/test_neptune_compat.py::TestNeptuneCompatDualLogging -v -rs
           poetry run pytest tests/test_neptune_compat.py::TestNeptuneCompatIntegration -v -rs
-          # Test full dual-logging with both real Neptune and mlop
+          # Test full dual-logging with both real Neptune and pluto
           # Use -s to disable output capture and prevent I/O errors from Neptune's logger
-          poetry run pytest tests/test_neptune_compat.py::TestNeptuneRealBackend::test_real_neptune_with_mlop_dual_logging -v -rs -s
-          poetry run pytest tests/test_neptune_compat.py::TestNeptuneRealBackend::test_real_neptune_mlop_resilience -v -rs -s
+          poetry run pytest tests/test_neptune_compat.py::TestNeptuneRealBackend::test_real_neptune_with_pluto_dual_logging -v -rs -s
+          poetry run pytest tests/test_neptune_compat.py::TestNeptuneRealBackend::test_real_neptune_pluto_resilience -v -rs -s
 
       - name: Report test results
         if: always()
@@ -122,7 +124,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: "Setup Python, Poetry and Dependencies"
-        uses: packetcoders/action-setup-cache-python-poetry@main
+        uses: packetcoders/action-setup-cache-python-poetry@v1.2.0
         with:
           python-version: ${{ matrix.python-version }}
           poetry-version: ${{ matrix.poetry-version }}
@@ -131,6 +133,8 @@ jobs:
       - name: Install dependencies
         run: |
           set -euox pipefail
+          # Clear stale cached venv that may be missing dev dependencies
+          rm -rf .venv
           poetry install --with dev --extras full
           pip install -e ".[dev,full]"
 

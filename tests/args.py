@@ -15,16 +15,16 @@ URL_LIST = {
         'HOST': 'localhost',
     },
     'DEV': {
-        'APP': 'https://dev.mlop.ai',
-        'API': 'https://api-dev.mlop.ai',
-        'INGEST': 'https://ingest-dev.mlop.ai',
-        'PY': 'https://py-dev.mlop.ai',
+        'APP': 'https://pluto-dev.trainy.ai',
+        'API': 'https://pluto-api-dev.trainy.ai',
+        'INGEST': 'https://pluto-ingest-dev.trainy.ai',
+        'PY': 'https://pluto-py-dev.trainy.ai',
     },
     'PROD': {
-        'APP': 'https://app.mlop.ai',
-        'API': 'https://api-prod.mlop.ai',
-        'INGEST': 'https://ingest-prod.mlop.ai',
-        'PY': 'https://py-prod.mlop.ai',
+        'APP': 'https://pluto.trainy.ai',
+        'API': 'https://pluto-api.trainy.ai',
+        'INGEST': 'https://pluto-ingest.trainy.ai',
+        'PY': 'https://pluto-py.trainy.ai',
     },
 }
 PLATFORM_PREFS = {
@@ -102,7 +102,7 @@ def parse(TAG):
         choices=['d', 'p', 'l', 'w'],
         nargs='?',
         help=(
-            'Library: mlop (dev) [d], mlop (prod) [p], mlop (local) [l], '
+            'Library: pluto (dev) [d], pluto (prod) [p], pluto (local) [l], '
             'alternative [w]'
         ),
     )
@@ -123,22 +123,22 @@ def parse(TAG):
 
 @timer
 def read_sets_compat(args, tag):
-    os.makedirs('.mlop', exist_ok=True)
+    os.makedirs('.pluto', exist_ok=True)
     d = {}
 
     if args.lib == 'w':
         print(f'{tag}: Using alternative')
         try:
-            module = keyring.get_password('mlop', 'alternative')
+            module = keyring.get_password('pluto', 'alternative')
         except Exception:
             pass
         if not module or module == '':
             module = input('Enter name: ')
         try:
-            keyring.set_password('mlop', 'alternative', module)
+            keyring.set_password('pluto', 'alternative', module)
         except Exception:
             pass
-        mlop = importlib.import_module(module)
+        pluto = importlib.import_module(module)
 
         d['host'] = 'localhost'
         d['x_log_level'] = 10
@@ -146,8 +146,8 @@ def read_sets_compat(args, tag):
         d['save_code'] = False
         # d["mode"] = "offline"
     else:
-        print(f'{tag}: Using mlop')
-        import mlop
+        print(f'{tag}: Using pluto')
+        import pluto
 
         if args.lib == 'd':
             # d["auth"] = AUTH
@@ -173,12 +173,12 @@ def read_sets_compat(args, tag):
         d['https_proxy'] = 'http://localhost:8888'
         d['insecure_disable_ssl'] = True
 
-    return mlop, d
+    return pluto, d
 
 
 @timer
 def init_test(TAG):
-    mlop, settings = read_sets_compat(parse(TAG), TAG)
-    run = mlop.init(dir='.mlop', project='test-' + TAG, settings=settings)
+    pluto, settings = read_sets_compat(parse(TAG), TAG)
+    run = pluto.init(dir='.pluto', project='test-' + TAG, settings=settings)
     sys.stderr.write('script: Starting stderr logging\n')
-    return mlop, run
+    return pluto, run

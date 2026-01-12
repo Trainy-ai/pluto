@@ -26,7 +26,7 @@ except ImportError:  # pragma: no cover - optional dependency
     nn = optim = DataLoader = Subset = datasets = transforms = None  # type: ignore[assignment]
     DDP = FSDP = None  # type: ignore[assignment]
 
-import mlop
+import pluto
 from tests.utils import get_task_name
 
 TESTING_PROJECT_NAME = 'testing-ci'
@@ -129,7 +129,7 @@ def test_pytorch_cnn_mnist_trains_and_logs():
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE)
 
-    run = mlop.init(
+    run = pluto.init(
         project=TESTING_PROJECT_NAME,
         name=get_task_name(),
         config={
@@ -140,7 +140,7 @@ def test_pytorch_cnn_mnist_trains_and_logs():
         },
     )
 
-    mlop.watch(model, disable_graph=False, freq=100)
+    pluto.watch(model, disable_graph=False, freq=100)
 
     try:
         for epoch in range(NUM_EPOCHS):
@@ -173,7 +173,7 @@ def test_pytorch_cnn_mnist_trains_and_logs():
 
 
 @pytest.mark.skipif(not HAS_TORCH, reason='torch/torchvision not installed')
-def test_mlop_watch_tracks_convnet_gradients():
+def test_pluto_watch_tracks_convnet_gradients():
     class ConvNet(nn.Module):
         def __init__(self, kernels, classes=10):
             super().__init__()
@@ -203,13 +203,13 @@ def test_mlop_watch_tracks_convnet_gradients():
     optimizer = optim.SGD(model.parameters(), lr=0.01)
     criterion = nn.CrossEntropyLoss()
 
-    run = mlop.init(
+    run = pluto.init(
         project=TESTING_PROJECT_NAME,
         name=get_task_name(),
         config={'test': 'watch-api'},
     )
 
-    mlop.watch(model, disable_graph=False, freq=100)
+    pluto.watch(model, disable_graph=False, freq=100)
 
     try:
         for step in range(3):
@@ -231,7 +231,7 @@ def test_mlop_watch_tracks_convnet_gradients():
     DDP is None or dist is None or not dist.is_available(),
     reason='torch.distributed not available',
 )
-def test_mlop_watch_on_ddp_model():
+def test_pluto_watch_on_ddp_model():
     if _world_size() < 2:
         pytest.skip('DDP watch test requires WORLD_SIZE >= 2 (run via torchrun)')
 
@@ -248,12 +248,12 @@ def test_mlop_watch_on_ddp_model():
     optimizer = optim.SGD(ddp_model.parameters(), lr=0.01)
     criterion = nn.CrossEntropyLoss()
 
-    run = mlop.init(
+    run = pluto.init(
         project=TESTING_PROJECT_NAME,
         name=f'{get_task_name()}-rank-{rank}',
         config={'test': 'watch-ddp', 'rank': rank, 'world_size': _world_size()},
     )
-    mlop.watch(ddp_model, disable_graph=False, freq=50)
+    pluto.watch(ddp_model, disable_graph=False, freq=50)
 
     try:
         for step in range(2):
@@ -281,7 +281,7 @@ def test_mlop_watch_on_ddp_model():
     FSDP is None or dist is None or not dist.is_available(),
     reason='torch.distributed.fsdp not available',
 )
-def test_mlop_watch_on_fsdp_model():
+def test_pluto_watch_on_fsdp_model():
     if _world_size() < 2:
         pytest.skip('FSDP watch test requires WORLD_SIZE >= 2 (run via torchrun)')
 
@@ -298,12 +298,12 @@ def test_mlop_watch_on_fsdp_model():
     optimizer = optim.SGD(fsdp_model.parameters(), lr=0.01)
     criterion = nn.CrossEntropyLoss()
 
-    run = mlop.init(
+    run = pluto.init(
         project=TESTING_PROJECT_NAME,
         name=f'{get_task_name()}-rank-{rank}',
         config={'test': 'watch-fsdp', 'rank': rank, 'world_size': _world_size()},
     )
-    mlop.watch(fsdp_model, disable_graph=False, freq=50)
+    pluto.watch(fsdp_model, disable_graph=False, freq=50)
 
     try:
         for step in range(2):

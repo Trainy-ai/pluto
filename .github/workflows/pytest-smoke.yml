@@ -23,7 +23,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: "Setup Python, Poetry and Dependencies"
-        uses: packetcoders/action-setup-cache-python-poetry@main
+        uses: packetcoders/action-setup-cache-python-poetry@v1.2.0
         with:
           python-version: ${{matrix.python-version}}
           poetry-version: ${{matrix.poetry-version}}
@@ -32,9 +32,11 @@ jobs:
       - name: Install deps and login
         run: |
           set -euox pipefail
+          # Clear stale cached venv that may be missing dev dependencies
+          rm -rf .venv
           poetry install --with dev --extras full
           pip install -e ".[dev,full]"
-          mlop login ${{ secrets.MLOP_API_TOKEN }}
+          pluto login ${{ secrets.MLOP_API_TOKEN }}
 
       - name: Run pytest smoke tests
         run: |
@@ -53,7 +55,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: "Setup Python, Poetry and Dependencies"
-        uses: packetcoders/action-setup-cache-python-poetry@main
+        uses: packetcoders/action-setup-cache-python-poetry@v1.2.0
         with:
           python-version: ${{matrix.python-version}}
           poetry-version: ${{matrix.poetry-version}}
@@ -64,17 +66,19 @@ jobs:
           MLOP_API_TOKEN: ${{ secrets.MLOP_API_TOKEN }}
         run: |
           set -euox pipefail
+          # Clear stale cached venv that may be missing dev dependencies
+          rm -rf .venv
           poetry install --with dev --extras full
           pip install -e ".[dev,full]"
-          mlop login "${MLOP_API_TOKEN}"
+          pluto login "${MLOP_API_TOKEN}"
 
       - name: Run DDP watch tests
         run: |
           set -euox pipefail
-          poetry run torchrun --standalone --nproc-per-node=2 -m pytest tests/test_pytorch.py -k test_mlop_watch_on_ddp_model -m distributed -rs
+          poetry run torchrun --standalone --nproc-per-node=2 -m pytest tests/test_pytorch.py -k test_pluto_watch_on_ddp_model -m distributed -rs
 
       # TODO(asaiacai): FSDP requires GPU to test
       # - name: Run FSDP watch tests
       #   run: |
       #     set -euox pipefail
-      #     poetry run torchrun --standalone --nproc-per-node=2 -m pytest tests/test_pytorch.py -k test_mlop_watch_on_fsdp_model -m distributed -rs
+      #     poetry run torchrun --standalone --nproc-per-node=2 -m pytest tests/test_pytorch.py -k test_pluto_watch_on_fsdp_model -m distributed -rs

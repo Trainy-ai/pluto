@@ -1,10 +1,10 @@
 """
-Comprehensive tests for Neptune-to-mlop compatibility layer.
+Comprehensive tests for Neptune-to-pluto compatibility layer.
 
 These tests validate that:
 1. Neptune API calls continue to work unchanged
-2. mlop receives the logged data when configured
-3. Neptune never fails due to mlop errors
+2. pluto receives the logged data when configured
+3. Neptune never fails due to pluto errors
 4. Configuration via environment variables works
 5. Fallback behavior is correct
 """
@@ -140,25 +140,25 @@ class MockNeptuneRun:
 @pytest.fixture
 def mock_neptune_backend():
     """Replace the saved _original_neptune_run with our mock for testing."""
-    import mlop.compat.neptune
+    import pluto.compat.neptune
 
-    original_saved = mlop.compat.neptune._original_neptune_run
+    original_saved = pluto.compat.neptune._original_neptune_run
     # Replace the saved original with our mock
-    mlop.compat.neptune._original_neptune_run = MockNeptuneRun
+    pluto.compat.neptune._original_neptune_run = MockNeptuneRun
     yield
     # Restore
-    mlop.compat.neptune._original_neptune_run = original_saved
+    pluto.compat.neptune._original_neptune_run = original_saved
 
 
 @pytest.fixture
 def clean_env():
     """Clean environment variables before each test."""
     env_vars = [
-        'MLOP_PROJECT',
-        'MLOP_API_KEY',
-        'MLOP_URL_APP',
-        'MLOP_URL_API',
-        'MLOP_URL_INGEST',
+        'PLUTO_PROJECT',
+        'PLUTO_API_KEY',
+        'PLUTO_URL_APP',
+        'PLUTO_URL_API',
+        'PLUTO_URL_INGEST',
         'DISABLE_NEPTUNE_LOGGING',
     ]
     original_values = {}
@@ -180,9 +180,9 @@ def clean_env():
 class TestNeptuneCompatBasic:
     """Test basic Neptune API functionality is preserved."""
 
-    def test_neptune_import_without_mlop_config(self, mock_neptune_backend, clean_env):
-        """Test that Neptune works normally when MLOP_PROJECT is not set."""
-        # Don't set MLOP_PROJECT - should fall back to Neptune-only
+    def test_neptune_import_without_pluto_config(self, mock_neptune_backend, clean_env):
+        """Test that Neptune works normally when PLUTO_PROJECT is not set."""
+        # Don't set PLUTO_PROJECT - should fall back to Neptune-only
         from neptune_scale import Run
 
         run = Run(experiment_name='test-exp')
@@ -242,17 +242,17 @@ class TestNeptuneCompatBasic:
 
 
 class TestNeptuneCompatDualLogging:
-    """Test dual-logging to both Neptune and mlop."""
+    """Test dual-logging to both Neptune and pluto."""
 
     @pytest.fixture
-    def mlop_config_env(self, clean_env):
-        """Set up environment for mlop dual-logging."""
-        os.environ['MLOP_PROJECT'] = 'neptune-migration-test'
-        # Don't set MLOP_API_KEY - let it fall back to keyring or fail gracefully
+    def pluto_config_env(self, clean_env):
+        """Set up environment for pluto dual-logging."""
+        os.environ['PLUTO_PROJECT'] = 'neptune-migration-test'
+        # Don't set PLUTO_API_KEY - let it fall back to keyring or fail gracefully
         yield
 
     def test_dual_logging_metrics_with_env_config(
-        self, mock_neptune_backend, mlop_config_env, monkeypatch
+        self, mock_neptune_backend, pluto_config_env, monkeypatch
     ):
         """Test that metrics are logged to both Neptune and mlop when configured."""
         # Mock mlop.init to avoid actual API calls
@@ -261,7 +261,7 @@ class TestNeptuneCompatDualLogging:
         mock_mlop_run.log = mock.MagicMock()
         mock_mlop_run.finish = mock.MagicMock()
 
-        with mock.patch('mlop.init', return_value=mock_mlop_run):
+        with mock.patch('pluto.init', return_value=mock_mlop_run):
             from neptune_scale import Run
 
             run = Run(experiment_name='dual-log-test')
@@ -280,7 +280,7 @@ class TestNeptuneCompatDualLogging:
             mock_mlop_run.finish.assert_called_once()
 
     def test_log_metrics_passes_step_to_mlop(
-        self, mock_neptune_backend, mlop_config_env
+        self, mock_neptune_backend, pluto_config_env
     ):
         """Test that log_metrics correctly passes step parameter to mlop."""
         # Mock mlop.init to avoid actual API calls
@@ -289,7 +289,7 @@ class TestNeptuneCompatDualLogging:
         mock_mlop_run.log = mock.MagicMock()
         mock_mlop_run.finish = mock.MagicMock()
 
-        with mock.patch('mlop.init', return_value=mock_mlop_run):
+        with mock.patch('pluto.init', return_value=mock_mlop_run):
             from neptune_scale import Run
 
             run = Run(experiment_name='step-test')
@@ -308,14 +308,14 @@ class TestNeptuneCompatDualLogging:
             assert calls[1] == call({'acc': 0.9}, step=100)
             assert calls[2] == call({'f1': 0.85}, step=200)
 
-    def test_dual_logging_configs(self, mock_neptune_backend, mlop_config_env):
+    def test_dual_logging_configs(self, mock_neptune_backend, pluto_config_env):
         """Test that configs are logged to both Neptune and mlop."""
         mock_mlop_run = mock.MagicMock()
         mock_mlop_run.config = {}
         mock_mlop_run.log = mock.MagicMock()
         mock_mlop_run.finish = mock.MagicMock()
 
-        with mock.patch('mlop.init', return_value=mock_mlop_run):
+        with mock.patch('pluto.init', return_value=mock_mlop_run):
             from neptune_scale import Run
 
             run = Run(experiment_name='config-dual-test')
@@ -330,7 +330,7 @@ class TestNeptuneCompatDualLogging:
             assert mock_mlop_run.config['epochs'] == 100
 
     def test_dual_logging_configs_calls_server_sync(
-        self, mock_neptune_backend, mlop_config_env
+        self, mock_neptune_backend, pluto_config_env
     ):
         """Test that log_configs calls _iface._update_config to sync to server."""
         mock_iface = mock.MagicMock()
@@ -339,7 +339,7 @@ class TestNeptuneCompatDualLogging:
         mock_mlop_run._iface = mock_iface
         mock_mlop_run.finish = mock.MagicMock()
 
-        with mock.patch('mlop.init', return_value=mock_mlop_run):
+        with mock.patch('pluto.init', return_value=mock_mlop_run):
             from neptune_scale import Run
 
             run = Run(experiment_name='config-sync-test')
@@ -356,17 +356,17 @@ class TestNeptuneCompatErrorHandling:
     """Test that Neptune never fails due to mlop errors."""
 
     @pytest.fixture
-    def mlop_config_env(self, clean_env):
+    def pluto_config_env(self, clean_env):
         """Set up environment for mlop dual-logging."""
-        os.environ['MLOP_PROJECT'] = 'error-test'
+        os.environ['PLUTO_PROJECT'] = 'error-test'
         yield
 
     def test_neptune_works_when_mlop_init_fails(
-        self, mock_neptune_backend, mlop_config_env
+        self, mock_neptune_backend, pluto_config_env
     ):
         """Test that Neptune continues working if mlop.init() fails."""
         # Make mlop.init() raise an exception
-        with mock.patch('mlop.init', side_effect=Exception('mlop service down')):
+        with mock.patch('pluto.init', side_effect=Exception('mlop service down')):
             from neptune_scale import Run
 
             # Should not raise - Neptune should work fine
@@ -379,7 +379,7 @@ class TestNeptuneCompatErrorHandling:
             assert len(run._neptune_run.logged_metrics) == 1
 
     def test_neptune_works_when_mlop_log_fails(
-        self, mock_neptune_backend, mlop_config_env
+        self, mock_neptune_backend, pluto_config_env
     ):
         """Test that Neptune continues working if mlop.log() fails."""
         mock_mlop_run = mock.MagicMock()
@@ -387,7 +387,7 @@ class TestNeptuneCompatErrorHandling:
         mock_mlop_run.log = mock.MagicMock(side_effect=Exception('Network error'))
         mock_mlop_run.finish = mock.MagicMock()
 
-        with mock.patch('mlop.init', return_value=mock_mlop_run):
+        with mock.patch('pluto.init', return_value=mock_mlop_run):
             from neptune_scale import Run
 
             # Should not raise - Neptune should work fine
@@ -400,7 +400,7 @@ class TestNeptuneCompatErrorHandling:
             assert run._neptune_run.closed
 
     def test_neptune_works_when_mlop_finish_fails(
-        self, mock_neptune_backend, mlop_config_env
+        self, mock_neptune_backend, pluto_config_env
     ):
         """Test that Neptune closes correctly even if mlop.finish() fails."""
         mock_mlop_run = mock.MagicMock()
@@ -408,7 +408,7 @@ class TestNeptuneCompatErrorHandling:
         mock_mlop_run.log = mock.MagicMock()
         mock_mlop_run.finish = mock.MagicMock(side_effect=Exception('Finish error'))
 
-        with mock.patch('mlop.init', return_value=mock_mlop_run):
+        with mock.patch('pluto.init', return_value=mock_mlop_run):
             from neptune_scale import Run
 
             # Should not raise - Neptune should work fine
@@ -420,11 +420,11 @@ class TestNeptuneCompatErrorHandling:
             assert run._neptune_run.closed
 
     def test_neptune_works_when_mlop_not_installed(
-        self, mock_neptune_backend, mlop_config_env
+        self, mock_neptune_backend, pluto_config_env
     ):
         """Test that Neptune works when mlop is not installed."""
         # Simulate mlop import failure
-        with mock.patch('mlop.compat.neptune._safe_import_mlop', return_value=None):
+        with mock.patch('pluto.compat.neptune._safe_import_pluto', return_value=None):
             from neptune_scale import Run
 
             run = Run(experiment_name='no-mlop-test')
@@ -440,13 +440,13 @@ class TestNeptuneCompatFileConversion:
     """Test file type conversion from Neptune to mlop."""
 
     @pytest.fixture
-    def mlop_config_env(self, clean_env):
+    def pluto_config_env(self, clean_env):
         """Set up environment for mlop dual-logging."""
-        os.environ['MLOP_PROJECT'] = 'file-conversion-test'
+        os.environ['PLUTO_PROJECT'] = 'file-conversion-test'
         yield
 
     def test_image_file_conversion(
-        self, mock_neptune_backend, mlop_config_env, tmp_path
+        self, mock_neptune_backend, pluto_config_env, tmp_path
     ):
         """Test that Neptune File objects are converted to mlop.Image."""
         # Create a test image
@@ -458,7 +458,7 @@ class TestNeptuneCompatFileConversion:
         mock_mlop_run.log = mock.MagicMock()
         mock_mlop_run.finish = mock.MagicMock()
 
-        with mock.patch('mlop.init', return_value=mock_mlop_run):
+        with mock.patch('pluto.init', return_value=mock_mlop_run):
             from neptune_scale import Run
 
             run = Run(experiment_name='image-test')
@@ -474,7 +474,7 @@ class TestNeptuneCompatFileConversion:
             # Verify mlop.log was called (file conversion is internal)
             assert mock_mlop_run.log.called
 
-    def test_histogram_conversion(self, mock_neptune_backend, mlop_config_env):
+    def test_histogram_conversion(self, mock_neptune_backend, pluto_config_env):
         """Test that Neptune Histogram objects are converted to mlop.Histogram."""
         import numpy as np
 
@@ -483,7 +483,7 @@ class TestNeptuneCompatFileConversion:
         mock_mlop_run.log = mock.MagicMock()
         mock_mlop_run.finish = mock.MagicMock()
 
-        with mock.patch('mlop.init', return_value=mock_mlop_run):
+        with mock.patch('pluto.init', return_value=mock_mlop_run):
             from neptune_scale import Run
 
             run = Run(experiment_name='histogram-test')
@@ -511,8 +511,8 @@ class TestNeptuneCompatIntegration:
     """
 
     @pytest.mark.skipif(
-        not os.environ.get('MLOP_PROJECT') or not os.environ.get('CI'),
-        reason='Requires MLOP_PROJECT env var and CI environment',
+        not os.environ.get('PLUTO_PROJECT') or not os.environ.get('CI'),
+        reason='Requires PLUTO_PROJECT env var and CI environment',
     )
     def test_real_mlop_with_mock_neptune(self, mock_neptune_backend):
         """
@@ -523,8 +523,8 @@ class TestNeptuneCompatIntegration:
         without requiring Neptune credentials.
 
         This test requires:
-        - MLOP_PROJECT environment variable
-        - Valid mlop credentials (keyring or MLOP_API_KEY)
+        - PLUTO_PROJECT environment variable
+        - Valid mlop credentials (keyring or PLUTO_API_KEY)
         - Network access to mlop service
         """
         from neptune_scale import Run
@@ -548,32 +548,32 @@ class TestNeptuneCompatIntegration:
         assert len(run._neptune_run.tags) == 2
         assert run._neptune_run.closed
 
-        # mlop run should also be finished
-        if run._mlop_run:
-            # Verify mlop was initialized successfully
-            assert run._mlop_run is not None
-            print('✓ Integration test passed - logged to real mlop with mock Neptune')
+        # pluto run should also be finished
+        if run._pluto_run:
+            # Verify pluto was initialized successfully
+            assert run._pluto_run is not None
+            print('✓ Integration test passed - logged to real pluto with mock Neptune')
         else:
-            pytest.skip('mlop not configured, skipping integration validation')
+            pytest.skip('pluto not configured, skipping integration validation')
 
 
 class TestNeptuneCompatFallbackBehavior:
     """Test various fallback scenarios."""
 
-    def test_no_mlop_project_env_var(self, mock_neptune_backend, clean_env):
+    def test_no_pluto_project_env_var(self, mock_neptune_backend, clean_env):
         """
-        Test that monkeypatch works but doesn't init mlop when
-        MLOP_PROJECT is not set.
+        Test that monkeypatch works but doesn't init pluto when
+        PLUTO_PROJECT is not set.
         """
-        # No MLOP_PROJECT set
+        # No PLUTO_PROJECT set
         from neptune_scale import Run
 
         run = Run(experiment_name='no-project-test')
         run.log_metrics({'loss': 0.5}, step=0)
         run.close()
 
-        # Should have no mlop run
-        assert run._mlop_run is None
+        # Should have no pluto run
+        assert run._pluto_run is None
 
         # Neptune should work fine
         assert run._neptune_run.closed
@@ -583,19 +583,19 @@ class TestNeptuneCompatFallbackBehavior:
         self, mock_neptune_backend, clean_env
     ):
         """Test fallback when mlop project is set but credentials are invalid."""
-        os.environ['MLOP_PROJECT'] = 'test-project'
-        os.environ['MLOP_API_KEY'] = 'invalid-key-123'
+        os.environ['PLUTO_PROJECT'] = 'test-project'
+        os.environ['PLUTO_API_KEY'] = 'invalid-key-123'
 
         # Mock mlop.init to fail with auth error
-        with mock.patch('mlop.init', side_effect=Exception('Unauthorized')):
+        with mock.patch('pluto.init', side_effect=Exception('Unauthorized')):
             from neptune_scale import Run
 
             run = Run(experiment_name='invalid-creds-test')
             run.log_metrics({'loss': 0.5}, step=0)
             run.close()
 
-            # mlop should have failed silently
-            assert run._mlop_run is None
+            # pluto should have failed silently
+            assert run._pluto_run is None
 
             # Neptune should work fine
             assert run._neptune_run.closed
@@ -607,10 +607,10 @@ class TestNeptuneCompatFallbackBehavior:
         When set, Neptune calls should be skipped entirely.
         """
         os.environ['DISABLE_NEPTUNE_LOGGING'] = 'true'
-        os.environ['MLOP_PROJECT'] = 'test-project'
+        os.environ['PLUTO_PROJECT'] = 'test-project'
 
         # Mock mlop so we can verify it was called
-        with mock.patch('mlop.init') as mock_mlop_init, mock.patch('mlop.log'):
+        with mock.patch('pluto.init') as mock_mlop_init, mock.patch('pluto.log'):
             # Create mock mlop run
             mock_run = mock.MagicMock()
             mock_mlop_init.return_value = mock_run
@@ -628,8 +628,8 @@ class TestNeptuneCompatFallbackBehavior:
             run.log_configs({'lr': 0.001})
             run.add_tags(['test', 'disabled'])
 
-            # Verify mlop was called (dual-logging to mlop only)
-            assert run._mlop_run is not None
+            # Verify pluto was called (dual-logging to pluto only)
+            assert run._pluto_run is not None
 
             # Close should work without errors
             run.close()
@@ -686,17 +686,17 @@ class TestNeptuneRealBackend:
         or not os.environ.get('NEPTUNE_PROJECT'),
         reason='Requires NEPTUNE_API_TOKEN and NEPTUNE_PROJECT env vars',
     )
-    def test_real_neptune_without_mlop(self, clean_env, tmp_path):
+    def test_real_neptune_without_pluto(self, clean_env, tmp_path):
         """
         Test with real Neptune backend, no mlop dual-logging.
 
         Validates that the monkeypatch doesn't break Neptune functionality.
         """
         # Ensure mlop is NOT configured
-        assert 'MLOP_PROJECT' not in os.environ
+        assert 'PLUTO_PROJECT' not in os.environ
 
         # Apply monkeypatch BEFORE importing Run
-        import mlop.compat.neptune  # noqa: F401, I001
+        import pluto.compat.neptune  # noqa: F401, I001
         import numpy as np
         from neptune_scale import Run
 
@@ -737,8 +737,8 @@ class TestNeptuneRealBackend:
 
         run.add_tags(['real-neptune-test', 'neptune-only'])
 
-        # Should have no mlop run
-        assert run._mlop_run is None
+        # Should have no pluto run
+        assert run._pluto_run is None
 
         # Wait for Neptune to finish all operations before closing
         # Use verbose=False to prevent logging errors when pytest captures stdout
@@ -755,18 +755,18 @@ class TestNeptuneRealBackend:
     @pytest.mark.skipif(
         not os.environ.get('NEPTUNE_API_TOKEN')
         or not os.environ.get('NEPTUNE_PROJECT')
-        or not os.environ.get('MLOP_PROJECT'),
-        reason='Requires NEPTUNE_API_TOKEN, NEPTUNE_PROJECT, and MLOP_PROJECT',
+        or not os.environ.get('PLUTO_PROJECT'),
+        reason='Requires NEPTUNE_API_TOKEN, NEPTUNE_PROJECT, and PLUTO_PROJECT',
     )
-    def test_real_neptune_with_mlop_dual_logging(self, tmp_path):
+    def test_real_neptune_with_pluto_dual_logging(self, tmp_path):
         """
-        Full integration test with BOTH real Neptune and real mlop.
+        Full integration test with BOTH real Neptune and real pluto.
 
         This is the ultimate validation that dual-logging works in production.
-        Requires both Neptune and mlop credentials.
+        Requires both Neptune and pluto credentials.
         """
         # Apply monkeypatch BEFORE importing Run
-        import mlop.compat.neptune  # noqa: F401, I001
+        import pluto.compat.neptune  # noqa: F401, I001
         import numpy as np
         from neptune_scale import Run
 
@@ -832,7 +832,7 @@ class TestNeptuneRealBackend:
 
         # Both runs should be active
         assert run._neptune_run is not None
-        assert run._mlop_run is not None
+        assert run._pluto_run is not None
 
         # Wait for Neptune to finish all operations before closing
         # Use verbose=False to prevent logging errors when pytest captures stdout
@@ -847,7 +847,7 @@ class TestNeptuneRealBackend:
 
         print('✓ Full dual-logging test passed!')
         print(f'  Neptune: {neptune_url}')
-        print('  mlop run successfully logged')
+        print('  pluto run successfully logged')
 
     @pytest.mark.skipif(
         not os.environ.get('NEPTUNE_API_TOKEN')
@@ -857,14 +857,14 @@ class TestNeptuneRealBackend:
     def test_real_neptune_context_manager(self, clean_env):
         """Test context manager protocol with real Neptune."""
         # Apply monkeypatch BEFORE importing Run
-        import mlop.compat.neptune  # noqa: F401, I001
+        import pluto.compat.neptune  # noqa: F401, I001
         from neptune_scale import Run
 
         task_name = get_task_name()
 
         with Run(experiment_name=task_name) as run:
             run.log_metrics({'test/ctx': 1.0}, step=0)
-            assert run._mlop_run is None  # No mlop configured
+            assert run._pluto_run is None  # No pluto configured
 
         # Neptune should be closed automatically
         url = run.get_run_url()
@@ -874,17 +874,17 @@ class TestNeptuneRealBackend:
     @pytest.mark.skipif(
         not os.environ.get('NEPTUNE_API_TOKEN')
         or not os.environ.get('NEPTUNE_PROJECT')
-        or not os.environ.get('MLOP_PROJECT'),
-        reason='Requires NEPTUNE_API_TOKEN, NEPTUNE_PROJECT, and MLOP_PROJECT',
+        or not os.environ.get('PLUTO_PROJECT'),
+        reason='Requires NEPTUNE_API_TOKEN, NEPTUNE_PROJECT, and PLUTO_PROJECT',
     )
-    def test_real_neptune_mlop_resilience(self):
+    def test_real_neptune_pluto_resilience(self):
         """
         Test that Neptune works even if mlop fails during the run.
 
         Simulates mlop service being down mid-run.
         """
         # Apply monkeypatch BEFORE importing Run
-        import mlop.compat.neptune  # noqa: F401, I001
+        import pluto.compat.neptune  # noqa: F401, I001
         from neptune_scale import Run
 
         task_name = get_task_name()
@@ -895,9 +895,9 @@ class TestNeptuneRealBackend:
         run.log_configs({'test': 'resilience'})
         run.log_metrics({'test/metric1': 1.0}, step=0)
 
-        # Simulate mlop failure by breaking the run object
-        if run._mlop_run:
-            run._mlop_run.log = mock.MagicMock(side_effect=Exception('mlop down'))
+        # Simulate pluto failure by breaking the run object
+        if run._pluto_run:
+            run._pluto_run.log = mock.MagicMock(side_effect=Exception('pluto down'))
 
         # Neptune should still work!
         run.log_metrics({'test/metric2': 2.0}, step=1)

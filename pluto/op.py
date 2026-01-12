@@ -8,7 +8,7 @@ import time
 import traceback
 from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple, Union
 
-import mlop
+import pluto
 
 from .api import (
     make_compat_alert_v1,
@@ -157,10 +157,10 @@ class Op:
         logger.debug(f'{tag}: started')
 
         # set globals
-        if mlop.ops is None:
-            mlop.ops = []
-        mlop.ops.append(self)
-        mlop.log, mlop.alert, mlop.watch = self.log, self.alert, self.watch
+        if pluto.ops is None:
+            pluto.ops = []
+        pluto.ops.append(self)
+        pluto.log, pluto.alert, pluto.watch = self.log, self.alert, self.watch
 
     def log(
         self,
@@ -206,9 +206,9 @@ class Op:
         teardown_logger(logger, console=logging.getLogger('console'))
 
         self.settings.meta = []
-        if mlop.ops is not None:
-            mlop.ops = [
-                op for op in mlop.ops if op.settings._op_id != self.settings._op_id
+        if pluto.ops is not None:
+            pluto.ops = [
+                op for op in pluto.ops if op.settings._op_id != self.settings._op_id
             ]  # TODO: make more efficient
 
     def watch(self, module, **kwargs):

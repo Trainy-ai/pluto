@@ -8,11 +8,11 @@ echo "ruff ver $RUFF_VERSION"
 echo "mypy ver $MYPY_VERSION"
 
 # Run ruff
-echo 'mlop ruff:'
-poetry run ruff check --fix mlop tests
-poetry run ruff format mlop tests
+echo 'pluto ruff:'
+poetry run ruff check --fix pluto mlop tests
+poetry run ruff format pluto mlop tests
 
 
 # Run mypy
-echo 'mlop mypy:'
-poetry run mypy mlop
+echo 'pluto mypy:'
+poetry run mypy pluto

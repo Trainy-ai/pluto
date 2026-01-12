@@ -1,4 +1,4 @@
-name: mlop-test
+name: pluto-test
 
 on:
   push:

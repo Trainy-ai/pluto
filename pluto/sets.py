@@ -3,10 +3,27 @@ import logging
 import os
 import queue
 import sys
+import warnings
 from typing import Any, Dict, List, Optional, Union
 
 logger = logging.getLogger(f"{__name__.split('.')[0]}")
 tag = 'Settings'
+
+
+def _get_env_with_deprecation(new_key: str, old_key: str) -> Optional[str]:
+    """Get env var with fallback to deprecated MLOP_* name."""
+    value = os.environ.get(new_key)
+    if value is None:
+        old_value = os.environ.get(old_key)
+        if old_value is not None:
+            warnings.warn(
+                f'Environment variable {old_key} is deprecated. '
+                f'Use {new_key} instead.',
+                DeprecationWarning,
+                stacklevel=3,
+            )
+            return old_value
+    return value
 
 
 class Settings:
@@ -76,10 +93,10 @@ class Settings:
             and hasattr(self, 'url_ingest')
             and hasattr(self, 'url_py')
         ):
-            self.url_app = 'https://trakkur.trainy.ai'
-            self.url_api = 'https://trakkur-api.trainy.ai'
-            self.url_ingest = 'https://trakkur-ingest.trainy.ai'
-            self.url_py = 'https://trakkur-py.trainy.ai'
+            self.url_app = 'https://pluto.trainy.ai'
+            self.url_api = 'https://pluto-api.trainy.ai'
+            self.url_ingest = 'https://pluto-ingest.trainy.ai'
+            self.url_py = 'https://pluto-py.trainy.ai'
         self.update_url()
 
     def update_url(self) -> None:
@@ -159,8 +176,8 @@ def setup(settings: Union[Settings, Dict[str, Any], None] = None) -> Settings:
 
     new_settings = Settings()
 
-    # Read MLOP_DEBUG_LEVEL environment variable
-    env_log_level = os.getenv('MLOP_DEBUG_LEVEL')
+    # Read PLUTO_DEBUG_LEVEL environment variable (with MLOP_DEBUG_LEVEL fallback)
+    env_log_level = _get_env_with_deprecation('PLUTO_DEBUG_LEVEL', 'MLOP_DEBUG_LEVEL')
     if env_log_level is not None:
         level_map = {
             'DEBUG': 10,
@@ -175,38 +192,55 @@ def setup(settings: Union[Settings, Dict[str, Any], None] = None) -> Settings:
             new_settings.x_log_level = int(env_log_level)
         else:
             logger.warning(
-                f'{tag}: invalid MLOP_DEBUG_LEVEL "{env_log_level}", using default. '
+                f'{tag}: invalid PLUTO_DEBUG_LEVEL "{env_log_level}", using default. '
                 f'Valid values: DEBUG, INFO, WARNING, ERROR, CRITICAL'
             )
 
     # Prepare settings dict and check for URL overrides
     settings_dict = settings if isinstance(settings, dict) else {}
 
-    # Read URL environment variables
-    env_url_app = os.getenv('MLOP_URL_APP')
-    env_url_api = os.getenv('MLOP_URL_API')
-    env_url_ingest = os.getenv('MLOP_URL_INGEST')
-    env_url_py = os.getenv('MLOP_URL_PY')
+    # Read URL environment variables (with MLOP_* fallback)
+    env_url_app = _get_env_with_deprecation('PLUTO_URL_APP', 'MLOP_URL_APP')
+    env_url_api = _get_env_with_deprecation('PLUTO_URL_API', 'MLOP_URL_API')
+    env_url_ingest = _get_env_with_deprecation('PLUTO_URL_INGEST', 'MLOP_URL_INGEST')
+    env_url_py = _get_env_with_deprecation('PLUTO_URL_PY', 'MLOP_URL_PY')
 
     # If any URL env var is set, ensure all four URLs are in settings_dict
     # This prevents update_host() from resetting to defaults
     if any([env_url_app, env_url_api, env_url_ingest, env_url_py]):
         # Set defaults for any URLs not provided
         default_urls = {
-            'url_app': 'https://trakkur.trainy.ai',
-            'url_api': 'https://trakkur-api.trainy.ai',
-            'url_ingest': 'https://trakkur-ingest.trainy.ai',
-            'url_py': 'https://trakkur-py.trainy.ai',
+            'url_app': 'https://pluto.trainy.ai',
+            'url_api': 'https://pluto-api.trainy.ai',
+            'url_ingest': 'https://pluto-ingest.trainy.ai',
+            'url_py': 'https://pluto-py.trainy.ai',
         }
 
         # Merge: user params > env vars > defaults
+        env_url_map = {
+            'url_app': env_url_app,
+            'url_api': env_url_api,
+            'url_ingest': env_url_ingest,
+            'url_py': env_url_py,
+        }
         for url_key, default_value in default_urls.items():
             if url_key not in settings_dict:
-                env_var_name = f'MLOP_{url_key.upper()}'
-                env_value = os.getenv(env_var_name)
+                env_value = env_url_map.get(url_key)
                 settings_dict[url_key] = (
                     env_value if env_value is not None else default_value
                 )
+
+    # Read PLUTO_API_TOKEN environment variable (with MLOP_API_TOKEN fallback)
+    # Only apply if not already set via function parameters
+    env_api_token = _get_env_with_deprecation('PLUTO_API_TOKEN', 'MLOP_API_TOKEN')
+    if env_api_token is not None and '_auth' not in settings_dict:
+        new_settings._auth = env_api_token
+
+    # Read PLUTO_PROJECT environment variable (with MLOP_PROJECT fallback)
+    # Only apply if not already set via function parameters
+    env_project = _get_env_with_deprecation('PLUTO_PROJECT', 'MLOP_PROJECT')
+    if env_project is not None and 'project' not in settings_dict:
+        new_settings.project = env_project
 
     # Apply all settings (user params override env vars)
     new_settings.update(settings_dict)

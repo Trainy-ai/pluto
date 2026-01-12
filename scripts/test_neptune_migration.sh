@@ -1,8 +1,8 @@
 #!/bin/bash
 
-# Neptune to mlop Migration Test Script
+# Neptune to Pluto Migration Test Script
 #
-# This script helps engineers validate that their Neptune-to-mlop migration
+# This script helps engineers validate that their Neptune-to-Pluto migration
 # is working correctly during the transition period.
 #
 # Usage:
@@ -10,9 +10,9 @@
 #
 # Requirements:
 #   - neptune-scale installed
-#   - mlop installed
-#   - MLOP_PROJECT environment variable set
-#   - Valid mlop credentials (keyring or MLOP_API_KEY)
+#   - pluto installed
+#   - PLUTO_PROJECT environment variable set
+#   - Valid pluto credentials (keyring or PLUTO_API_KEY)
 
 set -euo pipefail
 
@@ -58,7 +58,7 @@ python_module_exists() {
 
 # Main script
 main() {
-    print_header "Neptune to mlop Migration Test"
+    print_header "Neptune to Pluto Migration Test"
     echo ""
 
     # Step 1: Check prerequisites
@@ -83,34 +83,34 @@ main() {
     fi
 
     # Check mlop
-    if python_module_exists mlop; then
-        print_success "mlop installed"
+    if python_module_exists pluto; then
+        print_success "pluto installed"
     else
-        print_error "mlop not installed. Run: pip install trainy-mlop"
+        print_error "pluto not installed. Run: pip install pluto-ml"
         exit 1
     fi
 
     echo ""
 
     # Step 2: Check configuration
-    print_info "Step 2: Checking mlop configuration..."
+    print_info "Step 2: Checking pluto configuration..."
     echo ""
 
-    if [ -z "${MLOP_PROJECT:-}" ]; then
-        print_warning "MLOP_PROJECT not set"
-        print_info "Set it with: export MLOP_PROJECT='your-project-name'"
+    if [ -z "${PLUTO_PROJECT:-}" ]; then
+        print_warning "PLUTO_PROJECT not set"
+        print_info "Set it with: export PLUTO_PROJECT='your-project-name'"
         echo ""
         print_info "The test will continue, but dual-logging will be disabled."
-        MLOP_CONFIGURED=false
+        PLUTO_CONFIGURED=false
     else
-        print_success "MLOP_PROJECT set to: $MLOP_PROJECT"
-        MLOP_CONFIGURED=true
+        print_success "PLUTO_PROJECT set to: $PLUTO_PROJECT"
+        PLUTO_CONFIGURED=true
     fi
 
-    if [ -z "${MLOP_API_KEY:-}" ]; then
-        print_info "MLOP_API_KEY not set (will use keyring)"
+    if [ -z "${PLUTO_API_KEY:-}" ]; then
+        print_info "PLUTO_API_KEY not set (will use keyring)"
     else
-        print_success "MLOP_API_KEY set"
+        print_success "PLUTO_API_KEY set"
     fi
 
     echo ""
@@ -123,7 +123,7 @@ main() {
 import sys
 
 try:
-    import mlop.compat.neptune
+    import pluto.compat.neptune
     print("✓ Neptune compatibility layer imported successfully")
     sys.exit(0)
 except Exception as e:
@@ -140,7 +140,7 @@ EOF
 
     echo ""
 
-    # Step 4: Test basic Neptune functionality (without mlop)
+    # Step 4: Test basic Neptune functionality (without pluto)
     print_info "Step 4: Testing basic Neptune functionality..."
     echo ""
 
@@ -148,13 +148,13 @@ EOF
 import os
 import sys
 
-# Disable mlop for this test
-if 'MLOP_PROJECT' in os.environ:
-    del os.environ['MLOP_PROJECT']
+# Disable pluto for this test
+if 'PLUTO_PROJECT' in os.environ:
+    del os.environ['PLUTO_PROJECT']
 
 try:
     # Import Neptune with compatibility layer
-    import mlop.compat.neptune
+    import pluto.compat.neptune
     from neptune_scale import Run
 
     # Create a mock run (this would normally connect to Neptune)
@@ -182,8 +182,8 @@ EOF
     echo ""
 
     # Step 5: Test dual-logging (if configured)
-    if [ "$MLOP_CONFIGURED" = true ]; then
-        print_info "Step 5: Testing dual-logging to Neptune and mlop..."
+    if [ "$PLUTO_CONFIGURED" = true ]; then
+        print_info "Step 5: Testing dual-logging to Neptune and Pluto..."
         echo ""
 
         cat > /tmp/test_dual_logging.py << 'EOF'
@@ -192,7 +192,7 @@ import sys
 from unittest import mock
 
 # Import compatibility layer
-import mlop.compat.neptune
+import pluto.compat.neptune
 from neptune_scale import Run
 
 try:
@@ -222,9 +222,9 @@ try:
     # For this script, we just verify the wrapper structure
     print("✓ Dual-logging wrapper is active")
 
-    # Verify mlop module is accessible
-    import mlop
-    print("✓ mlop module is available for dual-logging")
+    # Verify pluto module is accessible
+    import pluto
+    print("✓ pluto module is available for dual-logging")
 
     sys.exit(0)
 
@@ -241,7 +241,7 @@ EOF
             print_warning "Dual-logging test failed (this may require Neptune credentials)"
         fi
     else
-        print_warning "Step 5: Skipping dual-logging test (MLOP_PROJECT not set)"
+        print_warning "Step 5: Skipping dual-logging test (PLUTO_PROJECT not set)"
     fi
 
     echo ""
@@ -275,36 +275,36 @@ EOF
     print_success "Neptune compatibility layer: WORKING"
     print_success "Neptune API: FUNCTIONAL"
 
-    if [ "$MLOP_CONFIGURED" = true ]; then
-        print_success "mlop configuration: CONFIGURED"
+    if [ "$PLUTO_CONFIGURED" = true ]; then
+        print_success "pluto configuration: CONFIGURED"
         print_info "Your setup is ready for dual-logging!"
     else
-        print_warning "mlop configuration: NOT CONFIGURED"
-        print_info "To enable dual-logging, set MLOP_PROJECT environment variable"
+        print_warning "pluto configuration: NOT CONFIGURED"
+        print_info "To enable dual-logging, set PLUTO_PROJECT environment variable"
     fi
 
     echo ""
     print_header "Next Steps"
     echo ""
 
-    if [ "$MLOP_CONFIGURED" = false ]; then
-        echo "1. Set up mlop configuration:"
-        echo "   export MLOP_PROJECT='your-project-name'"
-        echo "   export MLOP_API_KEY='your-api-key'  # optional, can use keyring"
+    if [ "$PLUTO_CONFIGURED" = false ]; then
+        echo "1. Set up pluto configuration:"
+        echo "   export PLUTO_PROJECT='your-project-name'"
+        echo "   export PLUTO_API_KEY='your-api-key'  # optional, can use keyring"
         echo ""
     fi
 
     echo "2. Add this line to your training scripts:"
-    echo "   ${GREEN}import mlop.compat.neptune${NC}"
+    echo "   ${GREEN}import pluto.compat.neptune${NC}"
     echo ""
     echo "3. Run your existing Neptune training code"
-    echo "   - Logs will go to both Neptune and mlop (if configured)"
+    echo "   - Logs will go to both Neptune and Pluto (if configured)"
     echo "   - Neptune functionality is unchanged"
-    echo "   - If mlop fails, Neptune continues working"
+    echo "   - If Pluto fails, Neptune continues working"
     echo ""
     echo "4. Verify logs appear in both systems:"
     echo "   - Neptune UI: Check your usual Neptune dashboard"
-    echo "   - mlop UI: Check https://trakkur.trainy.ai"
+    echo "   - Pluto UI: Check https://pluto.trainy.ai"
     echo ""
     echo "For more information, see: examples/neptune_migration_README.md"
     echo ""
