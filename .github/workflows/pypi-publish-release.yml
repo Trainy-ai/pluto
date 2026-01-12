@@ -1,0 +1,38 @@
+name: Publish Release to PyPI (pluto-ml)
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+jobs:
+  release-build-pypi:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install Poetry
+        run: pip install poetry
+
+      - name: Get version from pyproject.toml
+        id: version
+        run: |
+          VERSION=$(awk -F '"' '/version =/ { print $2 }' pyproject.toml | head -n 1)
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Update version placeholders
+        run: |
+          VERSION=${{ steps.version.outputs.version }}
+          sed -i "s/{{PLUTO_COMMIT_SHA}}/${{ github.sha }}/g" pluto/__init__.py
+          sed -i "s/__version__ = '.*'/__version__ = '${VERSION}'/g" pluto/__init__.py
+
+      - name: Build package
+        run: poetry build
+
+      - name: Publish to PyPI
+        run: poetry publish --username __token__ --password ${{ secrets.PYPI_TOKEN }}
