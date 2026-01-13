@@ -242,6 +242,20 @@ def setup(settings: Union[Settings, Dict[str, Any], None] = None) -> Settings:
     if env_project is not None and 'project' not in settings_dict:
         new_settings.project = env_project
 
+    # Read PLUTO_THREAD_JOIN_TIMEOUT_SECONDS environment variable
+    # Only apply if not already set via function parameters
+    env_timeout = _get_env_with_deprecation(
+        'PLUTO_THREAD_JOIN_TIMEOUT_SECONDS', 'MLOP_THREAD_JOIN_TIMEOUT_SECONDS'
+    )
+    if env_timeout is not None and 'x_thread_join_timeout_seconds' not in settings_dict:
+        if env_timeout.isdigit():
+            new_settings.x_thread_join_timeout_seconds = int(env_timeout)
+        else:
+            logger.warning(
+                f'{tag}: invalid PLUTO_THREAD_JOIN_TIMEOUT_SECONDS "{env_timeout}", '
+                f'using default. Value must be a positive integer.'
+            )
+
     # Apply all settings (user params override env vars)
     new_settings.update(settings_dict)
 
