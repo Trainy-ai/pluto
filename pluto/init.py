@@ -7,7 +7,7 @@ from .op import Op
 from .sets import Settings, setup
 from .util import gen_id, get_char
 
-logger = logging.getLogger(f"{__name__.split('.')[0]}")
+logger = logging.getLogger(f'{__name__.split(".")[0]}')
 tag = 'Init'
 
 

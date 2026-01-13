@@ -26,7 +26,7 @@ from .store import DataStore
 from .sys import System
 from .util import get_char, get_val, to_json
 
-logger = logging.getLogger(f"{__name__.split('.')[0]}")
+logger = logging.getLogger(f'{__name__.split(".")[0]}')
 tag = 'Operation'
 
 MetaNames = List[str]
@@ -63,7 +63,12 @@ class OpMonitor:
         for attr in ['_thread', '_thread_monitor']:
             thread = getattr(self, attr)
             if thread is not None:
-                thread.join()
+                thread.join(timeout=self.op.settings.x_thread_join_timeout_seconds)
+                if thread.is_alive():
+                    logger.warning(
+                        f'{tag}: Thread {thread.name} did not terminate, '
+                        'continuing anyway'
+                    )
                 setattr(self, attr, None)
         if isinstance(code, int):
             self.op.settings._op_status = code
@@ -178,7 +183,16 @@ class Op:
         """Finish logging"""
         try:
             self._monitor.stop(code)
+            # Wait for queue to drain with timeout to prevent hang during shutdown
+            drain_timeout = self.settings.x_thread_join_timeout_seconds
+            drain_start = time.time()
             while not self._queue.empty():
+                if time.time() - drain_start > drain_timeout:
+                    logger.warning(
+                        f'{tag}: Queue drain timeout after {drain_timeout}s, '
+                        f'{self._queue.qsize()} items remaining'
+                    )
+                    break
                 time.sleep(self.settings.x_internal_check_process)
             self._store.stop() if self._store else None
             self._iface.stop() if self._iface else None  # fixed order

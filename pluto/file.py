@@ -14,7 +14,7 @@ from PIL import Image as PILImage
 
 from .util import get_class
 
-logger = logging.getLogger(f"{__name__.split('.')[0]}")
+logger = logging.getLogger(f'{__name__.split(".")[0]}')
 tag = 'File'
 
 VALID_CHAR = re.compile(r'^[a-zA-Z0-9_\-.]+$')
@@ -62,7 +62,7 @@ class File:
             return hashlib.sha256(f.read()).hexdigest()
 
     def _mkcopy(self, dir: str) -> None:
-        if not hasattr(self, '_tmp'):
+        if self._tmp is None:
             self._tmp = f'{dir}/files/{self._name}-{self._id}{self._ext}'
             if self._path is None:
                 raise ValueError('File path is not set')
@@ -70,6 +70,9 @@ class File:
             if hasattr(self, '_image'):
                 os.remove(self._path)
             self._path = os.path.abspath(self._tmp)
+            # Refresh _stat to match the actual file that will be uploaded
+            # This ensures fileSize in presigned URL matches actual content
+            self._stat = os.stat(self._path)
 
 
 class Artifact(File):

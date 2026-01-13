@@ -48,7 +48,7 @@ def login(settings=None, retry=False):
         tlogger.warning(f'{tag}: server not reachable; reason: {e}')
         settings._auth = '_key'
     try:
-        tlogger.info(f"{tag}: logged in as {r.json()['organization']['slug']}")
+        tlogger.info(f'{tag}: logged in as {r.json()["organization"]["slug"]}')
         keyring.set_password(f'{settings.tag}', f'{settings.tag}', f'{settings._auth}')
         teardown_logger(tlogger)
     except Exception as e:

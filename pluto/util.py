@@ -18,7 +18,7 @@ import numpy as np
 
 from .sets import get_console
 
-logger = logging.getLogger(f"{__name__.split('.')[0]}")
+logger = logging.getLogger(f'{__name__.split(".")[0]}')
 tag = 'Util'
 
 VALID_CHAR = re.compile(r'^[ -~]+$')

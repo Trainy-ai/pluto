@@ -6,7 +6,7 @@ import sys
 import warnings
 from typing import Any, Dict, List, Optional, Union
 
-logger = logging.getLogger(f"{__name__.split('.')[0]}")
+logger = logging.getLogger(f'{__name__.split(".")[0]}')
 tag = 'Settings'
 
 
@@ -17,8 +17,7 @@ def _get_env_with_deprecation(new_key: str, old_key: str) -> Optional[str]:
         old_value = os.environ.get(old_key)
         if old_value is not None:
             warnings.warn(
-                f'Environment variable {old_key} is deprecated. '
-                f'Use {new_key} instead.',
+                f'Environment variable {old_key} is deprecated. Use {new_key} instead.',
                 DeprecationWarning,
                 stacklevel=3,
             )
@@ -27,7 +26,7 @@ def _get_env_with_deprecation(new_key: str, old_key: str) -> Optional[str]:
 
 
 class Settings:
-    tag: str = f"{__name__.split('.')[0]}"
+    tag: str = f'{__name__.split(".")[0]}'
     dir: str = str(os.path.abspath(os.getcwd()))
 
     _auth: Optional[str] = None
@@ -67,6 +66,7 @@ class Settings:
     x_file_stream_transmit_interval: int = 2**3
     x_sys_sampling_interval: int = 2**2
     x_sys_label: str = 'sys'
+    x_thread_join_timeout_seconds: int = 30
     x_grad_label: str = 'grad'
     x_param_label: str = 'param'
 
@@ -241,6 +241,20 @@ def setup(settings: Union[Settings, Dict[str, Any], None] = None) -> Settings:
     env_project = _get_env_with_deprecation('PLUTO_PROJECT', 'MLOP_PROJECT')
     if env_project is not None and 'project' not in settings_dict:
         new_settings.project = env_project
+
+    # Read PLUTO_THREAD_JOIN_TIMEOUT_SECONDS environment variable
+    # Only apply if not already set via function parameters
+    env_timeout = _get_env_with_deprecation(
+        'PLUTO_THREAD_JOIN_TIMEOUT_SECONDS', 'MLOP_THREAD_JOIN_TIMEOUT_SECONDS'
+    )
+    if env_timeout is not None and 'x_thread_join_timeout_seconds' not in settings_dict:
+        if env_timeout.isdigit():
+            new_settings.x_thread_join_timeout_seconds = int(env_timeout)
+        else:
+            logger.warning(
+                f'{tag}: invalid PLUTO_THREAD_JOIN_TIMEOUT_SECONDS "{env_timeout}", '
+                f'using default. Value must be a positive integer.'
+            )
 
     # Apply all settings (user params override env vars)
     new_settings.update(settings_dict)

@@ -6,7 +6,7 @@ import time
 from .api import make_compat_message_v1
 from .util import ANSI
 
-logger = logging.getLogger(f"{__name__.split('.')[0]}")
+logger = logging.getLogger(f'{__name__.split(".")[0]}')
 
 _input = builtins.input
 _stdout = sys.stdout
@@ -30,7 +30,7 @@ styles = {
 
 class ColorFormatter(logging.Formatter):
     def format(self, record):
-        prefix = ANSI.bold + ANSI.cyan + f"{__name__.split('.')[0]}:" + ANSI.reset
+        prefix = ANSI.bold + ANSI.cyan + f'{__name__.split(".")[0]}:' + ANSI.reset
         color = colors.get(record.levelname, '')
         style = styles.get(record.levelname, '')
 

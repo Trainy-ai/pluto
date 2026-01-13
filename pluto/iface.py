@@ -24,7 +24,7 @@ from .log import _stderr
 from .sets import Settings
 from .util import print_url
 
-logger = logging.getLogger(f"{__name__.split('.')[0]}")
+logger = logging.getLogger(f'{__name__.split(".")[0]}')
 tag = 'Interface'
 
 
@@ -200,7 +200,11 @@ class ServerInterface:
             self._thread_progress,
         ]:
             if t is not None:
-                t.join(timeout=None)
+                t.join(timeout=self.settings.x_thread_join_timeout_seconds)
+                if t.is_alive():
+                    logger.warning(
+                        f'{tag}: Thread {t.name} did not terminate, continuing anyway'
+                    )
                 t = None
 
         if self._progress_task is not None:
@@ -454,6 +458,23 @@ class ServerInterface:
                 url,
                 response,
             )
+        except (
+            BrokenPipeError,
+            ConnectionResetError,
+            ConnectionAbortedError,
+            httpx.RemoteProtocolError,
+            httpx.LocalProtocolError,
+        ) as e:
+            # Treat connection errors as shutdown signals - don't retry
+            # This prevents hanging during atexit when sockets are being torn down
+            logger.debug(
+                '%s: %s: connection error (likely shutdown): %s: %s',
+                tag,
+                name,
+                type(e).__name__,
+                e,
+            )
+            return None
         except Exception as e:
             # Capture error info for potential failure logging
             error_info = f'{type(e).__name__}: {str(e)}'

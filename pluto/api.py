@@ -6,7 +6,7 @@ from datetime import datetime
 
 from .util import clean_dict, find_node
 
-logger = logging.getLogger(f"{__name__.split('.')[0]}")
+logger = logging.getLogger(f'{__name__.split(".")[0]}')
 tag = 'API'
 
 STATUS = {
@@ -181,7 +181,7 @@ def make_compat_graph_nodes_v1(d, ref, dep=0, p='', r={}):
     elif p == '.':
         name = str(d['name'])
     else:
-        name = f"{p}.{d['name']}"
+        name = f'{p}.{d["name"]}'
 
     if 'id' in d:
         n = d.copy()
@@ -236,7 +236,7 @@ def make_compat_webhook_v1(timestamp, level, title, message, step, url):
             'embeds': [
                 {
                     'description': message,
-                    'footer': {'text': ('Step: ' f'{step} at ' f'{timestamp_str}')},
+                    'footer': {'text': (f'Step: {step} at {timestamp_str}')},
                 }
             ],
             # slack

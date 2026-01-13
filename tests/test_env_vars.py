@@ -200,3 +200,50 @@ class TestDeprecatedMLOPEnvVars:
         assert settings.x_log_level == 10  # DEBUG wins
         del os.environ['MLOP_DEBUG_LEVEL']
         del os.environ['PLUTO_DEBUG_LEVEL']
+
+
+class TestPLUTOThreadJoinTimeout:
+    """Test PLUTO_THREAD_JOIN_TIMEOUT_SECONDS environment variable."""
+
+    def test_thread_join_timeout_env_var(self):
+        """Test that PLUTO_THREAD_JOIN_TIMEOUT_SECONDS is parsed correctly."""
+        os.environ['PLUTO_THREAD_JOIN_TIMEOUT_SECONDS'] = '60'
+        settings = setup()
+        assert settings.x_thread_join_timeout_seconds == 60
+        del os.environ['PLUTO_THREAD_JOIN_TIMEOUT_SECONDS']
+
+    def test_thread_join_timeout_default(self):
+        """Test default value when env var not set."""
+        if 'PLUTO_THREAD_JOIN_TIMEOUT_SECONDS' in os.environ:
+            del os.environ['PLUTO_THREAD_JOIN_TIMEOUT_SECONDS']
+        settings = setup()
+        assert settings.x_thread_join_timeout_seconds == 30  # Default value
+
+    def test_thread_join_timeout_precedence(self):
+        """Test that function params override env var."""
+        os.environ['PLUTO_THREAD_JOIN_TIMEOUT_SECONDS'] = '60'
+        settings = setup({'x_thread_join_timeout_seconds': 120})
+        assert settings.x_thread_join_timeout_seconds == 120  # Dict wins
+        del os.environ['PLUTO_THREAD_JOIN_TIMEOUT_SECONDS']
+
+    def test_thread_join_timeout_invalid_value(self, caplog):
+        """Test warning on invalid value."""
+        os.environ['PLUTO_THREAD_JOIN_TIMEOUT_SECONDS'] = 'invalid'
+        with caplog.at_level(logging.WARNING):
+            settings = setup()
+            assert 'invalid PLUTO_THREAD_JOIN_TIMEOUT_SECONDS' in caplog.text
+            assert settings.x_thread_join_timeout_seconds == 30  # Falls back to default
+        del os.environ['PLUTO_THREAD_JOIN_TIMEOUT_SECONDS']
+
+    def test_deprecated_mlop_thread_join_timeout(self):
+        """Test deprecated MLOP_THREAD_JOIN_TIMEOUT_SECONDS still works."""
+        os.environ['MLOP_THREAD_JOIN_TIMEOUT_SECONDS'] = '45'
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter('always')
+            settings = setup()
+            assert settings.x_thread_join_timeout_seconds == 45
+            assert any(
+                'MLOP_THREAD_JOIN_TIMEOUT_SECONDS' in str(warning.message)
+                for warning in w
+            )
+        del os.environ['MLOP_THREAD_JOIN_TIMEOUT_SECONDS']

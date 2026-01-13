@@ -6,8 +6,7 @@ This module is deprecated. Use `import pluto.compat` instead.
 import warnings
 
 warnings.warn(
-    "The 'mlop.compat' module is deprecated. "
-    "Please use 'import pluto.compat' instead.",
+    "The 'mlop.compat' module is deprecated. Please use 'import pluto.compat' instead.",
     DeprecationWarning,
     stacklevel=2,
 )

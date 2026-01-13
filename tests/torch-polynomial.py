@@ -71,7 +71,7 @@ def train_model(model, x, y, criterion, optimizer, epochs):
         run.log({'val/sine': math.sin(epoch)})
 
         if epoch % 1000 == 0:
-            print(f"Epoch {epoch + 1} / {config['epochs']}")
+            print(f'Epoch {epoch + 1} / {config["epochs"]}')
 
 
 train_model(model, x, y, criterion, optimizer, config['epochs'])
