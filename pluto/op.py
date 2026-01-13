@@ -184,7 +184,7 @@ class Op:
         try:
             self._monitor.stop(code)
             # Wait for queue to drain with timeout to prevent hang during shutdown
-            drain_timeout = 30
+            drain_timeout = self.settings.x_thread_join_timeout_seconds
             drain_start = time.time()
             while not self._queue.empty():
                 if time.time() - drain_start > drain_timeout:

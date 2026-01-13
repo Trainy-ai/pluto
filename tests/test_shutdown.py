@@ -231,8 +231,10 @@ class TestThreadJoinTimeout:
 
             iface.stop()
 
-            # Verify join was called with timeout=30
-            mock_thread.join.assert_called_once_with(timeout=30)
+            # Verify join was called with configured timeout
+            mock_thread.join.assert_called_once_with(
+                timeout=settings.x_thread_join_timeout_seconds
+            )
 
     def test_warning_logged_when_thread_alive_after_timeout(self):
         """Test that a warning is logged if thread doesn't terminate."""
