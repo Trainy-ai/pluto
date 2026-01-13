@@ -74,7 +74,7 @@ class DataStore:
 
     def stop(self) -> None:
         # Wait for queue to drain with timeout to prevent hang during shutdown
-        drain_timeout = 30
+        drain_timeout = self.settings.x_thread_join_timeout_seconds
         drain_start = time.time()
         while not self._queue.empty():
             if time.time() - drain_start > drain_timeout:
@@ -86,7 +86,7 @@ class DataStore:
             time.sleep(0.1)  # Avoid busy-wait
         self._stop_event.set()
         if self._thread is not None:
-            self._thread.join(timeout=30)
+            self._thread.join(timeout=self.settings.x_thread_join_timeout_seconds)
             if self._thread.is_alive():
                 logger.warning(
                     f'{tag}: Thread {self._thread.name} did not terminate, '

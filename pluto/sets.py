@@ -66,6 +66,7 @@ class Settings:
     x_file_stream_transmit_interval: int = 2**3
     x_sys_sampling_interval: int = 2**2
     x_sys_label: str = 'sys'
+    x_thread_join_timeout_seconds: int = 30
     x_grad_label: str = 'grad'
     x_param_label: str = 'param'
 

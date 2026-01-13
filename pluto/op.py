@@ -63,7 +63,7 @@ class OpMonitor:
         for attr in ['_thread', '_thread_monitor']:
             thread = getattr(self, attr)
             if thread is not None:
-                thread.join(timeout=30)
+                thread.join(timeout=self.op.settings.x_thread_join_timeout_seconds)
                 if thread.is_alive():
                     logger.warning(
                         f'{tag}: Thread {thread.name} did not terminate, '

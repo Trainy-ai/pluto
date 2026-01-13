@@ -314,10 +314,10 @@ class NeptuneRunWrapper:
                 for op in pluto.ops[:]:
                     try:
                         op.finish()
-                    except Exception:
-                        pass
-        except Exception:
-            pass
+                    except Exception as e:
+                        logger.debug(f'Error finishing op during cleanup: {e}')
+        except Exception as e:
+            logger.debug(f'Error during pluto state cleanup: {e}')
 
     def log_metrics(self, data: Dict[str, float], step: int, timestamp=None, **kwargs):
         """

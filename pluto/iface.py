@@ -200,7 +200,7 @@ class ServerInterface:
             self._thread_progress,
         ]:
             if t is not None:
-                t.join(timeout=30)
+                t.join(timeout=self.settings.x_thread_join_timeout_seconds)
                 if t.is_alive():
                     logger.warning(
                         f'{tag}: Thread {t.name} did not terminate, continuing anyway'
