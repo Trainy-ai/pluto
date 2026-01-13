@@ -10,7 +10,7 @@ if TYPE_CHECKING:
 else:
     torch = import_lib('torch')
 
-logger = logging.getLogger(f"{__name__.split('.')[0]}")
+logger = logging.getLogger(f'{__name__.split(".")[0]}')
 tag = 'Torch'
 
 
@@ -146,9 +146,7 @@ class ModuleInst:
                     }
                 )
             else:
-                label = (
-                    f'{node.module.__class__.__name__} ' f'(Instance {node.inst_id})'
-                )
+                label = f'{node.module.__class__.__name__} (Instance {node.inst_id})'
                 nodes.append(
                     {
                         'label': label,
@@ -200,7 +198,7 @@ def read_module(module, inst_id=0):
             assert metadata['inst_id'] == struct.inst_id
             return [
                 {
-                    'node': f"in_{metadata['i_in']}",
+                    'node': f'in_{metadata["i_in"]}',
                     'index': metadata['i_in'],
                     'grad_fn': None,
                     'is_up': True,

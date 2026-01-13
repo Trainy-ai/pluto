@@ -24,7 +24,7 @@ from .log import _stderr
 from .sets import Settings
 from .util import print_url
 
-logger = logging.getLogger(f"{__name__.split('.')[0]}")
+logger = logging.getLogger(f'{__name__.split(".")[0]}')
 tag = 'Interface'
 
 
@@ -200,7 +200,11 @@ class ServerInterface:
             self._thread_progress,
         ]:
             if t is not None:
-                t.join(timeout=None)
+                t.join(timeout=30)
+                if t.is_alive():
+                    logger.warning(
+                        f'{tag}: Thread {t.name} did not terminate, continuing anyway'
+                    )
                 t = None
 
         if self._progress_task is not None:

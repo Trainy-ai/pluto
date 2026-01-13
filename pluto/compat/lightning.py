@@ -28,7 +28,7 @@ else:
         import_lib('lightning.pytorch.loggers.utilities'), '_scan_checkpoints', None
     )
 
-logger = logging.getLogger(f"{__name__.split('.')[0]}")
+logger = logging.getLogger(f'{__name__.split(".")[0]}')
 tag = 'Lightning'
 
 

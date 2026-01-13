@@ -50,8 +50,7 @@ def _get_env_with_deprecation(new_key: str, old_key: str) -> Optional[str]:
         old_value = os.environ.get(old_key)
         if old_value is not None:
             warnings.warn(
-                f'Environment variable {old_key} is deprecated. '
-                f'Use {new_key} instead.',
+                f'Environment variable {old_key} is deprecated. Use {new_key} instead.',
                 DeprecationWarning,
                 stacklevel=3,
             )
@@ -301,6 +300,24 @@ class NeptuneRunWrapper:
                 f'Continuing with Neptune-only logging.'
             )
             self._pluto_run = None
+            # Clean up any partially initialized Pluto resources
+            self._cleanup_pluto_state()
+
+    def _cleanup_pluto_state(self):
+        """Clean up any lingering Pluto state after initialization failure."""
+        if not self._pluto:
+            return
+        try:
+            import pluto
+
+            if hasattr(pluto, 'ops') and pluto.ops:
+                for op in pluto.ops[:]:
+                    try:
+                        op.finish()
+                    except Exception:
+                        pass
+        except Exception:
+            pass
 
     def log_metrics(self, data: Dict[str, float], step: int, timestamp=None, **kwargs):
         """
@@ -428,8 +445,7 @@ class NeptuneRunWrapper:
                         )
                     except Exception as e:
                         logger.warning(
-                            f'pluto.compat.neptune: Failed to convert '
-                            f'file {key}: {e}'
+                            f'pluto.compat.neptune: Failed to convert file {key}: {e}'
                         )
 
                 if pluto_files:
@@ -675,8 +691,7 @@ def _apply_monkeypatch():
 
     except ImportError:
         logger.warning(
-            'pluto.compat.neptune: neptune-scale not installed, '
-            'monkeypatch not applied'
+            'pluto.compat.neptune: neptune-scale not installed, monkeypatch not applied'
         )
     except Exception as e:
         logger.error(f'pluto.compat.neptune: Failed to apply monkeypatch: {e}')

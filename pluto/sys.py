@@ -11,7 +11,7 @@ from git import Repo
 from .sets import Settings
 from .util import run_cmd, to_human  # TODO: move to server side
 
-logger = logging.getLogger(f"{__name__.split('.')[0]}")
+logger = logging.getLogger(f'{__name__.split(".")[0]}')
 tag = 'System'
 
 

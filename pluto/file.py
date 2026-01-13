@@ -14,7 +14,7 @@ from PIL import Image as PILImage
 
 from .util import get_class
 
-logger = logging.getLogger(f"{__name__.split('.')[0]}")
+logger = logging.getLogger(f'{__name__.split(".")[0]}')
 tag = 'File'
 
 VALID_CHAR = re.compile(r'^[a-zA-Z0-9_\-.]+$')

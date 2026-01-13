@@ -110,7 +110,7 @@ def train_model(model, train_loader, criterion, optimizer, epochs=NUM_EPOCHS):
         avg_loss = total_loss / len(train_loader)
         validation_loss = evaluate_model(model, train_loader, criterion)
         print(
-            f'Epoch [{epoch+1}/{epochs}], Training Loss: {avg_loss:.4f}',
+            f'Epoch [{epoch + 1}/{epochs}], Training Loss: {avg_loss:.4f}',
             f'Validation Loss: {validation_loss:.4f}',
         )
         run.log(

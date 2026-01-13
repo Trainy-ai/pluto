@@ -26,7 +26,7 @@ from .store import DataStore
 from .sys import System
 from .util import get_char, get_val, to_json
 
-logger = logging.getLogger(f"{__name__.split('.')[0]}")
+logger = logging.getLogger(f'{__name__.split(".")[0]}')
 tag = 'Operation'
 
 MetaNames = List[str]

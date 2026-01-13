@@ -7,7 +7,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from .sets import Settings
 
-logger = logging.getLogger(f"{__name__.split('.')[0]}")
+logger = logging.getLogger(f'{__name__.split(".")[0]}')
 tag = 'Store'
 
 
