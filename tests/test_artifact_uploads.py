@@ -46,9 +46,7 @@ TESTING_PROJECT_NAME = 'testing-ci'
 @pytest.fixture
 def pluto_run():
     """Initializes and finishes a pluto run for a test."""
-    run = pluto.init(
-        project=TESTING_PROJECT_NAME, name=get_task_name(), config={}
-    )
+    run = pluto.init(project=TESTING_PROJECT_NAME, name=get_task_name(), config={})
     yield run
     run.finish()
 
@@ -118,7 +116,7 @@ class TestTextUploads:
 
     def test_text_upload_from_string(self, pluto_run):
         """Test uploading Text from a string."""
-        text_content = 'This is a test log message.\nWith multiple lines.\nAnd some data.'
+        text_content = 'This is a test log message.\nWith multiple lines.'
         text = pluto.Text(text_content, caption='log-message')
         pluto_run.log({'text/log': text})
 
@@ -138,7 +136,7 @@ class TestTextUploads:
 
     def test_text_upload_unicode(self, pluto_run):
         """Test uploading text with unicode characters."""
-        unicode_text = 'Hello World! \u4e2d\u6587 \u65e5\u672c\u8a9e \ud55c\uad6d\uc5b4 \U0001f600\U0001f680'
+        unicode_text = 'Hello World! 中文 日本語 한국어 😀🚀'
         text = pluto.Text(unicode_text, caption='unicode-text')
         pluto_run.log({'text/unicode': text})
 
@@ -266,9 +264,7 @@ class TestMultipleFileTypesUpload:
         for step in range(5):
             pluto_run.log({'train/loss': 1.0 / (step + 1)}, step=step)
 
-            img = PILImage.new(
-                'RGB', (32, 32), color=(step * 50, 100, 255 - step * 50)
-            )
+            img = PILImage.new('RGB', (32, 32), color=(step * 50, 100, 255 - step * 50))
             image = pluto.Image(img, caption=f'step-{step}-image')
             pluto_run.log({'train/image': image}, step=step)
 
