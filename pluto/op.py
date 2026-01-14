@@ -186,15 +186,30 @@ class Op:
             # Wait for queue to drain with timeout to prevent hang during shutdown
             drain_timeout = self.settings.x_thread_join_timeout_seconds
             drain_start = time.time()
+            initial_size = self._queue.qsize()
+            last_log_time = drain_start
+            logger.debug(f'{tag}: waiting for queue to drain, {initial_size} items')
             while not self._queue.empty():
-                if time.time() - drain_start > drain_timeout:
+                elapsed = time.time() - drain_start
+                if elapsed > drain_timeout:
+                    remaining = self._queue.qsize()
                     logger.warning(
                         f'{tag}: Queue drain timeout after {drain_timeout}s, '
-                        f'{self._queue.qsize()} items remaining'
+                        f'{remaining} items remaining (started with {initial_size})'
                     )
                     break
+                # Log progress every 5 seconds
+                if time.time() - last_log_time > 5:
+                    current_size = self._queue.qsize()
+                    logger.debug(
+                        f'{tag}: queue drain progress: {current_size} items remaining '
+                        f'({initial_size - current_size} processed in {elapsed:.1f}s)'
+                    )
+                    last_log_time = time.time()
                 time.sleep(self.settings.x_internal_check_process)
+            logger.debug(f'{tag}: queue drained, stopping store')
             self._store.stop() if self._store else None
+            logger.debug(f'{tag}: store stopped, stopping interface')
             self._iface.stop() if self._iface else None  # fixed order
         except (Exception, KeyboardInterrupt) as e:
             self.settings._op_status = signal.SIGINT.value
