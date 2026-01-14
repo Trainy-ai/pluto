@@ -34,7 +34,9 @@ Hard Requirements:
 
 import logging
 import os
-from typing import Any, Dict, List, Optional
+from dataclasses import asdict, is_dataclass
+from datetime import datetime
+from typing import Any, Dict, List, Mapping, Optional, Union
 
 logger = logging.getLogger(__name__)
 _original_neptune_run = None
@@ -344,28 +346,59 @@ class NeptuneRunWrapper:
 
         return result
 
-    def log_configs(self, data: Dict[str, Any], **kwargs):
+    def log_configs(
+        self,
+        data: Dict[str, Any],
+        flatten: bool = False,
+        cast_unsupported: bool = False,
+        **kwargs,
+    ):
         """
         Log configuration/hyperparameters to both Neptune and pluto.
 
         Config updates are synced to the pluto server via the config update endpoint.
+
+        Args:
+            data: Configuration data to log
+            flatten: If True, flatten nested dicts/dataclasses using '/' separator
+            cast_unsupported: If True, cast unsupported types to strings
         """
+        if data is None:
+            return None
+
         # Call Neptune first (unless disabled)
         result = None
         if not self._neptune_disabled:
-            result = self._neptune_run.log_configs(data=data, **kwargs)
+            result = self._neptune_run.log_configs(
+                data=data, flatten=flatten, cast_unsupported=cast_unsupported, **kwargs
+            )
 
         # Try to log to pluto
         if self._pluto_run:
             try:
+                # Process data the same way Neptune does
+                pluto_data = data
+
+                # Handle dataclasses
+                if is_dataclass(pluto_data) and not isinstance(pluto_data, type):
+                    pluto_data = asdict(pluto_data)
+
+                # Flatten nested structures if requested
+                if flatten:
+                    pluto_data = self._flatten_nested(pluto_data)
+
+                # Cast unsupported types if requested
+                if cast_unsupported:
+                    pluto_data = self._cast_unsupported(pluto_data)
+
                 # Update pluto's config locally
                 if hasattr(self._pluto_run, 'config'):
                     if self._pluto_run.config is None:
                         self._pluto_run.config = {}
-                    self._pluto_run.config.update(data)
+                    self._pluto_run.config.update(pluto_data)
                 # Sync to server
                 if hasattr(self._pluto_run, '_iface') and self._pluto_run._iface:
-                    self._pluto_run._iface._update_config(data)
+                    self._pluto_run._iface._update_config(pluto_data)
             except Exception as e:
                 logger.debug(
                     f'pluto.compat.neptune: Failed to log configs to pluto: {e}'
@@ -625,6 +658,61 @@ class NeptuneRunWrapper:
             else:
                 items.append((new_key, v))
         return dict(items)
+
+    @staticmethod
+    def _flatten_nested(data: Any) -> Dict[str, Any]:
+        """
+        Flatten nested dictionaries and dataclasses using '/' as separator.
+
+        Matches Neptune's flatten behavior for log_configs.
+        """
+        flattened: Dict[str, Any] = {}
+
+        def _flatten_inner(d: Any, prefix: str = '') -> None:
+            if is_dataclass(d) and not isinstance(d, type):
+                d = asdict(d)
+            if not isinstance(d, Mapping):
+                raise TypeError(
+                    f'Cannot flatten value of type {type(d)}. Try flatten=False.'
+                )
+            for key, value in d.items():
+                str_key = str(key)
+                new_key = f'{prefix}/{str_key}' if prefix else str_key
+                if isinstance(value, Mapping) or (
+                    is_dataclass(value) and not isinstance(value, type)
+                ):
+                    _flatten_inner(value, prefix=new_key)
+                else:
+                    flattened[new_key] = value
+
+        _flatten_inner(data)
+        return flattened
+
+    @staticmethod
+    def _cast_unsupported(
+        data: Dict[str, Any],
+    ) -> Dict[
+        str, Union[str, float, int, bool, datetime, List[str], set, tuple]
+    ]:
+        """
+        Cast unsupported types to strings.
+
+        Matches Neptune's cast_unsupported behavior for log_configs.
+        Preserves: float, bool, int, str, datetime, and string collections.
+        """
+        result: Dict[
+            str, Union[str, float, int, bool, datetime, List[str], set, tuple]
+        ] = {}
+
+        for k, v in data.items():
+            if isinstance(v, (float, bool, int, str, datetime)) or (
+                isinstance(v, (list, set, tuple))
+                and all(isinstance(item, str) for item in v)
+            ):
+                result[k] = v
+            else:
+                result[k] = '' if v is None else str(v)
+        return result
 
     def __getattr__(self, name):
         """
