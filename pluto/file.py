@@ -92,6 +92,7 @@ class Artifact(File):
         metadata: Optional[Dict[str, Any]] = None,
         **kwargs: Any,
     ) -> None:
+        self._tmp: Optional[str] = None
         self._name = caption + f'.{uuid.uuid4()}' if caption else f'{uuid.uuid4()}'
         self._id = f'{uuid.uuid4()}{uuid.uuid4()}'.replace('-', '')
 
