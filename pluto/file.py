@@ -87,7 +87,7 @@ class Artifact(File):
 
     def __init__(
         self,
-        data: Optional[str] = None,
+        data: Optional[Union[str, bytes, bytearray]] = None,
         caption: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
         **kwargs: Any,
@@ -99,8 +99,12 @@ class Artifact(File):
 
         self._metadata: Dict[str, Any] = metadata or {}
         self._path: Optional[str] = None
+        self._bytes: Optional[bytes] = None
         if isinstance(data, str) and os.path.exists(data):
             self._path = os.path.abspath(data)
+        elif isinstance(data, (bytes, bytearray)):
+            logger.debug(f'{self.tag}: used raw bytes')
+            self._bytes = bytes(data)
 
     # TODO: remove legacy compat
     def add_file(self, path: str, name: Optional[str] = None) -> None:
@@ -108,6 +112,12 @@ class Artifact(File):
         self._path = os.path.abspath(path)
 
     def load(self, dir: Optional[str] = None) -> None:
+        if not self._path and self._bytes is not None and dir:
+            self._tmp = f'{dir}/files/{self._name}-{self._id}{self._ext}'
+            with open(self._tmp, 'wb') as f:
+                f.write(self._bytes)
+            self._path = os.path.abspath(self._tmp)
+
         if not self._path:
             logger.critical(f'{self.tag}: failed to load artifact')
         else:
@@ -159,12 +169,17 @@ class Image(File):
         self._ext = '.png'
         self._image: Any = None
         self._path: Optional[str] = None
+        self._bytes: Optional[bytes] = None
         self._matplotlib = False
 
         if isinstance(data, str):
             logger.debug(f'{self.tag}: used file')
             self._image = 'file'  # self._image = PILImage.open(data)
             self._path = os.path.abspath(data)
+        elif isinstance(data, (bytes, bytearray)):
+            logger.debug(f'{self.tag}: used raw bytes')
+            self._image = 'bytes'
+            self._bytes = bytes(data)
         else:
             class_name = get_class(data)
             if class_name.startswith('PIL.Image.Image'):
@@ -189,6 +204,9 @@ class Image(File):
                 self._tmp = f'{dir}/files/{self._name}-{self._id}{self._ext}'
                 if getattr(self, '_matplotlib', False):
                     make_compat_image_matplotlib(self._tmp, self._image)
+                elif self._image == 'bytes' and self._bytes is not None:
+                    with open(self._tmp, 'wb') as f:
+                        f.write(self._bytes)
                 else:
                     self._image.save(self._tmp, format=self._ext[1:])
                 self._path = os.path.abspath(self._tmp)
@@ -221,12 +239,17 @@ class Audio(File):
         self._ext = '.wav'
         self._audio: Union[str, np.ndarray]
         self._path: Optional[str] = None
+        self._bytes: Optional[bytes] = None
         self._rate: int = int(rate) if rate is not None else 48000
 
         if isinstance(data, str):
             logger.debug(f'{self.tag}: used file')
             self._audio = 'file'
             self._path = os.path.abspath(data)
+        elif isinstance(data, (bytes, bytearray)):
+            logger.debug(f'{self.tag}: used raw bytes')
+            self._audio = 'bytes'
+            self._bytes = bytes(data)
         else:
             if isinstance(data, np.ndarray):
                 logger.debug(f'{self.tag}: used numpy array')
@@ -238,7 +261,11 @@ class Audio(File):
         if not self._path:
             if dir:
                 self._tmp = f'{dir}/files/{self._name}-{self._id}{self._ext}'
-                sf.write(file=self._tmp, data=self._audio, samplerate=self._rate)
+                if self._audio == 'bytes' and self._bytes is not None:
+                    with open(self._tmp, 'wb') as f:
+                        f.write(self._bytes)
+                else:
+                    sf.write(file=self._tmp, data=self._audio, samplerate=self._rate)
                 self._path = os.path.abspath(self._tmp)
 
         if self._path is None:
@@ -264,6 +291,7 @@ class Video(File):
         self._ext = f'.{format}' if format in ['mp4', 'webm', 'ogg', 'gif'] else '.mp4'
         self._path: Optional[str] = None
         self._video: Any = None
+        self._bytes: Optional[bytes] = None
         self._data: Optional[np.ndarray] = None
         self._rate: int = int(rate) if rate is not None else 30
 
@@ -271,6 +299,10 @@ class Video(File):
             logger.debug(f'{self.tag}: used file')
             self._video = 'file'
             self._path = os.path.abspath(data)
+        elif isinstance(data, (bytes, bytearray)):
+            logger.debug(f'{self.tag}: used raw bytes')
+            self._video = 'bytes'
+            self._bytes = bytes(data)
         else:
             if hasattr(data, 'numpy') or isinstance(data, np.ndarray):
                 if hasattr(data, 'numpy'):
@@ -288,13 +320,17 @@ class Video(File):
         if not self._path:
             if dir:
                 self._tmp = f'{dir}/files/{self._name}-{self._id}{self._ext}'
-                try:
-                    make_compat_video_imageio(
-                        self._tmp, self._video, self._rate
-                    )  # self._video.write_videofile(self._tmp)
-                except TypeError as e:
-                    Path(self._tmp).touch()
-                    logger.critical('%s: failed to write video: %s', self.tag, e)
+                if self._video == 'bytes' and self._bytes is not None:
+                    with open(self._tmp, 'wb') as f:
+                        f.write(self._bytes)
+                else:
+                    try:
+                        make_compat_video_imageio(
+                            self._tmp, self._video, self._rate
+                        )  # self._video.write_videofile(self._tmp)
+                    except TypeError as e:
+                        Path(self._tmp).touch()
+                        logger.critical('%s: failed to write video: %s', self.tag, e)
                 self._path = os.path.abspath(self._tmp)
 
         if self._path is None:
