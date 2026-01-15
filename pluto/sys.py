@@ -151,7 +151,10 @@ class System:
                 c.update({'url': repo.remotes['origin'].url})
             except Exception:
                 pass
-            branch_name = getattr(getattr(repo.head, 'ref', None), 'name', None)
+            try:
+                branch_name = repo.head.ref.name
+            except TypeError:  # HEAD is detached
+                branch_name = ''
             d = {
                 'root': repo.git.rev_parse('--show-toplevel'),
                 'dirty': repo.is_dirty(),
