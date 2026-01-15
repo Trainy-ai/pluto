@@ -119,7 +119,7 @@ class TestMagicByteDetection:
 
     def test_non_bytes_returns_none(self):
         """Test that non-bytes input returns None."""
-        assert _detect_media_type_from_bytes("not bytes") is None
+        assert _detect_media_type_from_bytes('not bytes') is None
         assert _detect_media_type_from_bytes(12345) is None
         assert _detect_media_type_from_bytes(None) is None
 
