@@ -130,8 +130,12 @@ class System:
     def get_git(self) -> Dict[str, Any]:
         d: Dict[str, Any] = {}
         try:
-            from git import Repo
+            from git import Repo, exc
+        except ImportError:
+            logger.debug(f'{tag}: git: GitPython not installed, skipping git info')
+            return d
 
+        try:
             repo = Repo(
                 f'{self.settings.dir}',
                 search_parent_directories=True,
@@ -164,7 +168,9 @@ class System:
                 }
                 if d['dirty']:
                     d['diff']['head'] = run_cmd(cmd + ' HEAD')
-        except Exception as e:
+        except exc.InvalidGitRepositoryError:
+            logger.debug(f'{tag}: git: not a git repository')
+        except exc.GitError as e:
             logger.debug(
                 '%s: git: repository not detected: (%s) %s',
                 tag,
