@@ -582,15 +582,6 @@ class NeptuneRunWrapper:
 
         # Close Neptune (unless disabled)
         if not self._neptune_disabled:
-            # Wait for processing before close to ensure all file uploads complete.
-            # Neptune's sync process runs asynchronously, and files may be deleted
-            # (e.g., pytest tmp_path cleanup) before uploads finish if we don't wait.
-            try:
-                self._neptune_run.wait_for_processing(verbose=False)
-            except Exception as e:
-                logger.debug(
-                    f'pluto.compat.neptune: Error waiting for Neptune processing: {e}'
-                )
             return self._neptune_run.close(**kwargs)
         return None
 
