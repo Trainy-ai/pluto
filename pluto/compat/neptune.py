@@ -691,9 +691,7 @@ class NeptuneRunWrapper:
     @staticmethod
     def _cast_unsupported(
         data: Dict[str, Any],
-    ) -> Dict[
-        str, Union[str, float, int, bool, datetime, List[str], set, tuple]
-    ]:
+    ) -> Dict[str, Union[str, float, int, bool, datetime, List[str], set, tuple]]:
         """
         Cast unsupported types to strings.
 

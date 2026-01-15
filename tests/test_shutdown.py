@@ -111,6 +111,7 @@ class TestConnectionErrorHandling:
                 raise BrokenPipeError('Connection closed')
 
             mock_method = MagicMock(side_effect=raise_broken_pipe)
+            mock_method.__name__ = 'post'
 
             # _try should return None immediately, not retry
             result = iface._try(
@@ -145,6 +146,7 @@ class TestConnectionErrorHandling:
                 raise ConnectionResetError('Connection reset by peer')
 
             mock_method = MagicMock(side_effect=raise_connection_reset)
+            mock_method.__name__ = 'post'
 
             result = iface._try(
                 mock_method,
@@ -179,6 +181,7 @@ class TestConnectionErrorHandling:
                 raise TimeoutError('Request timed out')
 
             mock_method = MagicMock(side_effect=raise_timeout)
+            mock_method.__name__ = 'post'
 
             result = iface._try(
                 mock_method,

@@ -203,8 +203,9 @@ class ServerInterface:
             ('progress', self._thread_progress),
         ]
         # Add all storage threads to the join list
-        for storage_thread in self._thread_storage:
-            threads.append(('storage', storage_thread))
+        if self._thread_storage is not None:
+            for storage_thread in self._thread_storage:
+                threads.append(('storage', storage_thread))
 
         for name, t in threads:
             if t is not None:
