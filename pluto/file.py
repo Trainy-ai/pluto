@@ -67,7 +67,7 @@ class File:
             if self._path is None:
                 raise ValueError('File path is not set')
             shutil.copyfile(self._path, self._tmp)
-            # Only delete temp files we created (in-memory data), not user-provided files
+            # Only delete temp files we create, not user-provided files
             is_temp = (
                 (hasattr(self, '_image') and self._image != 'file')
                 or (hasattr(self, '_audio') and self._audio != 'file')

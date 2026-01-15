@@ -45,9 +45,8 @@ pytest.importorskip('neptune_scale')
 from neptune_scale.types import File as NeptuneFile
 from neptune_scale.types import Histogram as NeptuneHistogram
 
-from tests.utils import get_task_name
-
 from pluto.compat.neptune import _detect_media_type_from_bytes
+from tests.utils import get_task_name
 
 
 class TestMagicByteDetection:
