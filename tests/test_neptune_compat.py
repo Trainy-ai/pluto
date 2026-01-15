@@ -32,6 +32,9 @@ for logger_name in [
     _logger.addHandler(logging.NullHandler())
 
 import os
+import shutil
+import tempfile
+from pathlib import Path
 from typing import Any, Dict
 from unittest import mock
 from unittest.mock import call
@@ -686,7 +689,7 @@ class TestNeptuneRealBackend:
         or not os.environ.get('NEPTUNE_PROJECT'),
         reason='Requires NEPTUNE_API_TOKEN and NEPTUNE_PROJECT env vars',
     )
-    def test_real_neptune_without_pluto(self, clean_env, tmp_path):
+    def test_real_neptune_without_pluto(self, clean_env):
         """
         Test with real Neptune backend, no mlop dual-logging.
 
@@ -702,55 +705,66 @@ class TestNeptuneRealBackend:
 
         task_name = get_task_name()
 
-        # Create real Neptune run
-        run = Run(experiment_name=task_name)
+        # Use manually-managed temp directory instead of pytest's tmp_path.
+        # Neptune uploads files asynchronously in a background process, so we
+        # need to ensure files exist until Neptune finishes uploading them.
+        # pytest's tmp_path gets cleaned up when the test function exits,
+        # which can race with Neptune's async upload.
+        img_temp_dir = tempfile.mkdtemp(prefix='neptune_test_')
 
-        # Log to real Neptune
-        run.log_configs({'test': 'real-neptune', 'mode': 'neptune-only'})
-        run.log_metrics({'test/metric': 1.0}, step=0)
-
-        # Log multiple test images to Neptune at different steps
         try:
-            from PIL import Image
+            # Create real Neptune run
+            run = Run(experiment_name=task_name)
 
-            # Log 3 images at different steps
-            for img_step in range(3):
-                # Create unique test image for each step (grayscale gradient)
-                intensity = 50 + (img_step * 80)  # 50, 130, 210
-                test_image = np.full((64, 64, 3), intensity, dtype=np.int16)
-                # Add some noise (use int16 to allow negative values, then clip)
-                test_image = test_image + np.random.randint(-20, 20, (64, 64, 3))
-                test_image = np.clip(test_image, 0, 255).astype(np.uint8)
+            # Log to real Neptune
+            run.log_configs({'test': 'real-neptune', 'mode': 'neptune-only'})
+            run.log_metrics({'test/metric': 1.0}, step=0)
 
-                img_path = tmp_path / f'neptune_test_step_{img_step}.png'
-                Image.fromarray(test_image).save(img_path)
+            # Log multiple test images to Neptune at different steps
+            try:
+                from PIL import Image
 
-                # Log image at this step
-                run.log_files(
-                    {'test/sample_image': NeptuneFile(str(img_path))},
-                    step=img_step,
-                )
+                # Log 3 images at different steps
+                for img_step in range(3):
+                    # Create unique test image for each step (grayscale gradient)
+                    intensity = 50 + (img_step * 80)  # 50, 130, 210
+                    test_image = np.full((64, 64, 3), intensity, dtype=np.int16)
+                    # Add some noise (use int16 to allow negative values, then clip)
+                    test_image = test_image + np.random.randint(-20, 20, (64, 64, 3))
+                    test_image = np.clip(test_image, 0, 255).astype(np.uint8)
 
-            print('  ✓ Logged 3 images at steps 0, 1, 2')
-        except ImportError:
-            print('  ⚠ PIL not available, skipping image logging')
+                    img_path = Path(img_temp_dir) / f'neptune_test_step_{img_step}.png'
+                    Image.fromarray(test_image).save(img_path)
 
-        run.add_tags(['real-neptune-test', 'neptune-only'])
+                    # Log image at this step
+                    run.log_files(
+                        {'test/sample_image': NeptuneFile(str(img_path))},
+                        step=img_step,
+                    )
 
-        # Should have no pluto run
-        assert run._pluto_run is None
+                print('  ✓ Logged 3 images at steps 0, 1, 2')
+            except ImportError:
+                print('  ⚠ PIL not available, skipping image logging')
 
-        # Wait for Neptune to finish all operations before closing
-        # Use verbose=False to prevent logging errors when pytest captures stdout
-        run.wait_for_processing(verbose=False)
+            run.add_tags(['real-neptune-test', 'neptune-only'])
 
-        # Close Neptune run
-        run.close()
+            # Should have no pluto run
+            assert run._pluto_run is None
 
-        # Verify Neptune run exists and has URL
-        url = run.get_run_url()
-        assert 'neptune.ai' in url
-        print(f'✓ Real Neptune test passed - run URL: {url}')
+            # Wait for Neptune to finish all operations before closing
+            # Use verbose=False to prevent logging errors when pytest captures stdout
+            run.wait_for_processing(verbose=False)
+
+            # Close Neptune run
+            run.close()
+
+            # Verify Neptune run exists and has URL
+            url = run.get_run_url()
+            assert 'neptune.ai' in url
+            print(f'✓ Real Neptune test passed - run URL: {url}')
+        finally:
+            # Clean up temp directory after Neptune is fully closed
+            shutil.rmtree(img_temp_dir, ignore_errors=True)
 
     @pytest.mark.skipif(
         not os.environ.get('NEPTUNE_API_TOKEN')
@@ -758,7 +772,7 @@ class TestNeptuneRealBackend:
         or not os.environ.get('PLUTO_PROJECT'),
         reason='Requires NEPTUNE_API_TOKEN, NEPTUNE_PROJECT, and PLUTO_PROJECT',
     )
-    def test_real_neptune_with_pluto_dual_logging(self, tmp_path):
+    def test_real_neptune_with_pluto_dual_logging(self):
         """
         Full integration test with BOTH real Neptune and real pluto.
 
@@ -772,82 +786,93 @@ class TestNeptuneRealBackend:
 
         task_name = get_task_name()
 
-        # Create dual-logged run
-        run = Run(experiment_name=task_name)
+        # Use manually-managed temp directory instead of pytest's tmp_path.
+        # Neptune uploads files asynchronously in a background process, so we
+        # need to ensure files exist until Neptune finishes uploading them.
+        # pytest's tmp_path gets cleaned up when the test function exits,
+        # which can race with Neptune's async upload.
+        img_temp_dir = tempfile.mkdtemp(prefix='neptune_pluto_test_')
 
-        # Log to both systems
-        run.log_configs(
-            {'test': 'dual-logging', 'mode': 'production', 'framework': 'pytest'}
-        )
+        try:
+            # Create dual-logged run
+            run = Run(experiment_name=task_name)
 
-        for step in range(3):
-            run.log_metrics(
-                {
-                    'test/loss': 1.0 / (step + 1),
-                    'test/accuracy': 0.5 + (step * 0.1),
-                },
-                step=step,
+            # Log to both systems
+            run.log_configs(
+                {'test': 'dual-logging', 'mode': 'production', 'framework': 'pytest'}
             )
 
-        # Create and log multiple test images at different steps
-        try:
-            from PIL import Image
-
-            # Log 3 images at different steps to test stepping functionality
-            for img_step in range(3):
-                # Create unique test image for each step (different colors)
-                # Use step-based color to make images visually distinct
-                base_color = [
-                    (255, 0, 0),  # Red for step 0
-                    (0, 255, 0),  # Green for step 1
-                    (0, 0, 255),  # Blue for step 2
-                ][img_step]
-
-                test_image = np.zeros((64, 64, 3), dtype=np.int16)
-                test_image[:, :] = base_color
-                # Add some variation (use int16 to avoid overflow, then clip)
-                test_image = test_image + np.random.randint(0, 50, (64, 64, 3))
-                test_image = np.clip(test_image, 0, 255).astype(np.uint8)
-
-                img_path = tmp_path / f'test_image_step_{img_step}.png'
-                Image.fromarray(test_image).save(img_path)
-
-                # Log image at this step
-                run.log_files(
-                    {'training/sample_image': NeptuneFile(str(img_path))},
-                    step=img_step,
+            for step in range(3):
+                run.log_metrics(
+                    {
+                        'test/loss': 1.0 / (step + 1),
+                        'test/accuracy': 0.5 + (step * 0.1),
+                    },
+                    step=step,
                 )
 
-            # Also log a static image (not associated with a step)
-            static_img = np.random.randint(0, 255, (64, 64, 3), dtype=np.uint8)
-            static_path = tmp_path / 'static_image.png'
-            Image.fromarray(static_img).save(static_path)
-            run.assign_files({'summary/final_image': NeptuneFile(str(static_path))})
+            # Create and log multiple test images at different steps
+            try:
+                from PIL import Image
 
-            print('  ✓ Logged 3 stepped images + 1 static image')
-        except ImportError:
-            print('  ⚠ PIL not available, skipping image logging')
+                # Log 3 images at different steps to test stepping functionality
+                for img_step in range(3):
+                    # Create unique test image for each step (different colors)
+                    # Use step-based color to make images visually distinct
+                    base_color = [
+                        (255, 0, 0),  # Red for step 0
+                        (0, 255, 0),  # Green for step 1
+                        (0, 0, 255),  # Blue for step 2
+                    ][img_step]
 
-        run.add_tags(['dual-logging-test', 'production', 'with-images'])
+                    test_image = np.zeros((64, 64, 3), dtype=np.int16)
+                    test_image[:, :] = base_color
+                    # Add some variation (use int16 to avoid overflow, then clip)
+                    test_image = test_image + np.random.randint(0, 50, (64, 64, 3))
+                    test_image = np.clip(test_image, 0, 255).astype(np.uint8)
 
-        # Both runs should be active
-        assert run._neptune_run is not None
-        assert run._pluto_run is not None
+                    img_path = Path(img_temp_dir) / f'test_image_step_{img_step}.png'
+                    Image.fromarray(test_image).save(img_path)
 
-        # Wait for Neptune to finish all operations before closing
-        # Use verbose=False to prevent logging errors when pytest captures stdout
-        run.wait_for_processing(verbose=False)
+                    # Log image at this step
+                    run.log_files(
+                        {'training/sample_image': NeptuneFile(str(img_path))},
+                        step=img_step,
+                    )
 
-        # Close both
-        run.close()
+                # Also log a static image (not associated with a step)
+                static_img = np.random.randint(0, 255, (64, 64, 3), dtype=np.uint8)
+                static_path = Path(img_temp_dir) / 'static_image.png'
+                Image.fromarray(static_img).save(static_path)
+                run.assign_files({'summary/final_image': NeptuneFile(str(static_path))})
 
-        # Get URLs from both systems
-        neptune_url = run.get_run_url()
-        assert 'neptune.ai' in neptune_url
+                print('  ✓ Logged 3 stepped images + 1 static image')
+            except ImportError:
+                print('  ⚠ PIL not available, skipping image logging')
 
-        print('✓ Full dual-logging test passed!')
-        print(f'  Neptune: {neptune_url}')
-        print('  pluto run successfully logged')
+            run.add_tags(['dual-logging-test', 'production', 'with-images'])
+
+            # Both runs should be active
+            assert run._neptune_run is not None
+            assert run._pluto_run is not None
+
+            # Wait for Neptune to finish all operations before closing
+            # Use verbose=False to prevent logging errors when pytest captures stdout
+            run.wait_for_processing(verbose=False)
+
+            # Close both
+            run.close()
+
+            # Get URLs from both systems
+            neptune_url = run.get_run_url()
+            assert 'neptune.ai' in neptune_url
+
+            print('✓ Full dual-logging test passed!')
+            print(f'  Neptune: {neptune_url}')
+            print('  pluto run successfully logged')
+        finally:
+            # Clean up temp directory after Neptune is fully closed
+            shutil.rmtree(img_temp_dir, ignore_errors=True)
 
     @pytest.mark.skipif(
         not os.environ.get('NEPTUNE_API_TOKEN')
