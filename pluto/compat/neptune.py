@@ -107,6 +107,50 @@ def _safe_import_pluto():
         return None
 
 
+def _detect_media_type_from_bytes(data: bytes) -> Optional[str]:
+    """
+    Detect media type from magic bytes.
+
+    Args:
+        data: Raw bytes to inspect
+
+    Returns:
+        'image', 'audio', 'video', or None if unknown
+    """
+    if not isinstance(data, (bytes, bytearray)) or len(data) < 12:
+        return None
+
+    # Image formats
+    if data[:8] == b'\x89PNG\r\n\x1a\n':  # PNG
+        return 'image'
+    if data[:3] == b'\xff\xd8\xff':  # JPEG
+        return 'image'
+    if data[:6] in (b'GIF87a', b'GIF89a'):  # GIF
+        return 'image'
+    if data[:2] == b'BM':  # BMP
+        return 'image'
+    if data[:4] == b'RIFF' and data[8:12] == b'WEBP':  # WebP
+        return 'image'
+
+    # Audio formats
+    if data[:4] == b'RIFF' and data[8:12] == b'WAVE':  # WAV
+        return 'audio'
+    if data[:3] == b'ID3' or data[:2] == b'\xff\xfb':  # MP3
+        return 'audio'
+    if data[:4] == b'fLaC':  # FLAC
+        return 'audio'
+
+    # Video formats (MP4/MOV - check for ftyp box)
+    if data[4:8] == b'ftyp':
+        return 'video'
+
+    # OGG can be audio (Vorbis) or video (Theora) - default to audio
+    if data[:4] == b'OggS':
+        return 'audio'
+
+    return None
+
+
 def _convert_neptune_file_to_pluto(file_obj, pluto_module):
     """
     Convert Neptune File object to appropriate pluto file type.
@@ -147,6 +191,16 @@ def _convert_neptune_file_to_pluto(file_obj, pluto_module):
         elif any(source_str.endswith(ext) for ext in ['.wav', '.mp3', '.ogg', '.flac']):
             return pluto_module.Audio(source)
         elif any(source_str.endswith(ext) for ext in ['.mp4', '.avi', '.mov', '.webm']):
+            return pluto_module.Video(source)
+
+    # Try to infer from magic bytes for raw binary data
+    if isinstance(source, (bytes, bytearray)):
+        detected_type = _detect_media_type_from_bytes(source)
+        if detected_type == 'image':
+            return pluto_module.Image(source)
+        elif detected_type == 'audio':
+            return pluto_module.Audio(source)
+        elif detected_type == 'video':
             return pluto_module.Video(source)
 
     # Default to generic artifact

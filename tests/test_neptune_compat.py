@@ -47,6 +47,83 @@ from neptune_scale.types import Histogram as NeptuneHistogram
 
 from tests.utils import get_task_name
 
+from pluto.compat.neptune import _detect_media_type_from_bytes
+
+
+class TestMagicByteDetection:
+    """Unit tests for _detect_media_type_from_bytes function."""
+
+    def test_png_detection(self):
+        """Test PNG magic bytes detection."""
+        png_bytes = b'\x89PNG\r\n\x1a\n' + b'\x00' * 100
+        assert _detect_media_type_from_bytes(png_bytes) == 'image'
+
+    def test_jpeg_detection(self):
+        """Test JPEG magic bytes detection."""
+        jpeg_bytes = b'\xff\xd8\xff\xe0' + b'\x00' * 100
+        assert _detect_media_type_from_bytes(jpeg_bytes) == 'image'
+
+    def test_gif87a_detection(self):
+        """Test GIF87a magic bytes detection."""
+        gif_bytes = b'GIF87a' + b'\x00' * 100
+        assert _detect_media_type_from_bytes(gif_bytes) == 'image'
+
+    def test_gif89a_detection(self):
+        """Test GIF89a magic bytes detection."""
+        gif_bytes = b'GIF89a' + b'\x00' * 100
+        assert _detect_media_type_from_bytes(gif_bytes) == 'image'
+
+    def test_bmp_detection(self):
+        """Test BMP magic bytes detection."""
+        bmp_bytes = b'BM' + b'\x00' * 100
+        assert _detect_media_type_from_bytes(bmp_bytes) == 'image'
+
+    def test_webp_detection(self):
+        """Test WebP magic bytes detection."""
+        webp_bytes = b'RIFF\x00\x00\x00\x00WEBP' + b'\x00' * 100
+        assert _detect_media_type_from_bytes(webp_bytes) == 'image'
+
+    def test_wav_detection(self):
+        """Test WAV magic bytes detection."""
+        wav_bytes = b'RIFF\x00\x00\x00\x00WAVE' + b'\x00' * 100
+        assert _detect_media_type_from_bytes(wav_bytes) == 'audio'
+
+    def test_mp3_id3_detection(self):
+        """Test MP3 ID3 header detection."""
+        mp3_bytes = b'ID3' + b'\x00' * 100
+        assert _detect_media_type_from_bytes(mp3_bytes) == 'audio'
+
+    def test_flac_detection(self):
+        """Test FLAC magic bytes detection."""
+        flac_bytes = b'fLaC' + b'\x00' * 100
+        assert _detect_media_type_from_bytes(flac_bytes) == 'audio'
+
+    def test_ogg_detection(self):
+        """Test OGG magic bytes detection (defaults to audio)."""
+        ogg_bytes = b'OggS' + b'\x00' * 100
+        assert _detect_media_type_from_bytes(ogg_bytes) == 'audio'
+
+    def test_mp4_detection(self):
+        """Test MP4/MOV magic bytes detection."""
+        mp4_bytes = b'\x00\x00\x00\x20ftyp' + b'\x00' * 100
+        assert _detect_media_type_from_bytes(mp4_bytes) == 'video'
+
+    def test_unknown_bytes_returns_none(self):
+        """Test that unknown byte sequences return None."""
+        unknown_bytes = b'\x01\x02\x03\x04\x05\x06\x07\x08\x09\x0a\x0b\x0c\x0d'
+        assert _detect_media_type_from_bytes(unknown_bytes) is None
+
+    def test_too_short_bytes_returns_none(self):
+        """Test that bytes shorter than 12 return None."""
+        short_bytes = b'\x89PNG\r\n\x1a'  # Only 7 bytes
+        assert _detect_media_type_from_bytes(short_bytes) is None
+
+    def test_non_bytes_returns_none(self):
+        """Test that non-bytes input returns None."""
+        assert _detect_media_type_from_bytes("not bytes") is None
+        assert _detect_media_type_from_bytes(12345) is None
+        assert _detect_media_type_from_bytes(None) is None
+
 
 class MockNeptuneRun:
     """
@@ -473,6 +550,93 @@ class TestNeptuneCompatFileConversion:
 
             # Verify mlop.log was called (file conversion is internal)
             assert mock_mlop_run.log.called
+
+    def test_raw_png_bytes_detected_as_image(
+        self, mock_neptune_backend, pluto_config_env
+    ):
+        """Test that raw PNG bytes are detected and converted to pluto.Image."""
+        import pluto
+
+        mock_mlop_run = mock.MagicMock()
+        mock_mlop_run.config = {}
+        mock_mlop_run.log = mock.MagicMock()
+        mock_mlop_run.finish = mock.MagicMock()
+
+        # Create valid PNG bytes (header + minimal data)
+        png_bytes = b'\x89PNG\r\n\x1a\n' + b'\x00' * 100
+
+        with mock.patch('pluto.init', return_value=mock_mlop_run):
+            with mock.patch.object(pluto, 'Image') as mock_image_class:
+                mock_image_class.return_value = mock.MagicMock()
+
+                from neptune_scale import Run
+
+                run = Run(experiment_name='raw-bytes-test')
+
+                # Log raw bytes directly (like matplotlib does with BytesIO)
+                run.log_files({'sample_plot': png_bytes}, step=0)
+                run.close()
+
+                # Verify pluto.Image was called with the bytes
+                mock_image_class.assert_called_once_with(png_bytes)
+
+    def test_raw_jpeg_bytes_detected_as_image(
+        self, mock_neptune_backend, pluto_config_env
+    ):
+        """Test that raw JPEG bytes are detected and converted to pluto.Image."""
+        import pluto
+
+        mock_mlop_run = mock.MagicMock()
+        mock_mlop_run.config = {}
+        mock_mlop_run.log = mock.MagicMock()
+        mock_mlop_run.finish = mock.MagicMock()
+
+        # Create valid JPEG bytes (header + minimal data)
+        jpeg_bytes = b'\xff\xd8\xff\xe0' + b'\x00' * 100
+
+        with mock.patch('pluto.init', return_value=mock_mlop_run):
+            with mock.patch.object(pluto, 'Image') as mock_image_class:
+                mock_image_class.return_value = mock.MagicMock()
+
+                from neptune_scale import Run
+
+                run = Run(experiment_name='jpeg-bytes-test')
+
+                # Log raw JPEG bytes
+                run.assign_files({'sample_jpeg': jpeg_bytes})
+                run.close()
+
+                # Verify pluto.Image was called with the bytes
+                mock_image_class.assert_called_once_with(jpeg_bytes)
+
+    def test_unknown_bytes_become_artifact(
+        self, mock_neptune_backend, pluto_config_env
+    ):
+        """Test that unknown byte formats fall back to pluto.Artifact."""
+        import pluto
+
+        mock_mlop_run = mock.MagicMock()
+        mock_mlop_run.config = {}
+        mock_mlop_run.log = mock.MagicMock()
+        mock_mlop_run.finish = mock.MagicMock()
+
+        # Random bytes that don't match any known format
+        unknown_bytes = b'\x01\x02\x03\x04\x05\x06\x07\x08\x09\x0a\x0b\x0c\x0d\x0e\x0f'
+
+        with mock.patch('pluto.init', return_value=mock_mlop_run):
+            with mock.patch.object(pluto, 'Artifact') as mock_artifact_class:
+                mock_artifact_class.return_value = mock.MagicMock()
+
+                from neptune_scale import Run
+
+                run = Run(experiment_name='unknown-bytes-test')
+
+                # Log unknown bytes
+                run.assign_files({'unknown_data': unknown_bytes})
+                run.close()
+
+                # Verify pluto.Artifact was called (not Image)
+                mock_artifact_class.assert_called_once_with(unknown_bytes)
 
     def test_histogram_conversion(self, mock_neptune_backend, pluto_config_env):
         """Test that Neptune Histogram objects are converted to mlop.Histogram."""
