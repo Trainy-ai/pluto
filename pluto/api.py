@@ -13,7 +13,8 @@ STATUS = {
     -1: 'RUNNING',
     0: 'COMPLETED',
     1: 'FAILED',
-    signal.SIGINT.value: 'TERMINATED',  # "INTERRUPTED",
+    signal.SIGINT.value: 'TERMINATED',  # Ctrl+C
+    signal.SIGTERM.value: 'TERMINATED',  # K8s termination
 }
 
 ABBR = {

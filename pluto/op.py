@@ -3,6 +3,7 @@ import logging
 import os
 import queue
 import signal
+import sys
 import threading
 import time
 import traceback
@@ -28,6 +29,81 @@ from .util import get_char, get_val, to_json
 
 logger = logging.getLogger(f'{__name__.split(".")[0]}')
 tag = 'Operation'
+
+# Signal handling state for graceful shutdown (Ctrl+C / SIGTERM)
+_signal_count = 0
+_signal_lock = threading.Lock()
+_original_sigint_handler = None
+_original_sigterm_handler = None
+_signal_handler_registered = False
+
+# Map signal numbers to names for logging
+_SIGNAL_NAMES = {
+    signal.SIGINT: 'SIGINT',
+    signal.SIGTERM: 'SIGTERM',
+}
+
+
+def _shutdown_handler(signum, frame):
+    """
+    Handle SIGINT (Ctrl+C) and SIGTERM (K8s termination) with two-stage shutdown:
+    - First signal: Graceful shutdown - finish all active runs
+    - Second signal: Force exit immediately
+    """
+    global _signal_count
+
+    with _signal_lock:
+        _signal_count += 1
+        count = _signal_count
+
+    sig_name = _SIGNAL_NAMES.get(signum, f'signal {signum}')
+
+    if count == 1:
+        msg = f'{tag}: Received {sig_name}, shutting down gracefully...'
+        if signum == signal.SIGINT:
+            msg += ' (press Ctrl+C again to force exit)'
+        logger.warning(msg)
+        # Print to stderr as well in case logging is not visible
+        print(f'\n{msg}', file=sys.stderr)
+        # Finish all active ops
+        if pluto.ops:
+            # Copy list to avoid modification during iteration
+            for op in list(pluto.ops):
+                try:
+                    op.finish(code=signum)
+                except Exception as e:
+                    logger.debug(f'{tag}: Error during graceful shutdown: {e}')
+        # Exit with appropriate status code
+        sys.exit(128 + signum)
+    else:
+        # Second signal - force exit immediately
+        print(f'\n{tag}: Force exiting...', file=sys.stderr)
+        os._exit(128 + signum)
+
+
+def _register_signal_handler():
+    """Register SIGINT and SIGTERM handlers if in main thread."""
+    global _signal_handler_registered
+    global _original_sigint_handler, _original_sigterm_handler
+
+    if _signal_handler_registered:
+        return
+
+    # Signal handlers can only be registered from the main thread
+    if threading.current_thread() is not threading.main_thread():
+        logger.debug(f'{tag}: Skipping signal handler registration (not main thread)')
+        return
+
+    try:
+        _original_sigint_handler = signal.signal(signal.SIGINT, _shutdown_handler)
+        _original_sigterm_handler = signal.signal(signal.SIGTERM, _shutdown_handler)
+        _signal_handler_registered = True
+        logger.debug(f'{tag}: Registered SIGINT/SIGTERM handlers for graceful shutdown')
+    except (ValueError, OSError) as e:
+        # ValueError: signal only works in main thread
+        # OSError: can happen in some embedded environments
+        logger.debug(f'{tag}: Could not register signal handler: {e}')
+
 
 MetaNames = List[str]
 MetaFiles = Dict[str, List[str]]
@@ -160,6 +236,9 @@ class Op:
         ) if self._iface else None
         self._monitor.start()
         logger.debug(f'{tag}: started')
+
+        # Register signal handler for graceful Ctrl+C shutdown
+        _register_signal_handler()
 
         # set globals
         if pluto.ops is None:

@@ -5,9 +5,12 @@ These tests verify:
 1. _stat is refreshed after _mkcopy() to prevent S3 signature mismatch
 2. Thread joins have timeouts to prevent hang during shutdown
 3. Connection errors are treated as shutdown signals, not retriable errors
+4. Signal handling for graceful Ctrl+C shutdown
 """
 
 import os
+import signal
+import threading
 from unittest.mock import MagicMock, patch
 
 from pluto.file import Artifact, File
@@ -275,3 +278,248 @@ class TestThreadJoinTimeout:
                 iface.stop()
                 # Verify warning was logged
                 mock_logger.warning.assert_called()
+
+
+class TestSignalHandling:
+    """Test SIGINT/SIGTERM signal handling for graceful shutdown."""
+
+    def setup_method(self):
+        """Reset signal handling state before each test."""
+        import pluto.op as op_module
+
+        op_module._signal_count = 0
+        op_module._signal_handler_registered = False
+        op_module._original_sigint_handler = None
+        op_module._original_sigterm_handler = None
+
+    def teardown_method(self):
+        """Clean up signal handling state after each test."""
+        import pluto.op as op_module
+
+        # Reset state
+        op_module._signal_count = 0
+        op_module._signal_handler_registered = False
+
+        # Restore default handlers if we changed them
+        if threading.current_thread() is threading.main_thread():
+            try:
+                signal.signal(signal.SIGINT, signal.default_int_handler)
+                signal.signal(signal.SIGTERM, signal.SIG_DFL)
+            except (ValueError, OSError):
+                pass
+
+    def test_signal_handler_registration_in_main_thread(self):
+        """Test that signal handlers are registered when in main thread."""
+        import pluto.op as op_module
+
+        # Only run in main thread
+        if threading.current_thread() is not threading.main_thread():
+            return
+
+        assert not op_module._signal_handler_registered
+
+        op_module._register_signal_handler()
+
+        assert op_module._signal_handler_registered
+        # Verify both handlers were actually set
+        assert signal.getsignal(signal.SIGINT) == op_module._shutdown_handler
+        assert signal.getsignal(signal.SIGTERM) == op_module._shutdown_handler
+
+    def test_signal_handler_only_registered_once(self):
+        """Test that signal handler registration is idempotent."""
+        import pluto.op as op_module
+
+        if threading.current_thread() is not threading.main_thread():
+            return
+
+        op_module._register_signal_handler()
+        first_handler = signal.getsignal(signal.SIGINT)
+
+        # Register again - should be no-op
+        op_module._register_signal_handler()
+        second_handler = signal.getsignal(signal.SIGINT)
+
+        assert first_handler == second_handler
+        assert op_module._signal_handler_registered
+
+    def test_first_sigint_increments_count(self):
+        """Test that first SIGINT increments count and starts graceful shutdown."""
+        import pluto
+        import pluto.op as op_module
+
+        # Mock pluto.ops to prevent actual shutdown attempts
+        original_ops = pluto.ops
+        pluto.ops = []
+
+        try:
+            with (
+                patch.object(op_module, 'logger') as mock_logger,
+                patch('sys.exit') as mock_exit,
+            ):
+                # Simulate SIGINT
+                op_module._shutdown_handler(signal.SIGINT, None)
+
+                assert op_module._signal_count == 1
+                mock_logger.warning.assert_called()
+                mock_exit.assert_called_once_with(128 + signal.SIGINT)
+        finally:
+            pluto.ops = original_ops
+
+    def test_first_sigterm_increments_count(self):
+        """Test that first SIGTERM increments count and starts graceful shutdown."""
+        import pluto
+        import pluto.op as op_module
+
+        original_ops = pluto.ops
+        pluto.ops = []
+
+        try:
+            with (
+                patch.object(op_module, 'logger') as mock_logger,
+                patch('sys.exit') as mock_exit,
+            ):
+                # Simulate SIGTERM (K8s termination)
+                op_module._shutdown_handler(signal.SIGTERM, None)
+
+                assert op_module._signal_count == 1
+                mock_logger.warning.assert_called()
+                # SIGTERM exit code is 128 + 15 = 143
+                mock_exit.assert_called_once_with(128 + signal.SIGTERM)
+        finally:
+            pluto.ops = original_ops
+
+    def test_second_sigint_force_exits(self):
+        """Test that second SIGINT forces immediate exit."""
+        import pluto.op as op_module
+
+        # Set count to 1 to simulate first signal already received
+        op_module._signal_count = 1
+
+        with patch('os._exit') as mock_exit:
+            op_module._shutdown_handler(signal.SIGINT, None)
+
+            assert op_module._signal_count == 2
+            mock_exit.assert_called_once_with(128 + signal.SIGINT)
+
+    def test_second_sigterm_force_exits(self):
+        """Test that second SIGTERM forces immediate exit."""
+        import pluto.op as op_module
+
+        # Set count to 1 to simulate first signal already received
+        op_module._signal_count = 1
+
+        with patch('os._exit') as mock_exit:
+            op_module._shutdown_handler(signal.SIGTERM, None)
+
+            assert op_module._signal_count == 2
+            mock_exit.assert_called_once_with(128 + signal.SIGTERM)
+
+    def test_sigint_handler_calls_finish_on_active_ops(self):
+        """Test that SIGINT handler calls finish() on all active ops."""
+        import pluto
+        import pluto.op as op_module
+
+        # Create mock ops
+        mock_op1 = MagicMock()
+        mock_op2 = MagicMock()
+        original_ops = pluto.ops
+        pluto.ops = [mock_op1, mock_op2]
+
+        try:
+            with patch('sys.exit'):
+                op_module._shutdown_handler(signal.SIGINT, None)
+
+                # Both ops should have finish called
+                mock_op1.finish.assert_called_once_with(code=signal.SIGINT)
+                mock_op2.finish.assert_called_once_with(code=signal.SIGINT)
+        finally:
+            pluto.ops = original_ops
+
+    def test_sigterm_handler_calls_finish_on_active_ops(self):
+        """Test that SIGTERM handler calls finish() on all active ops."""
+        import pluto
+        import pluto.op as op_module
+
+        mock_op1 = MagicMock()
+        mock_op2 = MagicMock()
+        original_ops = pluto.ops
+        pluto.ops = [mock_op1, mock_op2]
+
+        try:
+            with patch('sys.exit'):
+                op_module._shutdown_handler(signal.SIGTERM, None)
+
+                # Both ops should have finish called with SIGTERM code
+                mock_op1.finish.assert_called_once_with(code=signal.SIGTERM)
+                mock_op2.finish.assert_called_once_with(code=signal.SIGTERM)
+        finally:
+            pluto.ops = original_ops
+
+    def test_handler_handles_finish_exceptions(self):
+        """Test that handler continues even if finish() raises."""
+        import pluto
+        import pluto.op as op_module
+
+        # Create mock ops - first one raises, second should still be called
+        mock_op1 = MagicMock()
+        mock_op1.finish.side_effect = Exception('Simulated error')
+        mock_op2 = MagicMock()
+
+        original_ops = pluto.ops
+        pluto.ops = [mock_op1, mock_op2]
+
+        try:
+            with patch('sys.exit'):
+                # Should not raise despite first op failing
+                op_module._shutdown_handler(signal.SIGINT, None)
+
+                # Second op should still have finish called
+                mock_op2.finish.assert_called_once_with(code=signal.SIGINT)
+        finally:
+            pluto.ops = original_ops
+
+    def test_signal_count_thread_safety(self):
+        """Test that _signal_count is thread-safe."""
+        import pluto
+        import pluto.op as op_module
+
+        original_ops = pluto.ops
+        pluto.ops = []
+
+        try:
+            results = []
+
+            def call_handler():
+                op_module._shutdown_handler(signal.SIGINT, None)
+                with op_module._signal_lock:
+                    results.append(op_module._signal_count)
+
+            # Patch sys.exit and os._exit at module level for all threads
+            with patch('sys.exit'), patch('os._exit'):
+                threads = [threading.Thread(target=call_handler) for _ in range(5)]
+                for t in threads:
+                    t.start()
+                for t in threads:
+                    t.join()
+
+            # Count should be exactly 5 after 5 calls
+            assert op_module._signal_count == 5
+        finally:
+            pluto.ops = original_ops
+
+    def test_register_skipped_in_non_main_thread(self):
+        """Test that signal handler registration is skipped in non-main thread."""
+        import pluto.op as op_module
+
+        result = {'registered': None}
+
+        def register_in_thread():
+            op_module._register_signal_handler()
+            result['registered'] = op_module._signal_handler_registered
+
+        thread = threading.Thread(target=register_in_thread)
+        thread.start()
+        thread.join()
+
+        # Should not have registered since we're not in main thread
+        assert result['registered'] is False
