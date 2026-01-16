@@ -105,6 +105,29 @@ def _register_signal_handler():
         logger.debug(f'{tag}: Could not register signal handler: {e}')
 
 
+def _unregister_signal_handler():
+    """Restore original signal handlers when no more Ops are active."""
+    global _signal_handler_registered
+    global _original_sigint_handler, _original_sigterm_handler
+
+    if not _signal_handler_registered:
+        return
+
+    # Signal handlers can only be modified from the main thread
+    if threading.current_thread() is not threading.main_thread():
+        return
+
+    try:
+        if _original_sigint_handler is not None:
+            signal.signal(signal.SIGINT, _original_sigint_handler)
+        if _original_sigterm_handler is not None:
+            signal.signal(signal.SIGTERM, _original_sigterm_handler)
+        _signal_handler_registered = False
+        logger.debug(f'{tag}: Restored original SIGINT/SIGTERM handlers')
+    except (ValueError, OSError) as e:
+        logger.debug(f'{tag}: Could not restore signal handler: {e}')
+
+
 MetaNames = List[str]
 MetaFiles = Dict[str, List[str]]
 LoggedNumbers = Dict[str, Any]
@@ -227,6 +250,8 @@ class Op:
         )
         self._step = 0
         self._queue: queue.Queue[QueueItem] = queue.Queue()
+        self._finished = False
+        self._finish_lock = threading.Lock()
         atexit.register(self.finish)
 
     def start(self) -> None:
@@ -260,6 +285,13 @@ class Op:
 
     def finish(self, code: Union[int, None] = None) -> None:
         """Finish logging"""
+        # Make finish() idempotent - can be called multiple times safely
+        # (e.g., from signal handler and atexit)
+        with self._finish_lock:
+            if self._finished:
+                return
+            self._finished = True
+
         try:
             self._monitor.stop(code)
             # Wait for queue to drain with timeout to prevent hang during shutdown
@@ -318,6 +350,9 @@ class Op:
             pluto.ops = [
                 op for op in pluto.ops if op.settings._op_id != self.settings._op_id
             ]  # TODO: make more efficient
+            # Restore original signal handlers when last op finishes
+            if not pluto.ops:
+                _unregister_signal_handler()
 
     def watch(self, module, **kwargs):
         from .compat.torch import _watch_torch

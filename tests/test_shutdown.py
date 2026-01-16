@@ -523,3 +523,78 @@ class TestSignalHandling:
 
         # Should not have registered since we're not in main thread
         assert result['registered'] is False
+
+    def test_unregister_restores_original_handlers(self):
+        """Test that _unregister_signal_handler restores original handlers."""
+        import pluto.op as op_module
+
+        if threading.current_thread() is not threading.main_thread():
+            return
+
+        # Store original handlers
+        original_sigint = signal.getsignal(signal.SIGINT)
+        original_sigterm = signal.getsignal(signal.SIGTERM)
+
+        # Register our handlers
+        op_module._register_signal_handler()
+        assert op_module._signal_handler_registered
+        assert signal.getsignal(signal.SIGINT) == op_module._shutdown_handler
+
+        # Unregister - should restore originals
+        op_module._unregister_signal_handler()
+        assert not op_module._signal_handler_registered
+        assert signal.getsignal(signal.SIGINT) == original_sigint
+        assert signal.getsignal(signal.SIGTERM) == original_sigterm
+
+
+class TestFinishIdempotency:
+    """Test that Op.finish() is idempotent."""
+
+    def test_finish_only_executes_once(self):
+        """Test that finish() only executes cleanup once even if called multiple times."""
+        from pluto.op import Op
+        from pluto.sets import Settings
+
+        settings = Settings()
+        settings.mode = 'noop'  # Skip server communication
+
+        op = Op(config={}, settings=settings)
+        op.start()
+
+        # First finish should work
+        op.finish()
+        assert op._finished is True
+
+        # Second finish should be a no-op (no errors)
+        op.finish()
+        assert op._finished is True
+
+    def test_finish_thread_safe(self):
+        """Test that concurrent finish() calls don't cause issues."""
+        from pluto.op import Op
+        from pluto.sets import Settings
+
+        settings = Settings()
+        settings.mode = 'noop'
+
+        op = Op(config={}, settings=settings)
+        op.start()
+
+        finish_count = {'count': 0}
+        original_monitor_stop = op._monitor.stop
+
+        def counting_stop(code=None):
+            finish_count['count'] += 1
+            return original_monitor_stop(code)
+
+        op._monitor.stop = counting_stop
+
+        # Call finish from multiple threads
+        threads = [threading.Thread(target=op.finish) for _ in range(5)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        # Monitor.stop should only be called once
+        assert finish_count['count'] == 1
