@@ -8,8 +8,6 @@ import os
 import uuid
 import warnings
 
-import pytest
-
 import pluto
 from pluto.sets import setup
 from tests.utils import get_task_name
@@ -315,9 +313,9 @@ class TestMultiNodeUsagePatterns:
             run.finish()
 
         # All should have the same server ID
-        assert all(sid == server_ids[0] for sid in server_ids), (
-            f'All ranks should log to same run, got IDs: {server_ids}'
-        )
+        assert all(
+            sid == server_ids[0] for sid in server_ids
+        ), f'All ranks should log to same run, got IDs: {server_ids}'
 
         # First should not be resumed, rest should be
         assert resumed_flags[0] is False
