@@ -15,3 +15,6 @@ build/
 .obsidian
 scripts/.*
 .vscode
+
+.neptune
+.pluto
