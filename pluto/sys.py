@@ -6,7 +6,6 @@ import time
 from typing import Any, Dict, List, Mapping, Optional, Union, cast
 
 import psutil
-from git import Repo
 
 from .sets import Settings
 from .util import run_cmd, to_human  # TODO: move to server side
@@ -131,6 +130,12 @@ class System:
     def get_git(self) -> Dict[str, Any]:
         d: Dict[str, Any] = {}
         try:
+            from git import Repo, exc
+        except ImportError:
+            logger.debug(f'{tag}: git: GitPython not installed, skipping git info')
+            return d
+
+        try:
             repo = Repo(
                 f'{self.settings.dir}',
                 search_parent_directories=True,
@@ -146,7 +151,10 @@ class System:
                 c.update({'url': repo.remotes['origin'].url})
             except Exception:
                 pass
-            branch_name = getattr(getattr(repo.head, 'ref', None), 'name', None)
+            try:
+                branch_name = repo.head.ref.name
+            except TypeError:  # HEAD is detached
+                branch_name = ''
             d = {
                 'root': repo.git.rev_parse('--show-toplevel'),
                 'dirty': repo.is_dirty(),
@@ -163,7 +171,9 @@ class System:
                 }
                 if d['dirty']:
                     d['diff']['head'] = run_cmd(cmd + ' HEAD')
-        except Exception as e:
+        except exc.InvalidGitRepositoryError:
+            logger.debug(f'{tag}: git: not a git repository')
+        except exc.GitError as e:
             logger.debug(
                 '%s: git: repository not detected: (%s) %s',
                 tag,
