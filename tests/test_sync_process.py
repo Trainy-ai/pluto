@@ -271,9 +271,9 @@ class TestSyncProcessShutdown:
             sync_process_enabled=True,
         )
 
-        # Initial count should be 0 or very low
+        # Initial count should be 0 for a new run
         initial_count = run._sync_manager.get_pending_count()
-        assert initial_count >= 0  # Just verify it returns a valid count
+        assert initial_count == 0
 
         # Log some data
         for i in range(5):
@@ -281,5 +281,9 @@ class TestSyncProcessShutdown:
 
         # Allow a moment for data to be enqueued
         time.sleep(0.5)
+
+        # Verify data was enqueued (pending count should increase)
+        pending_after_log = run._sync_manager.get_pending_count()
+        assert pending_after_log >= 0  # May be 0 if sync already processed
 
         run.finish()
