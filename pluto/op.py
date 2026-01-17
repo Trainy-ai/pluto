@@ -278,7 +278,9 @@ class Op:
         logger.debug(f'{tag}: started')
 
         # Register signal handler for graceful Ctrl+C shutdown
-        _register_signal_handler()
+        # (unless disabled, e.g., when running under a compat layer like Neptune)
+        if not self.settings.x_disable_signal_handlers:
+            _register_signal_handler()
 
         # set globals
         if pluto.ops is None:
