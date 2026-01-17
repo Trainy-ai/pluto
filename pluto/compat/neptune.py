@@ -407,12 +407,15 @@ class NeptuneRunWrapper:
         Uses a daemon thread so it doesn't block process exit.
         """
         with self._close_lock:
-            # Only check _pluto_run - setting it to None prevents double-cleanup
-            # Don't check _closed here because callers set _closed before calling this
+            # Thread-safe double-cleanup prevention:
+            # 1. Check if already cleaned up (another thread got here first)
+            # 2. Capture reference to run object
+            # 3. Set to None BEFORE releasing lock (prevents other threads cleaning)
+            # The actual finish() call happens outside the lock to avoid blocking.
             if self._pluto_run is None:
                 return
             pluto_run = self._pluto_run
-            self._pluto_run = None  # Prevent double-cleanup
+            self._pluto_run = None  # Atomically prevent other threads from cleaning
 
         # Use threading.Event to signal completion
         done_event = threading.Event()

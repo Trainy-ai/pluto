@@ -73,13 +73,15 @@ class Settings:
     x_disable_signal_handlers: bool = False  # For compat layers (Neptune)
 
     # Sync process settings (V2 architecture)
-    sync_process_enabled: bool = True  # Use separate sync process
+    sync_process_enabled: bool = False  # Use separate sync process (experimental)
     sync_process_db_path: Optional[str] = None  # Override sync DB location
     sync_process_flush_interval: float = 1.0  # Flush interval (seconds)
     sync_process_shutdown_timeout: float = 30.0  # Max wait for sync
     sync_process_orphan_timeout: float = 10.0  # Orphan detection timeout
     sync_process_retry_max: int = 5  # Max retries for failed uploads
     sync_process_retry_backoff: float = 2.0  # Exponential backoff multiplier
+    sync_process_batch_size: int = 100  # Max records per upload batch
+    sync_process_file_batch_size: int = 10  # Max files per upload batch
 
     host: Optional[str] = None
     url_view: Optional[str] = None

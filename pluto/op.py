@@ -301,6 +301,8 @@ class Op:
             'sync_process_orphan_timeout': (self.settings.sync_process_orphan_timeout),
             'sync_process_retry_max': self.settings.sync_process_retry_max,
             'sync_process_retry_backoff': self.settings.sync_process_retry_backoff,
+            'sync_process_batch_size': self.settings.sync_process_batch_size,
+            'sync_process_file_batch_size': self.settings.sync_process_file_batch_size,
         }
 
         self._sync_manager = SyncProcessManager(

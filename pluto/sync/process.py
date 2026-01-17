@@ -23,6 +23,12 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
+try:
+    from filelock import FileLock
+except ImportError:
+    # Fallback for environments without filelock
+    FileLock = None  # type: ignore[misc, assignment]
+
 from .store import FileRecord, RecordType, SyncRecord, SyncStore
 
 # Type alias for process - SpawnProcess and Process have same interface
@@ -85,6 +91,24 @@ class SyncProcessManager:
 
     def start(self) -> None:
         """Start the sync process."""
+        if self._started:
+            return
+
+        # Use file lock for DDP coordination to prevent race conditions
+        # where multiple ranks might try to start sync processes simultaneously
+        lock_file = Path(self.db_path).parent / '.sync.lock'
+
+        if FileLock is not None:
+            lock = FileLock(str(lock_file), timeout=10)
+            with lock:
+                self._start_or_attach()
+        else:
+            # Fallback without locking (less safe for DDP)
+            logger.debug('filelock not available, proceeding without DDP lock')
+            self._start_or_attach()
+
+    def _start_or_attach(self) -> None:
+        """Start a new sync process or attach to an existing one."""
         if self._started:
             return
 
@@ -338,6 +362,8 @@ def _sync_main(
     orphan_timeout = settings_dict.get('sync_process_orphan_timeout', 10.0)
     max_retries = settings_dict.get('sync_process_retry_max', 5)
     shutdown_timeout = settings_dict.get('sync_process_shutdown_timeout', 30.0)
+    batch_size = settings_dict.get('sync_process_batch_size', 100)
+    file_batch_size = settings_dict.get('sync_process_file_batch_size', 10)
 
     parent_check_interval = 5.0
     last_parent_check = time.time()
@@ -370,7 +396,9 @@ def _sync_main(
 
             # Periodic flush
             if time.time() - last_flush > flush_interval:
-                synced = _sync_batch(store, uploader, log, max_retries)
+                synced = _sync_batch(
+                    store, uploader, log, max_retries, batch_size, file_batch_size
+                )
                 if synced:
                     log.debug(f'Synced batch of {synced} records')
                 last_flush = time.time()
@@ -392,6 +420,7 @@ def _sync_batch(
     log: logging.Logger,
     max_retries: int,
     batch_size: int = 100,
+    file_batch_size: int = 10,
 ) -> int:
     """
     Sync a batch of pending records (metrics + files).
@@ -403,8 +432,10 @@ def _sync_batch(
     # Sync regular records (metrics, config, tags, system)
     total_synced += _sync_records_batch(store, uploader, log, max_retries, batch_size)
 
-    # Sync files (smaller batch size for files)
-    total_synced += _sync_files_batch(store, uploader, log, max_retries, batch_size=10)
+    # Sync files
+    total_synced += _sync_files_batch(
+        store, uploader, log, max_retries, file_batch_size
+    )
 
     return total_synced
 
@@ -502,7 +533,7 @@ def _sync_files_batch(
     uploader: '_SyncUploader',
     log: logging.Logger,
     max_retries: int,
-    batch_size: int = 10,
+    batch_size: int,
 ) -> int:
     """
     Sync a batch of pending file uploads.
@@ -672,7 +703,7 @@ class _SyncUploader:
             import httpx
 
             self._client = httpx.Client(
-                timeout=httpx.Timeout(30.0),
+                timeout=httpx.Timeout(self.normal_timeout),
                 limits=httpx.Limits(max_connections=10),
                 http2=True,
             )

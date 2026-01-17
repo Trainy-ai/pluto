@@ -25,8 +25,8 @@ pluto.log() → SQLite (local)   ←──  Tail & Upload
 │  │                    /tmp/pluto-runs/<run_id>/                           │ │
 │  │                                                                         │ │
 │  │  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐  ┌──────────────┐  │ │
-│  │  │ metrics.db  │  │  files/     │  │  state.json │  │  sync.lock   │  │ │
-│  │  │ (SQLite WAL)│  │  (uploads)  │  │  (run meta) │  │  (coord)     │  │ │
+│  │  │  sync.db    │  │  files/     │  │  sync.pid   │  │  .sync.lock  │  │ │
+│  │  │ (SQLite WAL)│  │  (uploads)  │  │  (PID file) │  │  (DDP coord) │  │ │
 │  │  └─────────────┘  └─────────────┘  └─────────────┘  └──────────────┘  │ │
 │  └────────────────────────────────────────────────────────────────────────┘ │
 │         ▲                    ▲                                               │
