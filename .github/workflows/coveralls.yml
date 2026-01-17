@@ -35,8 +35,7 @@ jobs:
           # Clear stale cached venv that may be missing dev dependencies
           rm -rf .venv
           poetry install --with dev --extras full
-          pip install -e ".[dev,full]"
-          pip install pytest-cov
+          poetry run pip install pytest-cov
           pluto login ${{ secrets.MLOP_API_TOKEN }}
 
       - name: Run tests with coverage
