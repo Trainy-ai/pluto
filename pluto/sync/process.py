@@ -23,7 +23,7 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
-from .store import RecordType, SyncRecord, SyncStore
+from .store import FileRecord, RecordType, SyncRecord, SyncStore
 
 # Type alias for process - SpawnProcess and Process have same interface
 ProcessType = Union[multiprocessing.Process, multiprocessing.process.BaseProcess]
@@ -211,9 +211,42 @@ class SyncProcessManager:
             timestamp_ms=timestamp_ms,
         )
 
+    def enqueue_file(
+        self,
+        local_path: str,
+        file_name: str,
+        file_ext: str,
+        file_type: str,
+        file_size: int,
+        log_name: str,
+        timestamp_ms: int,
+        step: Optional[int] = None,
+    ) -> None:
+        """
+        Enqueue a file for upload.
+
+        The file should already exist on disk at local_path.
+        The sync process will handle getting presigned URLs and uploading.
+        """
+        self.store.enqueue_file(
+            run_id=self.run_id,
+            local_path=local_path,
+            file_name=file_name,
+            file_ext=file_ext,
+            file_type=file_type,
+            file_size=file_size,
+            log_name=log_name,
+            timestamp_ms=timestamp_ms,
+            step=step,
+        )
+        # Update heartbeat to show we're alive
+        self.store.heartbeat(self.run_id)
+
     def get_pending_count(self) -> int:
-        """Get count of pending records."""
-        return self.store.get_pending_count(self.run_id)
+        """Get count of pending records (metrics + files)."""
+        return self.store.get_pending_count(
+            self.run_id
+        ) + self.store.get_pending_file_count(self.run_id)
 
     def heartbeat(self) -> None:
         """Send heartbeat to indicate training process is alive."""
@@ -361,7 +394,30 @@ def _sync_batch(
     batch_size: int = 100,
 ) -> int:
     """
-    Sync a batch of pending records.
+    Sync a batch of pending records (metrics + files).
+
+    Returns count of records synced.
+    """
+    total_synced = 0
+
+    # Sync regular records (metrics, config, tags, system)
+    total_synced += _sync_records_batch(store, uploader, log, max_retries, batch_size)
+
+    # Sync files (smaller batch size for files)
+    total_synced += _sync_files_batch(store, uploader, log, max_retries, batch_size=10)
+
+    return total_synced
+
+
+def _sync_records_batch(
+    store: SyncStore,
+    uploader: '_SyncUploader',
+    log: logging.Logger,
+    max_retries: int,
+    batch_size: int = 100,
+) -> int:
+    """
+    Sync a batch of pending metric/config/tags/system records.
 
     Returns count of records synced.
     """
@@ -441,6 +497,45 @@ def _sync_batch(
     return len(success_ids)
 
 
+def _sync_files_batch(
+    store: SyncStore,
+    uploader: '_SyncUploader',
+    log: logging.Logger,
+    max_retries: int,
+    batch_size: int = 10,
+) -> int:
+    """
+    Sync a batch of pending file uploads.
+
+    Returns count of files synced.
+    """
+    file_records = store.get_pending_files(limit=batch_size, max_retries=max_retries)
+    if not file_records:
+        return 0
+
+    # Mark as in progress
+    file_ids = [f.id for f in file_records]
+    store.mark_files_in_progress(file_ids)
+
+    # Upload files
+    results = uploader.upload_files_batch(file_records)
+
+    # Update status based on results
+    success_ids = [fid for fid, success in results.items() if success]
+    failed_ids = [fid for fid, success in results.items() if not success]
+
+    store.mark_files_completed(success_ids)
+    if failed_ids:
+        store.mark_files_failed(failed_ids, 'Upload failed')
+
+    if success_ids:
+        log.debug(f'Uploaded {len(success_ids)} file(s)')
+    if failed_ids:
+        log.warning(f'Failed to upload {len(failed_ids)} file(s)')
+
+    return len(success_ids)
+
+
 def _flush_remaining(
     store: SyncStore,
     uploader: '_SyncUploader',
@@ -449,7 +544,7 @@ def _flush_remaining(
     max_retries: int,
 ) -> None:
     """
-    Flush all remaining records within timeout.
+    Flush all remaining records and files within timeout.
 
     Uses urgent mode to ensure we don't block on slow/failing uploads.
     Data that fails to sync remains in SQLite for later recovery.
@@ -463,6 +558,9 @@ def _flush_remaining(
 
     # Minimum time needed for a batch attempt (timeout + overhead)
     min_batch_time = 2.0
+
+    def get_total_pending() -> int:
+        return store.get_pending_count() + store.get_pending_file_count()
 
     while True:
         elapsed = time.time() - start
@@ -478,7 +576,7 @@ def _flush_remaining(
             synced = _sync_batch(store, uploader, log, max_retries=1)
             if synced == 0:
                 # Nothing left to sync
-                pending = store.get_pending_count()
+                pending = get_total_pending()
                 if pending == 0:
                     log.info(
                         f'All records synced successfully '
@@ -487,7 +585,7 @@ def _flush_remaining(
                     return
                 else:
                     log.warning(
-                        f'{pending} records failed to sync after retries. '
+                        f'{pending} records/files failed to sync after retries. '
                         f'Data preserved in SQLite for recovery.'
                     )
                     return
@@ -500,7 +598,7 @@ def _flush_remaining(
             time.sleep(0.5)
 
     # Timeout reached
-    pending = store.get_pending_count()
+    pending = get_total_pending()
     log.warning(
         f'Flush timed out after {timeout}s. '
         f'Synced {total_records_synced} records, {pending} remain in SQLite.'
@@ -525,10 +623,14 @@ class _SyncUploader:
     URGENT_MAX_RETRIES = 1
     URGENT_MAX_BACKOFF_SECONDS = 1.0
 
+    # File upload settings
+    FILE_UPLOAD_TIMEOUT_SECONDS = 120.0  # Larger timeout for file uploads
+
     def __init__(self, settings_dict: Dict[str, Any], log: logging.Logger):
         self.settings = settings_dict
         self.log = log
         self._client: Any = None
+        self._storage_client: Any = None  # Separate client for S3 uploads
         self._urgent_mode = False
 
         # Extract settings
@@ -541,6 +643,7 @@ class _SyncUploader:
         self.url_num = settings_dict.get('url_num', '')
         self.url_update_config = settings_dict.get('url_update_config', '')
         self.url_update_tags = settings_dict.get('url_update_tags', '')
+        self.url_file = settings_dict.get('url_file', '')
 
         # Retry settings (normal mode)
         self.retry_max = settings_dict.get('sync_process_retry_max', 5)
@@ -574,6 +677,18 @@ class _SyncUploader:
                 http2=True,
             )
         return self._client
+
+    @property
+    def storage_client(self) -> Any:
+        """Lazy-init HTTP client for S3 storage uploads."""
+        if self._storage_client is None:
+            import httpx
+
+            self._storage_client = httpx.Client(
+                timeout=httpx.Timeout(self.FILE_UPLOAD_TIMEOUT_SECONDS),
+                limits=httpx.Limits(max_connections=5),
+            )
+        return self._storage_client
 
     def _get_headers(self) -> Dict[str, str]:
         """Get common headers for requests."""
@@ -678,6 +793,148 @@ class _SyncUploader:
         body = '\n'.join(lines)
         self._post_with_retry(self.url_num, body, self._get_headers())
 
+    def upload_files_batch(
+        self,
+        file_records: List[FileRecord],
+    ) -> Dict[int, bool]:
+        """
+        Upload a batch of files.
+
+        Returns dict mapping file_id -> success (True/False).
+
+        Flow:
+        1. Request presigned URLs for all files
+        2. Upload each file to its presigned URL
+        3. Return success/failure status for each
+        """
+        if not self.url_file or not file_records:
+            return {}
+
+        results: Dict[int, bool] = {}
+
+        # Step 1: Request presigned URLs for all files
+        try:
+            presigned_urls = self._get_presigned_urls(file_records)
+        except Exception as e:
+            self.log.warning(f'Failed to get presigned URLs: {e}')
+            # Mark all as failed
+            for f in file_records:
+                results[f.id] = False
+            return results
+
+        # Step 2: Upload each file to S3
+        for file_record in file_records:
+            file_key = f'{file_record.file_name}{file_record.file_ext}'
+            url = presigned_urls.get(file_key)
+
+            if not url:
+                self.log.warning(
+                    f'No presigned URL for file: {file_key} '
+                    f'(available: {list(presigned_urls.keys())})'
+                )
+                results[file_record.id] = False
+                continue
+
+            try:
+                self._upload_file_to_storage(file_record, url)
+                results[file_record.id] = True
+            except Exception as e:
+                self.log.warning(f'Failed to upload file {file_key}: {e}')
+                results[file_record.id] = False
+
+        return results
+
+    def _get_presigned_urls(
+        self,
+        file_records: List[FileRecord],
+    ) -> Dict[str, str]:
+        """
+        Request presigned URLs for a batch of files.
+
+        Returns dict mapping filename -> presigned_url.
+        """
+        # Build request payload (same format as make_compat_file_v1)
+        batch = []
+        for f in file_records:
+            file_ext = f.file_ext
+            file_type = file_ext[1:] if file_ext.startswith('.') else file_ext
+            batch.append(
+                {
+                    'fileName': f'{f.file_name}{f.file_ext}',
+                    'fileSize': f.file_size,
+                    'fileType': file_type,
+                    'time': f.timestamp_ms,
+                    'logName': f.log_name,
+                    'step': f.step,
+                }
+            )
+
+        body = json.dumps({'files': batch})
+        headers = self._get_headers()
+        headers['Content-Type'] = 'application/json'
+
+        # Use shorter timeout in urgent mode
+        timeout = (
+            self.URGENT_TIMEOUT_SECONDS if self._urgent_mode else self.normal_timeout
+        )
+
+        response = self.client.post(
+            self.url_file,
+            content=body,
+            headers=headers,
+            timeout=timeout,
+        )
+        response.raise_for_status()
+
+        # Parse response - it's a dict mapping file type to list of url mappings
+        # e.g., {"Image": [{"filename.png": "https://s3..."}]}
+        result_data = response.json()
+        presigned_urls: Dict[str, str] = {}
+
+        # Flatten the nested structure
+        for file_type_list in result_data.values():
+            if isinstance(file_type_list, list):
+                for url_mapping in file_type_list:
+                    if isinstance(url_mapping, dict):
+                        presigned_urls.update(url_mapping)
+
+        return presigned_urls
+
+    def _upload_file_to_storage(
+        self,
+        file_record: FileRecord,
+        presigned_url: str,
+    ) -> None:
+        """Upload a single file to S3 using presigned URL."""
+        # Read file content
+        with open(file_record.local_path, 'rb') as f:
+            data = f.read()
+
+        self.log.debug(
+            f'Uploading file {file_record.file_name}{file_record.file_ext} '
+            f'({len(data)} bytes) to S3'
+        )
+
+        # Use shorter timeout in urgent mode
+        timeout = (
+            self.URGENT_TIMEOUT_SECONDS
+            if self._urgent_mode
+            else self.FILE_UPLOAD_TIMEOUT_SECONDS
+        )
+
+        response = self.storage_client.put(
+            presigned_url,
+            content=data,
+            headers={'Content-Type': file_record.file_type},
+            timeout=timeout,
+        )
+
+        if response.status_code not in [200, 201]:
+            raise Exception(
+                f'S3 upload failed with status {response.status_code}: '
+                f'{response.text[:100]}'
+            )
+
     def _post_with_retry(
         self,
         url: str,
@@ -720,10 +977,13 @@ class _SyncUploader:
         raise last_error or Exception('Request failed after retries')
 
     def close(self) -> None:
-        """Close HTTP client."""
+        """Close HTTP clients."""
         if self._client is not None:
             self._client.close()
             self._client = None
+        if self._storage_client is not None:
+            self._storage_client.close()
+            self._storage_client = None
 
 
 # ============================================================================

@@ -292,6 +292,7 @@ class Op:
             'url_num': self.settings.url_num,
             'url_update_config': self.settings.url_update_config,
             'url_update_tags': self.settings.url_update_tags,
+            'url_file': self.settings.url_file,  # For file uploads
             'x_log_level': self.settings.x_log_level,
             'sync_process_flush_interval': (self.settings.sync_process_flush_interval),
             'sync_process_shutdown_timeout': (
@@ -363,18 +364,77 @@ class Op:
         self._step = self._step + 1 if step is None else step
         timestamp_ms = int(time.time() * 1000)
 
-        # Extract numeric values for metrics
+        # Extract numeric values for metrics and handle files
         metrics: Dict[str, Any] = {}
         for k, v in data.items():
             k = get_char(k)
-            if isinstance(v, (int, float)):
-                metrics[k] = v
-            elif hasattr(v, 'item'):  # Tensor
-                metrics[k] = v.item()
-            # TODO: Handle File, Data types via separate queue
+
+            # Handle lists of values
+            if isinstance(v, list):
+                for item in v:
+                    self._process_log_item_sync(k, item, metrics, timestamp_ms)
+            else:
+                self._process_log_item_sync(k, v, metrics, timestamp_ms)
 
         if metrics:
             self._sync_manager.enqueue_metrics(metrics, timestamp_ms, self._step)
+
+    def _process_log_item_sync(
+        self,
+        key: str,
+        value: Any,
+        metrics: Dict[str, Any],
+        timestamp_ms: int,
+    ) -> None:
+        """Process a single log item for sync process mode."""
+        if self._sync_manager is None:
+            return
+
+        if isinstance(value, (int, float)):
+            metrics[key] = value
+        elif hasattr(value, 'item'):  # Tensor
+            metrics[key] = value.item()
+        elif isinstance(value, File):
+            # Handle file types (Image, Audio, Video, Text, Artifact)
+            self._enqueue_file_sync(key, value, timestamp_ms)
+        # Note: Data types (Graph, Histogram, Table) not yet supported in sync mode
+
+    def _enqueue_file_sync(
+        self,
+        log_name: str,
+        file_obj: File,
+        timestamp_ms: int,
+    ) -> None:
+        """
+        Process and enqueue a file for upload via sync process.
+
+        This mirrors the file handling in _log/_op but for sync process mode.
+        """
+        if self._sync_manager is None:
+            return
+
+        # Load the file (converts in-memory data to disk if needed)
+        if isinstance(file_obj, (Artifact, Text, Image, Audio, Video)):
+            file_obj.load(self.settings.get_dir())
+
+        # Copy to run directory (if not already there)
+        file_obj._mkcopy(self.settings.get_dir())
+
+        # Enqueue for upload
+        if file_obj._path is not None:
+            self._sync_manager.enqueue_file(
+                local_path=file_obj._path,
+                file_name=file_obj._name,
+                file_ext=file_obj._ext,
+                file_type=file_obj._type,
+                file_size=file_obj._stat.st_size,
+                log_name=log_name,
+                timestamp_ms=timestamp_ms,
+                step=self._step,
+            )
+            logger.debug(
+                f'{tag}: enqueued file {file_obj._name}{file_obj._ext} for sync'
+            )
 
     def finish(self, code: Union[int, None] = None) -> None:
         """Finish logging"""

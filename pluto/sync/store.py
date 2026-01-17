@@ -42,6 +42,28 @@ class RecordType(IntEnum):
 
 
 @dataclass
+class FileRecord:
+    """A file pending upload to the server."""
+
+    id: int
+    run_id: str
+    local_path: str
+    file_name: str
+    file_ext: str
+    file_type: str  # MIME type
+    file_size: int
+    log_name: str  # Key used in pluto.log()
+    timestamp_ms: int
+    step: Optional[int]
+    status: SyncStatus
+    retry_count: int
+    created_at: float
+    last_attempt_at: Optional[float]
+    error_message: Optional[str]
+    presigned_url: Optional[str]
+
+
+@dataclass
 class SyncRecord:
     """A record pending sync to the server."""
 
@@ -176,6 +198,9 @@ class SyncStore:
                     remote_url TEXT,
                     file_type TEXT NOT NULL,
                     file_size INTEGER,
+                    file_name TEXT,
+                    file_ext TEXT,
+                    log_name TEXT,
                     timestamp_ms INTEGER NOT NULL,
                     step INTEGER,
                     status INTEGER DEFAULT 0,
@@ -496,6 +521,180 @@ class SyncStore:
                 (int(SyncStatus.COMPLETED), cutoff),
             )
             return cursor.rowcount
+
+    # ========================================================================
+    # File upload methods
+    # ========================================================================
+
+    def enqueue_file(
+        self,
+        run_id: str,
+        local_path: str,
+        file_name: str,
+        file_ext: str,
+        file_type: str,
+        file_size: int,
+        log_name: str,
+        timestamp_ms: int,
+        step: Optional[int] = None,
+    ) -> int:
+        """Add a file to the upload queue. Returns file record ID."""
+        now = time.time()
+
+        with self._lock:
+            cursor = self.conn.execute(
+                """
+                INSERT INTO file_uploads (
+                    run_id, local_path, file_type, file_size,
+                    timestamp_ms, step, created_at, file_name, file_ext, log_name
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    run_id,
+                    local_path,
+                    file_type,
+                    file_size,
+                    timestamp_ms,
+                    step,
+                    now,
+                    file_name,
+                    file_ext,
+                    log_name,
+                ),
+            )
+            return cursor.lastrowid or 0
+
+    def get_pending_files(
+        self,
+        limit: int = 10,
+        max_retries: int = 5,
+    ) -> List[FileRecord]:
+        """Get files pending upload."""
+        with self._lock:
+            cursor = self.conn.execute(
+                """
+                SELECT * FROM file_uploads
+                WHERE status IN (?, ?)
+                AND retry_count < ?
+                ORDER BY created_at ASC
+                LIMIT ?
+                """,
+                (int(SyncStatus.PENDING), int(SyncStatus.FAILED), max_retries, limit),
+            )
+
+            records = []
+            for row in cursor.fetchall():
+                records.append(
+                    FileRecord(
+                        id=row['id'],
+                        run_id=row['run_id'],
+                        local_path=row['local_path'],
+                        file_name=row['file_name'] if 'file_name' in row.keys() else '',
+                        file_ext=row['file_ext'] if 'file_ext' in row.keys() else '',
+                        file_type=row['file_type'],
+                        file_size=row['file_size'] or 0,
+                        log_name=row['log_name'] if 'log_name' in row.keys() else '',
+                        timestamp_ms=row['timestamp_ms'],
+                        step=row['step'],
+                        status=SyncStatus(row['status']),
+                        retry_count=row['retry_count'],
+                        created_at=row['created_at'],
+                        last_attempt_at=row['last_attempt_at'],
+                        error_message=row['error_message'],
+                        presigned_url=row['remote_url'],
+                    )
+                )
+            return records
+
+    def mark_files_in_progress(self, file_ids: List[int]) -> None:
+        """Mark file records as in-progress."""
+        if not file_ids:
+            return
+
+        with self._lock:
+            placeholders = ','.join('?' * len(file_ids))
+            params: List[Any] = [int(SyncStatus.IN_PROGRESS), time.time()]
+            params.extend(file_ids)
+            self.conn.execute(
+                f"""
+                UPDATE file_uploads
+                SET status = ?, last_attempt_at = ?
+                WHERE id IN ({placeholders})
+                """,
+                params,
+            )
+
+    def mark_files_completed(self, file_ids: List[int]) -> None:
+        """Mark file records as successfully uploaded."""
+        if not file_ids:
+            return
+
+        with self._lock:
+            placeholders = ','.join('?' * len(file_ids))
+            params: List[Any] = [int(SyncStatus.COMPLETED)]
+            params.extend(file_ids)
+            self.conn.execute(
+                f"""
+                UPDATE file_uploads
+                SET status = ?
+                WHERE id IN ({placeholders})
+                """,
+                params,
+            )
+
+    def mark_files_failed(
+        self,
+        file_ids: List[int],
+        error_message: str,
+    ) -> None:
+        """Mark file records as failed, increment retry count."""
+        if not file_ids:
+            return
+
+        with self._lock:
+            placeholders = ','.join('?' * len(file_ids))
+            params: List[Any] = [int(SyncStatus.FAILED), error_message]
+            params.extend(file_ids)
+            self.conn.execute(
+                f"""
+                UPDATE file_uploads
+                SET status = ?,
+                    retry_count = retry_count + 1,
+                    error_message = ?
+                WHERE id IN ({placeholders})
+                """,
+                params,
+            )
+
+    def update_file_presigned_url(self, file_id: int, url: str) -> None:
+        """Store presigned URL for a file."""
+        with self._lock:
+            self.conn.execute(
+                'UPDATE file_uploads SET remote_url = ? WHERE id = ?',
+                (url, file_id),
+            )
+
+    def get_pending_file_count(self, run_id: Optional[str] = None) -> int:
+        """Get count of pending file uploads."""
+        with self._lock:
+            if run_id:
+                cursor = self.conn.execute(
+                    """
+                    SELECT COUNT(*) FROM file_uploads
+                    WHERE run_id = ? AND status IN (?, ?)
+                    """,
+                    (run_id, int(SyncStatus.PENDING), int(SyncStatus.IN_PROGRESS)),
+                )
+            else:
+                cursor = self.conn.execute(
+                    """
+                    SELECT COUNT(*) FROM file_uploads
+                    WHERE status IN (?, ?)
+                    """,
+                    (int(SyncStatus.PENDING), int(SyncStatus.IN_PROGRESS)),
+                )
+            return cursor.fetchone()[0]
 
     def close(self) -> None:
         """Close database connection."""

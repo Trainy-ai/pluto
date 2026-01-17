@@ -32,7 +32,7 @@ from .process import (
     start_sync_process,
     stop_sync_process,
 )
-from .store import RecordType, SyncRecord, SyncStatus, SyncStore
+from .store import FileRecord, RecordType, SyncRecord, SyncStatus, SyncStore
 
 __all__ = [
     # Manager class (primary interface)
@@ -40,6 +40,7 @@ __all__ = [
     # Store classes
     'SyncStore',
     'SyncRecord',
+    'FileRecord',
     'SyncStatus',
     'RecordType',
     # Low-level process functions
