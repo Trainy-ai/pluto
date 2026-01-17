@@ -159,13 +159,21 @@ class SyncProcessManager:
         self.store.mark_run_finished(self.run_id)
 
         if not wait:
-            # Preemption mode: don't block, sync process will handle it
-            # The sync process will detect the finish flag and flush
+            # Preemption/DDP mode: signal shutdown and terminate process
+            # This prevents blocking in torchrun which waits for child processes
             pending = self.store.get_pending_count(self.run_id)
             logger.info(
                 f'Signaled sync shutdown (not waiting). '
                 f'{pending} records pending, data preserved in {self.db_path}'
             )
+            # Send SIGTERM to sync process so it exits gracefully
+            # This is critical for DDP where torchrun waits for all children
+            if self._process is not None and self._process.is_alive():
+                try:
+                    self._process.terminate()
+                    logger.debug('Sent SIGTERM to sync process')
+                except Exception as e:
+                    logger.debug(f'Failed to terminate sync process: {e}')
             return True
 
         # Normal mode: wait for sync to complete
