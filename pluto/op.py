@@ -24,6 +24,7 @@ from .file import Artifact, Audio, File, Image, Text, Video
 from .iface import ServerInterface
 from .log import setup_logger, teardown_logger
 from .store import DataStore
+from .sync import SyncProcessManager
 from .sys import System
 from .util import get_char, get_val, to_json
 
@@ -207,6 +208,7 @@ class Op:
         self.tags: List[str] = tags if tags else []  # Use provided tags or empty list
         self._monitor = OpMonitor(op=self)
         self._resumed: bool = False  # Whether this run was resumed (multi-node)
+        self._sync_manager: Optional[SyncProcessManager] = None
 
         if self.settings.mode == 'noop':
             self.settings.disable_iface = True
@@ -253,14 +255,18 @@ class Op:
                 [self.settings._sys.get_info()], f'{self.settings.get_dir()}/sys.json'
             )
 
+            # Initialize sync process manager if enabled
+            if settings.sync_process_enabled:
+                self._init_sync_manager()
+
         self._store: Optional[DataStore] = (
             DataStore(config=config, settings=settings)
-            if not settings.disable_store
+            if not settings.disable_store and not settings.sync_process_enabled
             else None
         )
         self._iface: Optional[ServerInterface] = (
             ServerInterface(config=config, settings=settings)
-            if not settings.disable_iface
+            if not settings.disable_iface and not settings.sync_process_enabled
             else None
         )
         self._step = 0
@@ -269,12 +275,54 @@ class Op:
         self._finish_lock = threading.Lock()
         atexit.register(self.finish)
 
+    def _init_sync_manager(self) -> None:
+        """Initialize the sync process manager."""
+        # Generate run_id for sync process
+        run_id = self.settings._external_id or str(self.settings._op_id)
+
+        # Build settings dict for sync process (must be serializable)
+        settings_dict = {
+            'dir': self.settings.dir,
+            'tag': self.settings.tag,
+            'project': self.settings.project,
+            '_auth': self.settings._auth,
+            '_op_id': self.settings._op_id,
+            '_op_name': self.settings._op_name,
+            '_config': self.config,
+            'url_num': self.settings.url_num,
+            'url_update_config': self.settings.url_update_config,
+            'url_update_tags': self.settings.url_update_tags,
+            'x_log_level': self.settings.x_log_level,
+            'sync_process_flush_interval': (self.settings.sync_process_flush_interval),
+            'sync_process_shutdown_timeout': (
+                self.settings.sync_process_shutdown_timeout
+            ),
+            'sync_process_orphan_timeout': (self.settings.sync_process_orphan_timeout),
+            'sync_process_retry_max': self.settings.sync_process_retry_max,
+            'sync_process_retry_backoff': self.settings.sync_process_retry_backoff,
+        }
+
+        self._sync_manager = SyncProcessManager(
+            run_id=run_id,
+            project=self.settings.project,
+            settings_dict=settings_dict,
+            db_path=self.settings.sync_process_db_path,
+        )
+        logger.debug(f'{tag}: initialized sync process manager')
+
     def start(self) -> None:
-        self._iface.start() if self._iface else None
-        self._iface._update_meta(
-            list(make_compat_monitor_v1(self.settings._sys.monitor()).keys())
-        ) if self._iface else None
-        self._monitor.start()
+        # Start sync process if enabled
+        if self._sync_manager is not None:
+            self._sync_manager.start()
+            logger.debug(f'{tag}: sync process started')
+        else:
+            # Use traditional thread-based approach
+            self._iface.start() if self._iface else None
+            self._iface._update_meta(
+                list(make_compat_monitor_v1(self.settings._sys.monitor()).keys())
+            ) if self._iface else None
+            self._monitor.start()
+
         logger.debug(f'{tag}: started')
 
         # Register signal handler for graceful Ctrl+C shutdown
@@ -295,10 +343,38 @@ class Op:
         commit: Union[bool, None] = None,
     ) -> None:
         """Log run data"""
-        if self.settings.mode == 'perf':
+        # Use sync process if enabled
+        if self._sync_manager is not None:
+            self._log_via_sync(data=data, step=step)
+        elif self.settings.mode == 'perf':
             self._queue.put((data, step), block=False)
         else:  # bypass queue
             self._log(data=data, step=step)
+
+    def _log_via_sync(
+        self,
+        data: Dict[str, Any],
+        step: Optional[int] = None,
+    ) -> None:
+        """Log data via sync process (writes to SQLite, picked up by sync)."""
+        if self._sync_manager is None:
+            return
+
+        self._step = self._step + 1 if step is None else step
+        timestamp_ms = int(time.time() * 1000)
+
+        # Extract numeric values for metrics
+        metrics: Dict[str, Any] = {}
+        for k, v in data.items():
+            k = get_char(k)
+            if isinstance(v, (int, float)):
+                metrics[k] = v
+            elif hasattr(v, 'item'):  # Tensor
+                metrics[k] = v.item()
+            # TODO: Handle File, Data types via separate queue
+
+        if metrics:
+            self._sync_manager.enqueue_metrics(metrics, timestamp_ms, self._step)
 
     def finish(self, code: Union[int, None] = None) -> None:
         """Finish logging"""
@@ -310,54 +386,73 @@ class Op:
             self._finished = True
 
         try:
-            self._monitor.stop(code)
-            # Wait for queue to drain with timeout to prevent hang during shutdown
-            drain_timeout = self.settings.x_thread_join_timeout_seconds
-            drain_start = time.time()
-            initial_size = self._queue.qsize()
-            last_log_time = drain_start
-            logger.debug(f'{tag}: waiting for queue to drain, {initial_size} items')
-            while not self._queue.empty():
-                elapsed = time.time() - drain_start
-                if elapsed > drain_timeout:
-                    remaining = self._queue.qsize()
+            # Handle sync process shutdown
+            if self._sync_manager is not None:
+                logger.debug(f'{tag}: stopping sync process manager')
+                sync_completed = self._sync_manager.stop(
+                    timeout=self.settings.sync_process_shutdown_timeout
+                )
+                if not sync_completed:
+                    pending = self._sync_manager.get_pending_count()
                     logger.warning(
-                        f'{tag}: Queue drain timeout after {drain_timeout}s, '
-                        f'{remaining} items remaining (started with {initial_size})'
+                        f'{tag}: Sync did not complete within timeout, '
+                        f'{pending} records may not have been uploaded. '
+                        f'Data is preserved in {self._sync_manager.db_path}'
                     )
-                    break
-                # Log progress every 5 seconds
-                if time.time() - last_log_time > 5:
-                    current_size = self._queue.qsize()
-                    logger.debug(
-                        f'{tag}: queue drain progress: {current_size} items remaining '
-                        f'({initial_size - current_size} processed in {elapsed:.1f}s)'
-                    )
-                    last_log_time = time.time()
-                time.sleep(self.settings.x_internal_check_process)
-            logger.debug(f'{tag}: queue drained, stopping store')
-            self._store.stop() if self._store else None
-            logger.debug(f'{tag}: store stopped, stopping interface')
-            self._iface.stop() if self._iface else None  # fixed order
+                self._sync_manager.close()
+                self._sync_manager = None
+            else:
+                # Traditional thread-based shutdown
+                self._monitor.stop(code)
+                # Wait for queue to drain with timeout
+                drain_timeout = self.settings.x_thread_join_timeout_seconds
+                drain_start = time.time()
+                initial_size = self._queue.qsize()
+                last_log_time = drain_start
+                logger.debug(f'{tag}: waiting for queue to drain, {initial_size} items')
+                while not self._queue.empty():
+                    elapsed = time.time() - drain_start
+                    if elapsed > drain_timeout:
+                        remaining = self._queue.qsize()
+                        logger.warning(
+                            f'{tag}: Queue drain timeout after {drain_timeout}s, '
+                            f'{remaining} items remaining (started with {initial_size})'
+                        )
+                        break
+                    # Log progress every 5 seconds
+                    if time.time() - last_log_time > 5:
+                        current_size = self._queue.qsize()
+                        logger.debug(
+                            f'{tag}: queue drain progress: {current_size} items '
+                            f'remaining ({initial_size - current_size} processed '
+                            f'in {elapsed:.1f}s)'
+                        )
+                        last_log_time = time.time()
+                    time.sleep(self.settings.x_internal_check_process)
+                logger.debug(f'{tag}: queue drained, stopping store')
+                self._store.stop() if self._store else None
+                logger.debug(f'{tag}: store stopped, stopping interface')
+                self._iface.stop() if self._iface else None  # fixed order
         except (Exception, KeyboardInterrupt) as e:
             self.settings._op_status = signal.SIGINT.value
-            self._iface._update_status(
-                self.settings,
-                trace={
-                    'type': e.__class__.__name__,
-                    'message': str(e),
-                    'frames': [
-                        {
-                            'filename': frame.filename,
-                            'lineno': frame.lineno,
-                            'name': frame.name,
-                            'line': frame.line,
-                        }
-                        for frame in traceback.extract_tb(e.__traceback__)
-                    ],
-                    'trace': traceback.format_exc(),
-                },
-            ) if self._iface else None
+            if self._iface:
+                self._iface._update_status(
+                    self.settings,
+                    trace={
+                        'type': e.__class__.__name__,
+                        'message': str(e),
+                        'frames': [
+                            {
+                                'filename': frame.filename,
+                                'lineno': frame.lineno,
+                                'name': frame.name,
+                                'line': frame.line,
+                            }
+                            for frame in traceback.extract_tb(e.__traceback__)
+                        ],
+                        'trace': traceback.format_exc(),
+                    },
+                )
             logger.critical('%s: interrupted %s', tag, e)
         logger.debug(f'{tag}: finished')
         teardown_logger(logger, console=logging.getLogger('console'))
@@ -411,7 +506,10 @@ class Op:
         logger.debug(f'{tag}: added tags: {tags}')
 
         # Sync full tags array to server
-        if self._iface:
+        if self._sync_manager is not None:
+            timestamp_ms = int(time.time() * 1000)
+            self._sync_manager.enqueue_tags(self.tags, timestamp_ms)
+        elif self._iface:
             try:
                 self._iface._update_tags(self.tags)
             except Exception as e:
@@ -438,7 +536,10 @@ class Op:
         logger.debug(f'{tag}: removed tags: {tags}')
 
         # Sync full tags array to server
-        if self._iface:
+        if self._sync_manager is not None:
+            timestamp_ms = int(time.time() * 1000)
+            self._sync_manager.enqueue_tags(self.tags, timestamp_ms)
+        elif self._iface:
             try:
                 self._iface._update_tags(self.tags)
             except Exception as e:
@@ -464,7 +565,10 @@ class Op:
         logger.debug(f'{tag}: updated config: {config}')
 
         # Sync config to server
-        if self._iface:
+        if self._sync_manager is not None:
+            timestamp_ms = int(time.time() * 1000)
+            self._sync_manager.enqueue_config(config, timestamp_ms)
+        elif self._iface:
             try:
                 self._iface._update_config(config)
             except Exception as e:
