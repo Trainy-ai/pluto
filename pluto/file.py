@@ -68,18 +68,35 @@ class File:
                 raise ValueError('File path is not set')
             shutil.copyfile(self._path, self._tmp)
             # Only delete temp files we create, not user-provided files
-            is_temp = (
-                (hasattr(self, '_image') and self._image != 'file')
-                or (hasattr(self, '_audio') and self._audio != 'file')
-                or (hasattr(self, '_video') and self._video != 'file')
-                or hasattr(self, '_text')
-            )
+            # A temp file is one where the data was NOT loaded from an existing file
+            # (i.e., _image/_audio/_video is not the string 'file')
+            is_temp = self._is_temp_file()
             if is_temp:
                 os.remove(self._path)
             self._path = os.path.abspath(self._tmp)
             # Refresh _stat to match the actual file that will be uploaded
             # This ensures fileSize in presigned URL matches actual content
             self._stat = os.stat(self._path)
+
+    def _is_temp_file(self) -> bool:
+        """Check if this file was created from in-memory data (temp file)."""
+        # Check _image attribute (Image class)
+        if hasattr(self, '_image'):
+            # If it's the string 'file', it was loaded from a file path
+            if not (isinstance(self._image, str) and self._image == 'file'):
+                return True
+        # Check _audio attribute (Audio class)
+        if hasattr(self, '_audio'):
+            if not (isinstance(self._audio, str) and self._audio == 'file'):
+                return True
+        # Check _video attribute (Video class)
+        if hasattr(self, '_video'):
+            if not (isinstance(self._video, str) and self._video == 'file'):
+                return True
+        # Check _text attribute (Text class)
+        if hasattr(self, '_text'):
+            return True
+        return False
 
 
 class Artifact(File):
@@ -261,9 +278,10 @@ class Audio(File):
         if not self._path:
             if dir:
                 self._tmp = f'{dir}/files/{self._name}-{self._id}{self._ext}'
-                if self._audio == 'bytes' and self._bytes is not None:
-                    with open(self._tmp, 'wb') as f:
-                        f.write(self._bytes)
+                if isinstance(self._audio, str) and self._audio == 'bytes':
+                    if self._bytes is not None:
+                        with open(self._tmp, 'wb') as f:
+                            f.write(self._bytes)
                 else:
                     sf.write(file=self._tmp, data=self._audio, samplerate=self._rate)
                 self._path = os.path.abspath(self._tmp)
