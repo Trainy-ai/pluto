@@ -112,25 +112,41 @@ class SyncProcessManager:
 
         logger.info(f'Started sync process (PID: {self._process.pid})')
 
-    def stop(self, timeout: Optional[float] = None) -> bool:
+    def stop(
+        self,
+        timeout: Optional[float] = None,
+        wait: bool = True,
+    ) -> bool:
         """
         Stop the sync process gracefully.
 
         Args:
             timeout: Max time to wait for sync. None uses settings default.
+            wait: If True (default), block until sync completes or timeout.
+                  If False, signal shutdown but don't wait (for preemption).
 
         Returns:
-            True if sync completed, False if timed out.
+            True if sync completed (or wait=False), False if timed out.
         """
         if not self._started:
             return True
 
-        timeout = timeout or self.settings.get('sync_process_shutdown_timeout', 30.0)
-
-        # Signal finish
+        # Signal finish to sync process
         self.store.mark_run_finished(self.run_id)
 
-        # Wait for sync to complete
+        if not wait:
+            # Preemption mode: don't block, sync process will handle it
+            # The sync process will detect the finish flag and flush
+            pending = self.store.get_pending_count(self.run_id)
+            logger.info(
+                f'Signaled sync shutdown (not waiting). '
+                f'{pending} records pending, data preserved in {self.db_path}'
+            )
+            return True
+
+        # Normal mode: wait for sync to complete
+        timeout = timeout or self.settings.get('sync_process_shutdown_timeout', 30.0)
+
         start = time.time()
         while time.time() - start < timeout:
             pending = self.store.get_pending_count(self.run_id)
@@ -140,9 +156,10 @@ class SyncProcessManager:
                 return True
             time.sleep(0.1)
 
+        pending = self.store.get_pending_count(self.run_id)
         logger.warning(
             f'Sync process did not complete within {timeout}s, '
-            f'{self.store.get_pending_count(self.run_id)} records pending'
+            f'{pending} records pending. Data preserved in {self.db_path}'
         )
         return False
 
@@ -431,22 +448,63 @@ def _flush_remaining(
     timeout: float,
     max_retries: int,
 ) -> None:
-    """Flush all remaining records within timeout."""
+    """
+    Flush all remaining records within timeout.
+
+    Uses urgent mode to ensure we don't block on slow/failing uploads.
+    Data that fails to sync remains in SQLite for later recovery.
+    """
+    # Enable urgent mode - short timeouts, minimal retries
+    uploader.set_urgent_mode(True)
+
     start = time.time()
+    batches_synced = 0
+    total_records_synced = 0
 
-    while time.time() - start < timeout:
-        synced = _sync_batch(store, uploader, log, max_retries)
-        if synced == 0:
-            # Nothing left to sync
-            pending = store.get_pending_count()
-            if pending == 0:
-                log.info('All records synced successfully')
-                return
-            else:
-                log.warning(f'{pending} records failed to sync after retries')
-                return
+    # Minimum time needed for a batch attempt (timeout + overhead)
+    min_batch_time = 2.0
 
-    log.warning(f'Flush timed out after {timeout}s')
+    while True:
+        elapsed = time.time() - start
+        remaining = timeout - elapsed
+
+        # Hard timeout check - stop if not enough time for another batch
+        if remaining < min_batch_time:
+            log.debug(f'Flush: insufficient time for batch ({remaining:.1f}s)')
+            break
+
+        try:
+            # Use minimal retries during flush - data is safe in SQLite
+            synced = _sync_batch(store, uploader, log, max_retries=1)
+            if synced == 0:
+                # Nothing left to sync
+                pending = store.get_pending_count()
+                if pending == 0:
+                    log.info(
+                        f'All records synced successfully '
+                        f'({total_records_synced} records in {batches_synced} batches)'
+                    )
+                    return
+                else:
+                    log.warning(
+                        f'{pending} records failed to sync after retries. '
+                        f'Data preserved in SQLite for recovery.'
+                    )
+                    return
+            total_records_synced += synced
+            batches_synced += 1
+        except Exception as e:
+            # Don't let a single batch failure stop the flush
+            log.warning(f'Flush batch error (continuing): {e}')
+            # Brief pause before next attempt
+            time.sleep(0.5)
+
+    # Timeout reached
+    pending = store.get_pending_count()
+    log.warning(
+        f'Flush timed out after {timeout}s. '
+        f'Synced {total_records_synced} records, {pending} remain in SQLite.'
+    )
 
 
 # ============================================================================
@@ -459,12 +517,19 @@ class _SyncUploader:
     HTTP client for uploading data to Pluto backend.
 
     Runs in the sync process and handles retries with backoff.
+    Supports "urgent mode" for shutdown scenarios with shorter timeouts.
     """
+
+    # Timeouts for urgent mode (shutdown/preemption)
+    URGENT_TIMEOUT_SECONDS = 5.0
+    URGENT_MAX_RETRIES = 1
+    URGENT_MAX_BACKOFF_SECONDS = 1.0
 
     def __init__(self, settings_dict: Dict[str, Any], log: logging.Logger):
         self.settings = settings_dict
         self.log = log
         self._client: Any = None
+        self._urgent_mode = False
 
         # Extract settings
         self.auth_token = settings_dict.get('_auth', '')
@@ -477,9 +542,25 @@ class _SyncUploader:
         self.url_update_config = settings_dict.get('url_update_config', '')
         self.url_update_tags = settings_dict.get('url_update_tags', '')
 
-        # Retry settings
+        # Retry settings (normal mode)
         self.retry_max = settings_dict.get('sync_process_retry_max', 5)
         self.retry_backoff = settings_dict.get('sync_process_retry_backoff', 2.0)
+        self.normal_timeout = 30.0
+
+    def set_urgent_mode(self, urgent: bool) -> None:
+        """
+        Enable/disable urgent mode for shutdown scenarios.
+
+        In urgent mode:
+        - Shorter HTTP timeouts (5s vs 30s)
+        - Fewer retries (1 vs 5)
+        - Shorter backoff (max 1s)
+
+        This prevents blocking during pod preemption/shutdown.
+        """
+        self._urgent_mode = urgent
+        if urgent:
+            self.log.debug('Uploader entering urgent mode (short timeouts)')
 
     @property
     def client(self) -> Any:
@@ -603,20 +684,35 @@ class _SyncUploader:
         body: str,
         headers: Dict[str, str],
     ) -> None:
-        """POST with exponential backoff retry."""
+        """POST with exponential backoff retry. Respects urgent mode settings."""
         last_error = None
 
-        for attempt in range(self.retry_max):
+        # Use urgent mode settings if enabled
+        if self._urgent_mode:
+            max_retries = self.URGENT_MAX_RETRIES
+            timeout = self.URGENT_TIMEOUT_SECONDS
+            max_backoff = self.URGENT_MAX_BACKOFF_SECONDS
+        else:
+            max_retries = self.retry_max
+            timeout = self.normal_timeout
+            max_backoff = 60.0  # No cap in normal mode
+
+        for attempt in range(max_retries):
             try:
-                response = self.client.post(url, content=body, headers=headers)
+                response = self.client.post(
+                    url,
+                    content=body,
+                    headers=headers,
+                    timeout=timeout,
+                )
                 response.raise_for_status()
                 return
             except Exception as e:
                 last_error = e
-                if attempt < self.retry_max - 1:
-                    wait = self.retry_backoff**attempt
+                if attempt < max_retries - 1:
+                    wait = min(self.retry_backoff**attempt, max_backoff)
                     self.log.debug(
-                        f'Request failed (attempt {attempt + 1}), '
+                        f'Request failed (attempt {attempt + 1}/{max_retries}), '
                         f'retrying in {wait}s: {e}'
                     )
                     time.sleep(wait)

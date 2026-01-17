@@ -385,20 +385,35 @@ class Op:
                 return
             self._finished = True
 
+        # Detect if we're being preempted (SIGTERM) vs normal exit
+        # During preemption, don't block - let sync process handle it
+        is_preemption = code == signal.SIGTERM
+
         try:
             # Handle sync process shutdown
             if self._sync_manager is not None:
-                logger.debug(f'{tag}: stopping sync process manager')
-                sync_completed = self._sync_manager.stop(
-                    timeout=self.settings.sync_process_shutdown_timeout
-                )
-                if not sync_completed:
-                    pending = self._sync_manager.get_pending_count()
-                    logger.warning(
-                        f'{tag}: Sync did not complete within timeout, '
-                        f'{pending} records may not have been uploaded. '
-                        f'Data is preserved in {self._sync_manager.db_path}'
+                if is_preemption:
+                    # Preemption mode: signal shutdown but don't wait
+                    # This prevents blocking during pod termination
+                    logger.debug(
+                        f'{tag}: preemption detected (SIGTERM), '
+                        f'signaling sync shutdown without waiting'
                     )
+                    self._sync_manager.stop(wait=False)
+                else:
+                    # Normal mode: wait for sync to complete
+                    logger.debug(f'{tag}: stopping sync process manager')
+                    sync_completed = self._sync_manager.stop(
+                        timeout=self.settings.sync_process_shutdown_timeout,
+                        wait=True,
+                    )
+                    if not sync_completed:
+                        pending = self._sync_manager.get_pending_count()
+                        logger.warning(
+                            f'{tag}: Sync did not complete within timeout, '
+                            f'{pending} records may not have been uploaded. '
+                            f'Data is preserved in {self._sync_manager.db_path}'
+                        )
                 self._sync_manager.close()
                 self._sync_manager = None
             else:
