@@ -744,27 +744,31 @@ class _SyncUploader:
         if not self.url_num or not records:
             return
 
-        # Convert to NDJSON format
+        # Convert to NDJSON format expected by server:
+        # {"time": <ms>, "step": <int>, "data": {...metrics...}}
         lines = []
         for record in records:
-            payload = record.payload
-            for key, value in payload.items():
-                if isinstance(value, (int, float)):
-                    lines.append(
-                        json.dumps(
-                            {
-                                'k': key,
-                                'v': value,
-                                's': record.step,
-                                't': record.timestamp_ms,
-                            }
-                        )
+            # Filter to only numeric values (exclude bools - they're int subclass in Python)
+            numeric_data = {
+                k: v
+                for k, v in record.payload.items()
+                if isinstance(v, (int, float)) and not isinstance(v, bool)
+            }
+            if numeric_data:
+                lines.append(
+                    json.dumps(
+                        {
+                            'time': record.timestamp_ms,
+                            'step': record.step or 0,
+                            'data': numeric_data,
+                        }
                     )
+                )
 
         if not lines:
             return
 
-        body = '\n'.join(lines)
+        body = '\n'.join(lines) + '\n'
         self._post_with_retry(self.url_num, body, self._get_headers())
 
     def upload_config(self, record: SyncRecord) -> None:
@@ -810,26 +814,31 @@ class _SyncUploader:
         if not self.url_num or not records:
             return
 
+        # Convert to NDJSON format expected by server:
+        # {"time": <ms>, "step": <int>, "data": {"sys/key": value, ...}}
         lines = []
         for record in records:
-            payload = record.payload
-            for key, value in payload.items():
-                if isinstance(value, (int, float)):
-                    lines.append(
-                        json.dumps(
-                            {
-                                'k': f'sys/{key}',
-                                'v': value,
-                                's': 0,  # System metrics don't have steps
-                                't': record.timestamp_ms,
-                            }
-                        )
+            # Add sys/ prefix to keys and filter to numeric values (exclude bools)
+            sys_data = {
+                f'sys/{k}': v
+                for k, v in record.payload.items()
+                if isinstance(v, (int, float)) and not isinstance(v, bool)
+            }
+            if sys_data:
+                lines.append(
+                    json.dumps(
+                        {
+                            'time': record.timestamp_ms,
+                            'step': 0,  # System metrics don't have steps
+                            'data': sys_data,
+                        }
                     )
+                )
 
         if not lines:
             return
 
-        body = '\n'.join(lines)
+        body = '\n'.join(lines) + '\n'
         self._post_with_retry(self.url_num, body, self._get_headers())
 
     def upload_files_batch(
