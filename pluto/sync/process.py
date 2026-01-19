@@ -378,6 +378,10 @@ def _sync_main(
     )
     log = logging.getLogger('pluto-sync')
 
+    # Suppress verbose httpx request logging (HTTP Request: POST ... "HTTP/2 200 OK")
+    logging.getLogger('httpx').setLevel(logging.WARNING)
+    logging.getLogger('httpcore').setLevel(logging.WARNING)
+
     log.info(f'Sync process started (parent PID: {parent_pid})')
 
     # Set up signal handlers
