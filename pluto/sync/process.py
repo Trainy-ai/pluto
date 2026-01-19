@@ -14,14 +14,13 @@ Key design principles:
 
 import json
 import logging
-import multiprocessing
-import multiprocessing.process
 import os
 import signal
+import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional
 
 try:
     from filelock import FileLock
@@ -31,8 +30,8 @@ except ImportError:
 
 from .store import FileRecord, RecordType, SyncRecord, SyncStore
 
-# Type alias for process - SpawnProcess and Process have same interface
-ProcessType = Union[multiprocessing.Process, multiprocessing.process.BaseProcess]
+# Type alias for subprocess
+ProcessType = subprocess.Popen
 
 logger = logging.getLogger(__name__)
 
@@ -119,16 +118,23 @@ class SyncProcessManager:
             self._started = True
             return
 
-        # Start new sync process using spawn context
-        ctx = multiprocessing.get_context('spawn')
-
-        self._process = ctx.Process(
-            target=_sync_main,
-            args=(self.db_path, self.settings, os.getpid()),
-            name='pluto-sync',
-            daemon=False,  # Not daemon - allow it to outlive parent briefly
+        # Start new sync process using subprocess.Popen
+        # This avoids the __main__ re-import issue of multiprocessing.Process
+        self._process = subprocess.Popen(
+            [
+                sys.executable,
+                '-m',
+                'pluto.sync',
+                '--db-path',
+                str(self.db_path),
+                '--settings',
+                json.dumps(self.settings),
+                '--parent-pid',
+                str(os.getpid()),
+            ],
+            stdin=subprocess.DEVNULL,  # Don't inherit stdin
+            # stdout/stderr inherit from parent (visible in terminal)
         )
-        self._process.start()
 
         # Record PID for DDP coordination
         self._record_sync_pid(self._process.pid)
@@ -168,7 +174,7 @@ class SyncProcessManager:
             )
             # Send SIGTERM to sync process so it exits gracefully
             # This is critical for DDP where torchrun waits for all children
-            if self._process is not None and self._process.is_alive():
+            if self._process is not None and self._process.poll() is None:
                 try:
                     self._process.terminate()
                     logger.debug('Sent SIGTERM to sync process')
@@ -228,6 +234,36 @@ class SyncProcessManager:
             record_type=RecordType.TAGS,
             payload={'tags': tags},
             timestamp_ms=timestamp_ms,
+        )
+
+    def enqueue_data(
+        self,
+        log_name: str,
+        data_type: str,
+        data_dict: Dict[str, Any],
+        timestamp_ms: int,
+        step: Optional[int] = None,
+    ) -> None:
+        """
+        Enqueue structured data (Graph, Histogram, Table) for upload.
+
+        Args:
+            log_name: The key used in pluto.log()
+            data_type: Type name (GRAPH, HISTOGRAM, TABLE)
+            data_dict: Serialized data from Data.to_dict()
+            timestamp_ms: Timestamp in milliseconds
+            step: Optional step number
+        """
+        self.store.enqueue(
+            run_id=self.run_id,
+            record_type=RecordType.DATA,
+            payload={
+                'log_name': log_name,
+                'data_type': data_type,
+                'data': data_dict,
+            },
+            timestamp_ms=timestamp_ms,
+            step=step,
         )
 
     def enqueue_system_metrics(
@@ -473,6 +509,7 @@ def _sync_records_batch(
     config_records: List[SyncRecord] = []
     tags_records: List[SyncRecord] = []
     system_records: List[SyncRecord] = []
+    data_records: List[SyncRecord] = []
 
     for record in records:
         if record.record_type == RecordType.METRIC:
@@ -483,6 +520,8 @@ def _sync_records_batch(
             tags_records.append(record)
         elif record.record_type == RecordType.SYSTEM:
             system_records.append(record)
+        elif record.record_type == RecordType.DATA:
+            data_records.append(record)
 
     success_ids: List[int] = []
     failed_ids: List[int] = []
@@ -526,6 +565,16 @@ def _sync_records_batch(
         except Exception as e:
             log.warning(f'Failed to upload system metrics: {e}')
             failed_ids.extend(r.id for r in system_records)
+            error_msg = str(e)
+
+    # Upload structured data (Graph, Histogram, Table)
+    if data_records:
+        try:
+            uploader.upload_data_batch(data_records)
+            success_ids.extend(r.id for r in data_records)
+        except Exception as e:
+            log.warning(f'Failed to upload structured data: {e}')
+            failed_ids.extend(r.id for r in data_records)
             error_msg = str(e)
 
     # Update status
@@ -680,6 +729,7 @@ class _SyncUploader:
 
         # URLs
         self.url_num = settings_dict.get('url_num', '')
+        self.url_data = settings_dict.get('url_data', '')
         self.url_update_config = settings_dict.get('url_update_config', '')
         self.url_update_tags = settings_dict.get('url_update_tags', '')
         self.url_file = settings_dict.get('url_file', '')
@@ -748,7 +798,7 @@ class _SyncUploader:
         # {"time": <ms>, "step": <int>, "data": {...metrics...}}
         lines = []
         for record in records:
-            # Filter to only numeric values (exclude bools - they're int subclass in Python)
+            # Filter to numeric values only (exclude bools, they're int subclass)
             numeric_data = {
                 k: v
                 for k, v in record.payload.items()
@@ -840,6 +890,41 @@ class _SyncUploader:
 
         body = '\n'.join(lines) + '\n'
         self._post_with_retry(self.url_num, body, self._get_headers())
+
+    def upload_data_batch(self, records: List[SyncRecord]) -> None:
+        """
+        Upload structured data batch (Graph, Histogram, Table).
+
+        Each record payload contains:
+        - log_name: The key used in pluto.log()
+        - data_type: Type name (GRAPH, HISTOGRAM, TABLE)
+        - data: The serialized data dict from Data.to_dict()
+        """
+        if not self.url_data or not records:
+            return
+
+        # Convert to NDJSON format expected by server:
+        # {"time": ms, "data": json-str, "dataType": type, "logName": name, "step": int}
+        lines = []
+        for record in records:
+            payload = record.payload
+            lines.append(
+                json.dumps(
+                    {
+                        'time': record.timestamp_ms,
+                        'data': json.dumps(payload.get('data', {})),
+                        'dataType': payload.get('data_type', 'UNKNOWN'),
+                        'logName': payload.get('log_name', ''),
+                        'step': record.step or 0,
+                    }
+                )
+            )
+
+        if not lines:
+            return
+
+        body = '\n'.join(lines) + '\n'
+        self._post_with_retry(self.url_data, body, self._get_headers())
 
     def upload_files_batch(
         self,
@@ -1073,17 +1158,22 @@ def start_sync_process(
     """
     Start the background sync process.
 
-    Uses spawn (not fork) to avoid issues with CUDA and threading.
+    Uses subprocess.Popen to avoid __main__ re-import issues.
     """
-    ctx = multiprocessing.get_context('spawn')
-
-    process = ctx.Process(
-        target=_sync_main,
-        args=(db_path, settings_dict, parent_pid),
-        name='pluto-sync',
-        daemon=False,
+    process = subprocess.Popen(
+        [
+            sys.executable,
+            '-m',
+            'pluto.sync',
+            '--db-path',
+            str(db_path),
+            '--settings',
+            json.dumps(settings_dict),
+            '--parent-pid',
+            str(parent_pid),
+        ],
+        stdin=subprocess.DEVNULL,
     )
-    process.start()
 
     logger.info(f'Started sync process (PID: {process.pid})')
     return process

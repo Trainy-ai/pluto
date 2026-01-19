@@ -1,6 +1,5 @@
 import atexit
 import logging
-import multiprocessing
 import os
 import queue
 import signal
@@ -50,17 +49,6 @@ def _is_distributed_environment() -> bool:
         pass
 
     return False
-
-
-def _is_multiprocessing_child() -> bool:
-    """Check if running inside a spawned multiprocessing child process.
-
-    When using multiprocessing with 'spawn' context, the child process
-    re-imports __main__, which can cause pluto.init() to run again.
-    This detection prevents infinite recursion.
-    """
-    current = multiprocessing.current_process()
-    return current.name != 'MainProcess'
 
 
 # Signal handling state for graceful shutdown (Ctrl+C / SIGTERM)
@@ -210,24 +198,28 @@ class OpMonitor:
     def _worker_monitor(self, stop):
         while not stop():
             try:
-                self.op._iface.publish(
-                    num=make_compat_monitor_v1(self.op.settings._sys.monitor()),
-                    timestamp=time.time(),
-                    step=self.op._step,
-                ) if self.op._iface else None
-                r = (
-                    self.op._iface._post_v1(
+                # Collect system metrics
+                sys_metrics = make_compat_monitor_v1(self.op.settings._sys.monitor())
+                timestamp_ms = int(time.time() * 1000)
+
+                # Send system metrics via sync process if enabled
+                if self.op._sync_manager is not None:
+                    self.op._sync_manager.enqueue_system_metrics(
+                        metrics=sys_metrics,
+                        timestamp_ms=timestamp_ms,
+                    )
+
+                # Send heartbeat/trigger to server
+                if self.op._iface:
+                    r = self.op._iface._post_v1(
                         self.op.settings.url_trigger,
                         self.op._iface.headers,
                         make_compat_trigger_v1(self.op.settings),
                         client=self.op._iface.client,
                     )
-                    if self.op._iface
-                    else None
-                )
-                if hasattr(r, 'json') and r.json()['status'] == 'CANCELLED':
-                    logger.critical(f'{tag}: server finished run')
-                    os._exit(signal.SIGINT.value)  # TODO: do a more graceful exit
+                    if hasattr(r, 'json') and r.json()['status'] == 'CANCELLED':
+                        logger.critical(f'{tag}: server finished run')
+                        os._exit(signal.SIGINT.value)  # TODO: do a more graceful exit
             except Exception as e:
                 logger.critical('%s: failed: %s', tag, e)
             time.sleep(self.op.settings.x_sys_sampling_interval)
@@ -243,13 +235,7 @@ class Op:
         self._sync_manager: Optional[SyncProcessManager] = None
 
         # Determine if sync process should be used
-        # Skip in multiprocessing children (prevents infinite recursion with spawn)
         self._use_sync_process = settings.sync_process_enabled
-        if self._use_sync_process and _is_multiprocessing_child():
-            logger.debug(
-                f'{tag}: Skipping sync process in multiprocessing child process'
-            )
-            self._use_sync_process = False
 
         if self.settings.mode == 'noop':
             self.settings.disable_iface = True
@@ -300,14 +286,17 @@ class Op:
             if self._use_sync_process:
                 self._init_sync_manager()
 
+        # DataStore is only used when sync process is disabled (legacy mode)
         self._store: Optional[DataStore] = (
             DataStore(config=config, settings=settings)
             if not settings.disable_store and not self._use_sync_process
             else None
         )
+        # ServerInterface is always created for HTTP utilities (status updates,
+        # triggers). Data upload is handled by sync process, not ServerInterface.
         self._iface: Optional[ServerInterface] = (
             ServerInterface(config=config, settings=settings)
-            if not settings.disable_iface and not self._use_sync_process
+            if not settings.disable_iface
             else None
         )
         self._step = 0
@@ -359,13 +348,9 @@ class Op:
         if self._sync_manager is not None:
             self._sync_manager.start()
             logger.debug(f'{tag}: sync process started')
-        else:
-            # Use traditional thread-based approach
-            self._iface.start() if self._iface else None
-            self._iface._update_meta(
-                list(make_compat_monitor_v1(self.settings._sys.monitor()).keys())
-            ) if self._iface else None
-            self._monitor.start()
+
+        # Always start the monitor for system metrics and heartbeats
+        self._monitor.start()
 
         logger.debug(f'{tag}: started')
 
@@ -433,14 +418,22 @@ class Op:
         if self._sync_manager is None:
             return
 
-        if isinstance(value, (int, float)):
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
             metrics[key] = value
         elif hasattr(value, 'item'):  # Tensor
             metrics[key] = value.item()
         elif isinstance(value, File):
             # Handle file types (Image, Audio, Video, Text, Artifact)
             self._enqueue_file_sync(key, value, timestamp_ms)
-        # Note: Data types (Graph, Histogram, Table) not yet supported in sync mode
+        elif isinstance(value, Data):
+            # Handle structured data types (Graph, Histogram, Table)
+            self._sync_manager.enqueue_data(
+                log_name=key,
+                data_type=type(value).__name__.upper(),
+                data_dict=value.to_dict(),
+                timestamp_ms=timestamp_ms,
+                step=self._step,
+            )
 
     def _enqueue_file_sync(
         self,
@@ -501,6 +494,9 @@ class Op:
         is_distributed = _is_distributed_environment()
 
         try:
+            # Stop the monitor (system metrics and heartbeats)
+            self._monitor.stop(code)
+
             # Handle sync process shutdown
             if self._sync_manager is not None:
                 if is_preemption:
@@ -535,38 +531,18 @@ class Op:
                         )
                 self._sync_manager.close()
                 self._sync_manager = None
-            else:
-                # Traditional thread-based shutdown
-                self._monitor.stop(code)
-                # Wait for queue to drain with timeout
-                drain_timeout = self.settings.x_thread_join_timeout_seconds
-                drain_start = time.time()
-                initial_size = self._queue.qsize()
-                last_log_time = drain_start
-                logger.debug(f'{tag}: waiting for queue to drain, {initial_size} items')
-                while not self._queue.empty():
-                    elapsed = time.time() - drain_start
-                    if elapsed > drain_timeout:
-                        remaining = self._queue.qsize()
-                        logger.warning(
-                            f'{tag}: Queue drain timeout after {drain_timeout}s, '
-                            f'{remaining} items remaining (started with {initial_size})'
-                        )
-                        break
-                    # Log progress every 5 seconds
-                    if time.time() - last_log_time > 5:
-                        current_size = self._queue.qsize()
-                        logger.debug(
-                            f'{tag}: queue drain progress: {current_size} items '
-                            f'remaining ({initial_size - current_size} processed '
-                            f'in {elapsed:.1f}s)'
-                        )
-                        last_log_time = time.time()
-                    time.sleep(self.settings.x_internal_check_process)
-                logger.debug(f'{tag}: queue drained, stopping store')
-                self._store.stop() if self._store else None
-                logger.debug(f'{tag}: store stopped, stopping interface')
-                self._iface.stop() if self._iface else None  # fixed order
+
+            # Update run status on server
+            if self._iface:
+                self._iface.update_status()
+
+            # Clean up data store if used (legacy mode)
+            if self._store:
+                self._store.stop()
+
+            # Close HTTP clients
+            if self._iface:
+                self._iface.close()
         except (Exception, KeyboardInterrupt) as e:
             self.settings._op_status = signal.SIGINT.value
             if self._iface:
@@ -831,13 +807,10 @@ class Op:
                 numbers, datasets, files = self._op(numbers, datasets, files, k, v)
 
         # d = dict_to_json(d)  # TODO: add serialisation
+        # Store data locally (legacy mode when sync process is disabled)
         self._store.insert(
             num=numbers, data=datasets, file=files, timestamp=t, step=self._step
         ) if self._store else None
-        self._iface.publish(
-            num=numbers, data=datasets, file=files, timestamp=t, step=self._step
-        ) if self._iface else None
-        self._iface._update_meta(num=nm, df=fm) if (nm or fm) and self._iface else None
 
     def _m(
         self, nm: MetaNames, fm: MetaFiles, k: str, v: Any

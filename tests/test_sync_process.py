@@ -9,7 +9,6 @@ These tests verify the sync process implementation including:
 
 import json
 import logging
-import multiprocessing
 import os
 import time
 from unittest.mock import MagicMock, patch
@@ -311,6 +310,7 @@ class TestSyncUploaderPayloadFormat:
             '_op_name': 'test-run',
             'project': 'test-project',
             'url_num': 'https://test.example.com/ingest/metrics',
+            'url_data': 'https://test.example.com/ingest/data',
             'url_update_config': 'https://test.example.com/api/runs/config/update',
             'url_update_tags': 'https://test.example.com/api/runs/tags/update',
             'url_file': 'https://test.example.com/files',
@@ -582,6 +582,80 @@ class TestSyncUploaderPayloadFormat:
             assert payload1['step'] == 1
             assert payload2['step'] == 2
 
+    def test_data_payload_format(self, uploader):
+        """Test structured data (Graph, Histogram, Table) payload format.
+
+        Expected format: {"time": <ms>, "data": <json-string>, "dataType": <type>,
+                         "logName": <name>, "step": <int>}
+        """
+        # Simulate a Histogram data payload (avoids tuple key JSON issues)
+        histogram_data = {
+            'bins': [0, 1, 2, 3, 4, 5],
+            'counts': [10, 20, 30, 25, 15],
+            'min': 0,
+            'max': 5,
+            'type': 'Histogram',
+            'v': 1,
+        }
+        records = [
+            SyncRecord(
+                id=1,
+                run_id='test-run',
+                record_type=RecordType.DATA,
+                payload={
+                    'log_name': 'loss_distribution',
+                    'data_type': 'HISTOGRAM',
+                    'data': histogram_data,
+                },
+                timestamp_ms=1705600000000,
+                step=5,
+                status=SyncStatus.PENDING,
+                retry_count=0,
+                created_at=time.time(),
+                last_attempt_at=None,
+                error_message=None,
+            ),
+        ]
+
+        mock_response = MagicMock()
+        mock_response.raise_for_status = MagicMock()
+
+        with patch('httpx.Client') as MockClient:
+            mock_client = MagicMock()
+            mock_client.post.return_value = mock_response
+            MockClient.return_value = mock_client
+            uploader._client = None
+
+            uploader.upload_data_batch(records)
+
+            # Verify POST was called to the data endpoint
+            mock_client.post.assert_called_once()
+            call_args = mock_client.post.call_args
+
+            # Verify URL
+            url = call_args.args[0] if call_args.args else call_args.kwargs.get('url')
+            assert url == 'https://test.example.com/ingest/data'
+
+            # Parse the body
+            body = call_args.kwargs.get('content') or call_args[1].get('content')
+            lines = body.strip().split('\n')
+            assert len(lines) == 1
+
+            payload = json.loads(lines[0])
+
+            # Verify correct format
+            assert payload['time'] == 1705600000000
+            assert payload['dataType'] == 'HISTOGRAM'
+            assert payload['logName'] == 'loss_distribution'
+            assert payload['step'] == 5
+
+            # data field should be a JSON string
+            assert isinstance(payload['data'], str)
+            data_parsed = json.loads(payload['data'])
+            assert data_parsed['type'] == 'Histogram'
+            assert 'bins' in data_parsed
+            assert 'counts' in data_parsed
+
 
 class TestSyncUploaderErrorHandling:
     """Tests for _SyncUploader retry and error handling."""
@@ -648,23 +722,6 @@ class TestSyncUploaderErrorHandling:
             # Should succeed after retries
             uploader.upload_metrics_batch(records)
             assert mock_client.post.call_count == 3
-
-
-class TestMultiprocessingDetection:
-    """Tests for multiprocessing child process detection."""
-
-    def test_main_process_detection(self):
-        """Test that main process is correctly identified."""
-        from pluto.op import _is_multiprocessing_child
-
-        # In the main process, should return False
-        assert _is_multiprocessing_child() is False
-
-    def test_process_name_check(self):
-        """Test that the detection uses process name correctly."""
-        # The detection checks multiprocessing.current_process().name
-        # In main process it should be 'MainProcess'
-        assert multiprocessing.current_process().name == 'MainProcess'
 
 
 class TestDistributedEnvironmentDetection:

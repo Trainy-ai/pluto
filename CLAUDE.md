@@ -69,14 +69,14 @@ pluto logout
 - Can be overridden with `host` parameter for self-hosted instances
 - URL endpoints: `url_app`, `url_api`, `url_ingest`, `url_py`
 
-**ServerInterface (iface.py)**: HTTP communication layer with Pluto server
-- Uses httpx with HTTP/2 support for efficient data streaming
-- Handles retries, timeouts, and connection pooling
-- Publishes metrics, files, graphs, and system stats
+**ServerInterface (iface.py)**: HTTP utility layer for Pluto server communication
+- Provides HTTP client setup and retry logic
+- Handles status updates, triggers, and direct API calls
+- Note: Data upload (metrics, files, etc.) is handled by the sync process, not ServerInterface
 
-**DataStore (store.py)**: Local SQLite-based buffer for metrics
+**DataStore (store.py)**: Legacy local SQLite-based buffer for metrics
+- Only used when sync process is disabled (legacy mode)
 - Aggregates and batches data before transmission
-- Reduces network overhead during high-frequency logging
 
 **System (sys.py)**: System monitoring (CPU, GPU, memory, network)
 - Samples hardware metrics at configurable intervals
@@ -127,14 +127,22 @@ The sync process is a separate spawned process that handles all network I/O for 
 
 **Configuration:**
 - `settings.sync_process_enabled` - Enable/disable sync process (default: True)
-- Falls back to thread-based implementation when disabled
+- `settings.sync_process_shutdown_timeout` - Max wait time for sync on finish (default: 30s)
+
+**Supported Data Types:**
+- Numeric metrics (int, float)
+- System metrics (CPU, GPU, memory)
+- Config updates
+- Tags updates
+- Structured data (Graph, Histogram, Table)
+- Files (Image, Audio, Video, Text, Artifact)
 
 **Critical Design Decisions:**
 
-1. **Spawn context required**: Uses `multiprocessing.get_context('spawn')` because:
-   - Fork is unsafe with threads (can deadlock with locks held during fork)
-   - Spawn creates clean child process by re-importing modules
-   - This means `__main__` gets re-executed in child - see multiprocessing section below
+1. **Subprocess instead of multiprocessing**: Uses `subprocess.Popen` to start `python -m pluto.sync`:
+   - Avoids the `__main__` re-import problem of `multiprocessing.Process` with spawn
+   - No `if __name__ == '__main__':` guard required in user scripts
+   - Settings passed as JSON via CLI args (not pickle)
 
 2. **SQLite WAL mode**: Enables concurrent access between training and sync processes
    - Training writes don't block on sync reads
@@ -198,31 +206,34 @@ run.remove_tags(["deprecated", "archived"])
 ## Important Implementation Details
 
 ### Thread Safety
-- Op uses queues and threading for async data transmission
-- OpMonitor runs two background threads: data worker and system monitor
+- OpMonitor runs a background thread for system metrics and heartbeats
 - Clean shutdown via `_stop_event` and thread joining
+- Data upload is handled by sync process (separate process, not threads)
 
-### Multiprocessing Considerations
+### Subprocess-based Sync Process
 
-**The spawn re-import problem:**
-When using `multiprocessing.get_context('spawn')`, the child process re-imports the `__main__` module. If user code has `pluto.init()` at module level without a `if __name__ == '__main__':` guard, it will run again in the child, causing infinite process spawning.
+The sync process uses `subprocess.Popen` instead of `multiprocessing.Process` to avoid the `__main__` re-import problem:
 
-**Solution implemented in pluto/op.py:**
 ```python
-def _is_multiprocessing_child() -> bool:
-    """Check if running inside a spawned multiprocessing child process."""
-    import multiprocessing
-    return multiprocessing.current_process().name != 'MainProcess'
-
-# In Op.__init__:
-if self._use_sync_process and _is_multiprocessing_child():
-    self._use_sync_process = False  # Skip sync in child
+# In pluto/sync/process.py - starts as independent process
+process = subprocess.Popen([
+    sys.executable, '-m', 'pluto.sync',
+    '--db-path', db_path,
+    '--settings', json.dumps(settings_dict),
+    '--parent-pid', str(os.getpid()),
+])
 ```
 
-**Why this works:**
-- `multiprocessing.current_process().name` returns 'MainProcess' in the main process
-- Spawned children have names like 'SpawnProcess-1' or custom names
-- Detection is ~1-5 microseconds, negligible overhead
+**Why subprocess instead of multiprocessing:**
+- `multiprocessing.Process` with spawn context re-imports `__main__`, causing user scripts to run twice
+- `subprocess.Popen` starts a completely independent Python interpreter
+- No `if __name__ == '__main__':` guard required in user scripts
+- Settings passed via CLI args (JSON), not pickle
+
+**The CLI entry point** (`pluto/sync/__main__.py`):
+- Allows sync process to be invoked as `python -m pluto.sync`
+- Parses `--db-path`, `--settings`, and `--parent-pid` arguments
+- Calls `_sync_main()` with the parsed parameters
 
 ### DDP/Distributed Training Considerations
 
@@ -258,9 +269,9 @@ else:
 
 The Neptune compat layer (pluto/compat/neptune.py) has special requirements:
 - Uses 5-second cleanup timeout (Neptune API contract)
-- Sync process has 30-second default shutdown timeout
-- **Must disable sync process** (`sync_process_enabled: False`) to avoid timeout conflicts
-- This is acceptable because Neptune compat is a migration path, not primary usage
+- Uses sync process with a short shutdown timeout (3s) to fit within Neptune's cleanup window
+- Signal handlers disabled to preserve Neptune's exit behavior
+- This ensures multi-GPU (DDP/FSDP) exit logic is identical to Neptune-only usage
 
 ### Configuration Precedence
 Settings can be provided via:
@@ -306,15 +317,15 @@ Environment variables use the `PLUTO_*` prefix. The old `MLOP_*` prefix is suppo
 
 2. **`wait=False` shutdown pattern**: For environments that can't block (DDP, preemption), signaling the sync process without waiting is the right approach. Data is preserved in SQLite.
 
-3. **Multiprocessing child detection**: Using `multiprocessing.current_process().name != 'MainProcess'` is a simple, reliable way to detect if we're in a spawned child.
+3. **subprocess.Popen instead of multiprocessing.Process**: Using `subprocess.Popen` to start `python -m pluto.sync` avoids the `__main__` re-import problem entirely. No `if __name__ == '__main__':` guard required.
 
 ### What Didn't Work
 
 1. **Disabling sync process in DDP**: Initial approach was to fall back to thread-based implementation in DDP. This loses the crash-safety benefits. Better solution: use `wait=False`.
 
-2. **Assuming users have `if __name__ == '__main__':` guards**: Many users run simple scripts without guards. The spawn context re-imports `__main__`, causing infinite spawning. Must detect and handle this case.
+2. **multiprocessing.Process with spawn**: The spawn context re-imports `__main__`, causing user scripts to run twice if they don't have `if __name__ == '__main__':` guards. Solution: use subprocess.Popen instead.
 
-3. **Same shutdown timeout for all contexts**: Neptune compat has 5s timeout, sync process has 30s. These conflict. Solution: disable sync process in Neptune compat specifically.
+3. **Same shutdown timeout for all contexts**: Neptune compat has 5s timeout, sync process has 30s. These conflict. Solution: use a shorter shutdown timeout (3s) for Neptune compat.
 
 ### Performance Characteristics
 
@@ -327,8 +338,8 @@ Environment variables use the `PLUTO_*` prefix. The old `MLOP_*` prefix is suppo
 
 1. **Hanging in DDP?** Check if `finish()` is blocking. Use `wait=False` for distributed environments.
 
-2. **Infinite process spawning?** User probably has `pluto.init()` at module level. The `_is_multiprocessing_child()` check should prevent this, but if it fails, check the process name.
+2. **Data not uploading?** Check SQLite database in the run directory. Use `sqlite3` to inspect pending data.
 
-3. **Data not uploading?** Check SQLite database in `~/.pluto/sync/`. Use `sqlite3` to inspect pending data.
+3. **CI tests hanging?** Often caused by sync process shutdown blocking. Check timeout values and distributed detection.
 
-4. **CI tests hanging?** Often caused by sync process shutdown blocking. Check timeout values and distributed detection.
+4. **Sync process not starting?** Check if `python -m pluto.sync` can be invoked manually. Check subprocess stderr for errors.

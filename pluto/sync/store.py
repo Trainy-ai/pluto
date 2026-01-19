@@ -36,7 +36,7 @@ class RecordType(IntEnum):
     METRIC = 0
     FILE = 1
     CONFIG = 2
-    GRAPH = 3
+    DATA = 3  # Structured data: Graph, Histogram, Table
     TAGS = 4
     SYSTEM = 5
 
