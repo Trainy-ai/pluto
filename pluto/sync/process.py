@@ -864,7 +864,7 @@ class _SyncUploader:
     def upload_system_batch(self, records: List[SyncRecord]) -> None:
         """Upload system metrics batch."""
         # System metrics use same endpoint as regular metrics
-        # but with 'sys/' prefix on keys
+        # Keys already have 'sys/' prefix from the monitor
         if not self.url_num or not records:
             return
 
@@ -872,9 +872,10 @@ class _SyncUploader:
         # {"time": <ms>, "step": <int>, "data": {"sys/key": value, ...}}
         lines = []
         for record in records:
-            # Add sys/ prefix to keys and filter to numeric values (exclude bools)
+            # Filter to numeric values only (exclude bools)
+            # Keys already have sys/ prefix from the monitor
             sys_data = {
-                f'sys/{k}': v
+                k: v
                 for k, v in record.payload.items()
                 if isinstance(v, (int, float)) and not isinstance(v, bool)
             }

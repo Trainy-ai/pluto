@@ -320,6 +320,7 @@ class Op:
             '_op_name': self.settings._op_name,
             '_config': self.config,
             'url_num': self.settings.url_num,
+            'url_data': self.settings.url_data,  # For structured data
             'url_update_config': self.settings.url_update_config,
             'url_update_tags': self.settings.url_update_tags,
             'url_file': self.settings.url_file,  # For file uploads
