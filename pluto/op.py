@@ -1,5 +1,6 @@
 import atexit
 import logging
+import multiprocessing
 import os
 import queue
 import signal
@@ -49,6 +50,17 @@ def _is_distributed_environment() -> bool:
         pass
 
     return False
+
+
+def _is_multiprocessing_child() -> bool:
+    """Check if running inside a spawned multiprocessing child process.
+
+    When using multiprocessing with 'spawn' context, the child process
+    re-imports __main__, which can cause pluto.init() to run again.
+    This detection prevents infinite recursion.
+    """
+    current = multiprocessing.current_process()
+    return current.name != 'MainProcess'
 
 
 # Signal handling state for graceful shutdown (Ctrl+C / SIGTERM)
@@ -231,7 +243,13 @@ class Op:
         self._sync_manager: Optional[SyncProcessManager] = None
 
         # Determine if sync process should be used
+        # Skip in multiprocessing children (prevents infinite recursion with spawn)
         self._use_sync_process = settings.sync_process_enabled
+        if self._use_sync_process and _is_multiprocessing_child():
+            logger.debug(
+                f'{tag}: Skipping sync process in multiprocessing child process'
+            )
+            self._use_sync_process = False
 
         if self.settings.mode == 'noop':
             self.settings.disable_iface = True
