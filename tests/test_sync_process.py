@@ -418,13 +418,15 @@ class TestSyncUploaderPayloadFormat:
             assert 'enabled' not in payload['data']
 
     def test_system_metrics_payload_format(self, uploader):
-        """Test system metrics have 'sys/' prefix on keys."""
+        """Test system metrics preserve 'sys/' prefix from monitor."""
+        # Note: System metrics from the monitor already have 'sys/' prefix
+        # The uploader should NOT add another prefix
         records = [
             SyncRecord(
                 id=1,
                 run_id='test-run',
                 record_type=RecordType.SYSTEM,
-                payload={'cpu_percent': 45.2, 'memory_mb': 1024},
+                payload={'sys/cpu.pct.0': 45.2, 'sys/mem.used': 1024},
                 timestamp_ms=1705600000000,
                 step=None,
                 status=SyncStatus.PENDING,
@@ -451,11 +453,11 @@ class TestSyncUploaderPayloadFormat:
             ) or mock_client.post.call_args[1].get('content')
             payload = json.loads(body.strip())
 
-            # Verify sys/ prefix
-            assert 'sys/cpu_percent' in payload['data']
-            assert 'sys/memory_mb' in payload['data']
-            assert payload['data']['sys/cpu_percent'] == 45.2
-            assert payload['data']['sys/memory_mb'] == 1024
+            # Verify sys/ prefix is preserved (not doubled)
+            assert 'sys/cpu.pct.0' in payload['data']
+            assert 'sys/mem.used' in payload['data']
+            assert payload['data']['sys/cpu.pct.0'] == 45.2
+            assert payload['data']['sys/mem.used'] == 1024
             assert payload['step'] == 0  # System metrics have step=0
 
     def test_config_payload_format(self, uploader):

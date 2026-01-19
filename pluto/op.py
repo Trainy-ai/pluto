@@ -26,7 +26,7 @@ from .log import setup_logger, teardown_logger
 from .store import DataStore
 from .sync import SyncProcessManager
 from .sys import System
-from .util import get_char, get_val, to_json
+from .util import get_char, get_val, print_url, to_json
 
 logger = logging.getLogger(f'{__name__.split(".")[0]}')
 tag = 'Operation'
@@ -353,7 +353,8 @@ class Op:
         # Always start the monitor for system metrics and heartbeats
         self._monitor.start()
 
-        logger.debug(f'{tag}: started')
+        # Print URL where users can view the run
+        logger.info(f'{tag}: View run at {print_url(self.settings.url_view)}')
 
         # Register signal handler for graceful Ctrl+C shutdown
         # (unless disabled, e.g., when running under a compat layer like Neptune)
