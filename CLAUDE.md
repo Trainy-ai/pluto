@@ -81,6 +81,11 @@ pluto logout
 **System (sys.py)**: System monitoring (CPU, GPU, memory, network)
 - Samples hardware metrics at configurable intervals
 - Supports NVIDIA GPU monitoring via nvidia-ml-py
+- GPU metric format: `sys/gpu.{idx}.{device_name}.{metric}` where:
+  - `idx` from `nvmlDeviceGetIndex()` - ensures unique keys for multiple GPUs of same model
+  - `device_name` from `nvmlDeviceGetName()` - sanitized (lowercase, underscores)
+  - Metrics: `utilization`, `memory.used`, `memory.utilization`, `power`
+- Abbreviation expansion in `api.py` uses word boundaries to avoid issues (e.g., `mem` → `memory` but not inside `memory`)
 
 ### Data Types
 
