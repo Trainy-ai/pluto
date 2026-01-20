@@ -250,17 +250,14 @@ class System:
             if self.gpu.get('nvidia'):
                 import pynvml
 
-                for h in self.gpu['nvidia']['handles']:
-                    dev = (
-                        str(pynvml.nvmlDeviceGetName(h))[2:-1].lower().replace(' ', '_')
-                    )
-                    d[f'{p}/gpu.nvda.{dev}.pct'] = pynvml.nvmlDeviceGetUtilizationRates(
+                for idx, h in enumerate(self.gpu['nvidia']['handles']):
+                    d[f'{p}/gpu.{idx}.pct'] = pynvml.nvmlDeviceGetUtilizationRates(
                         h
                     ).gpu
-                    d[f'{p}/gpu.nvda.{dev}.mem.pct'] = (
-                        pynvml.nvmlDeviceGetUtilizationRates(h).memory
-                    )
-                    d[f'{p}/gpu.nvda.{dev}.power'] = pynvml.nvmlDeviceGetPowerUsage(h)
+                    d[f'{p}/gpu.{idx}.mem.pct'] = pynvml.nvmlDeviceGetUtilizationRates(
+                        h
+                    ).memory
+                    d[f'{p}/gpu.{idx}.power'] = pynvml.nvmlDeviceGetPowerUsage(h)
         return d
 
     @PendingDeprecationWarning
