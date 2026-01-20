@@ -274,18 +274,21 @@ class Op:
                 logger.info(f'{tag}: started run {str(self.settings._op_id)}')
 
             os.makedirs(f'{self.settings.get_dir()}/files', exist_ok=True)
+
+            # Initialize sync process manager if enabled (before logger setup
+            # so console logs can be captured via sync process)
+            if self._use_sync_process:
+                self._init_sync_manager()
+
             setup_logger(
                 settings=self.settings,
                 logger=logger,
                 console=logging.getLogger('console'),
+                sync_manager=self._sync_manager,
             )  # global logger
             to_json(
                 [self.settings._sys.get_info()], f'{self.settings.get_dir()}/sys.json'
             )
-
-            # Initialize sync process manager if enabled
-            if self._use_sync_process:
-                self._init_sync_manager()
 
         # DataStore is only used when sync process is disabled (legacy mode)
         self._store: Optional[DataStore] = (
@@ -325,6 +328,7 @@ class Op:
             'url_update_config': self.settings.url_update_config,
             'url_update_tags': self.settings.url_update_tags,
             'url_file': self.settings.url_file,  # For file uploads
+            'url_message': self.settings.url_message,  # For console logs
             'x_log_level': self.settings.x_log_level,
             'sync_process_flush_interval': (self.settings.sync_process_flush_interval),
             'sync_process_shutdown_timeout': (

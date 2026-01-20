@@ -279,6 +279,26 @@ class SyncProcessManager:
             timestamp_ms=timestamp_ms,
         )
 
+    def enqueue_console_log(
+        self,
+        message: str,
+        log_type: str,
+        timestamp_ms: int,
+        line_number: int,
+    ) -> None:
+        """Enqueue console log message for upload."""
+        self.store.enqueue(
+            run_id=self.run_id,
+            record_type=RecordType.CONSOLE,
+            payload={
+                'message': message,
+                'logType': log_type,
+                'lineNumber': line_number,
+            },
+            timestamp_ms=timestamp_ms,
+            step=line_number,
+        )
+
     def enqueue_file(
         self,
         local_path: str,
@@ -514,6 +534,7 @@ def _sync_records_batch(
     tags_records: List[SyncRecord] = []
     system_records: List[SyncRecord] = []
     data_records: List[SyncRecord] = []
+    console_records: List[SyncRecord] = []
 
     for record in records:
         if record.record_type == RecordType.METRIC:
@@ -526,6 +547,8 @@ def _sync_records_batch(
             system_records.append(record)
         elif record.record_type == RecordType.DATA:
             data_records.append(record)
+        elif record.record_type == RecordType.CONSOLE:
+            console_records.append(record)
 
     success_ids: List[int] = []
     failed_ids: List[int] = []
@@ -579,6 +602,16 @@ def _sync_records_batch(
         except Exception as e:
             log.warning(f'Failed to upload structured data: {e}')
             failed_ids.extend(r.id for r in data_records)
+            error_msg = str(e)
+
+    # Upload console logs
+    if console_records:
+        try:
+            uploader.upload_console_batch(console_records)
+            success_ids.extend(r.id for r in console_records)
+        except Exception as e:
+            log.warning(f'Failed to upload console logs: {e}')
+            failed_ids.extend(r.id for r in console_records)
             error_msg = str(e)
 
     # Update status
@@ -738,6 +771,7 @@ class _SyncUploader:
         self.url_update_config = settings_dict.get('url_update_config', '')
         self.url_update_tags = settings_dict.get('url_update_tags', '')
         self.url_file = settings_dict.get('url_file', '')
+        self.url_console = settings_dict.get('url_message', '')
 
         # Retry settings (normal mode)
         self.retry_max = settings_dict.get('sync_process_retry_max', 5)
@@ -931,6 +965,39 @@ class _SyncUploader:
 
         body = '\n'.join(lines) + '\n'
         self._post_with_retry(self.url_data, body, self._get_headers())
+
+    def upload_console_batch(self, records: List[SyncRecord]) -> None:
+        """
+        Upload console log messages batch.
+
+        Each record payload contains:
+        - message: The log line content
+        - logType: INFO, WARNING, ERROR, etc.
+        - lineNumber: Line counter
+        """
+        if not self.url_console or not records:
+            return
+
+        # Convert to NDJSON format expected by server
+        lines = []
+        for record in records:
+            payload = record.payload
+            lines.append(
+                json.dumps(
+                    {
+                        'time': record.timestamp_ms,
+                        'message': payload.get('message', ''),
+                        'lineNumber': payload.get('lineNumber', 0),
+                        'logType': payload.get('logType', 'INFO'),
+                    }
+                )
+            )
+
+        if not lines:
+            return
+
+        body = ('\n'.join(lines) + '\n').encode('utf-8')
+        self._post_with_retry(self.url_console, body, self._get_headers())
 
     def upload_files_batch(
         self,

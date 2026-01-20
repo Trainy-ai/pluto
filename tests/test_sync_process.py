@@ -366,6 +366,54 @@ class TestSyncProcessShutdown:
 
         run.finish()
 
+    def test_console_logs_are_captured(self):
+        """Test that stdout/stderr output is captured and enqueued to sync store."""
+        from pluto.sync.store import RecordType
+
+        run = pluto.init(
+            project=TESTING_PROJECT_NAME,
+            name=get_task_name(),
+            config={},
+            sync_process_enabled=True,
+        )
+
+        # Print something to stdout - this should be captured by ConsoleHandler
+        print('Test console log message')
+
+        # Give a moment for the log to be enqueued
+        time.sleep(0.5)
+
+        # Check that console logs were enqueued to the sync store
+        assert run._sync_manager is not None
+        store = run._sync_manager.store
+
+        # Query for CONSOLE records in the store
+        with store._lock:
+            cursor = store.conn.execute(
+                'SELECT * FROM sync_queue WHERE record_type = ?',
+                (int(RecordType.CONSOLE),),
+            )
+            console_records = cursor.fetchall()
+
+        assert len(console_records) > 0, (
+            'Console logs should be enqueued to sync store. '
+            'This test would have caught the missing console log upload feature.'
+        )
+
+        # Verify the message content
+        import json
+
+        found_test_message = False
+        for record in console_records:
+            payload = json.loads(record['payload_json'])
+            if 'Test console log message' in payload.get('message', ''):
+                found_test_message = True
+                break
+
+        assert found_test_message, 'Test message should be found in console records'
+
+        run.finish()
+
 
 class TestSyncUploaderPayloadFormat:
     """Unit tests for _SyncUploader payload formats.

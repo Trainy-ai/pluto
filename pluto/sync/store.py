@@ -39,6 +39,7 @@ class RecordType(IntEnum):
     DATA = 3  # Structured data: Graph, Histogram, Table
     TAGS = 4
     SYSTEM = 5
+    CONSOLE = 6  # stdout/stderr logs
 
 
 @dataclass
