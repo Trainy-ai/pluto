@@ -292,6 +292,80 @@ class TestSyncProcessShutdown:
 
         run.finish()
 
+    def test_sync_process_registers_metric_names(self):
+        """Test that sync process path registers metric names with server.
+
+        This is critical: the server requires metric names to be registered
+        via /api/runs/logName/add before it will accept and display the data.
+        Without this registration, metrics are silently ignored.
+        """
+        run = pluto.init(
+            project=TESTING_PROJECT_NAME,
+            name=get_task_name(),
+            config={},
+            sync_process_enabled=True,
+        )
+
+        # Log metrics with specific names
+        run.log({'test_metric_alpha': 1.0, 'test_metric_beta': 2.0})
+        run.log({'test_metric_gamma': 3.0})
+
+        # Verify metric names were registered in settings.meta
+        # (this tracks which names have been sent to /api/runs/logName/add)
+        assert 'test_metric_alpha' in run.settings.meta
+        assert 'test_metric_beta' in run.settings.meta
+        assert 'test_metric_gamma' in run.settings.meta
+
+        # Verify _iface exists and would have been used for metadata
+        assert run._iface is not None, (
+            "ServerInterface must exist to register metric names with server"
+        )
+
+        run.finish()
+
+    def test_sync_process_calls_update_meta(self):
+        """Test that _update_meta is called when logging via sync process.
+
+        This verifies the fix for the bug where metrics weren't appearing
+        in dashboards because _update_meta wasn't being called.
+        """
+        run = pluto.init(
+            project=TESTING_PROJECT_NAME,
+            name=get_task_name(),
+            config={},
+            sync_process_enabled=True,
+        )
+
+        # Mock _update_meta to track calls
+        update_meta_calls = []
+        original_update_meta = run._iface._update_meta
+
+        def mock_update_meta(num=None, df=None):
+            update_meta_calls.append({'num': num, 'df': df})
+            return original_update_meta(num=num, df=df)
+
+        run._iface._update_meta = mock_update_meta
+
+        # Log a metric - this should trigger _update_meta
+        run.log({'new_metric': 42.0})
+
+        # Verify _update_meta was called with the metric name
+        metric_calls = [c for c in update_meta_calls if c['num']]
+        assert len(metric_calls) > 0, "_update_meta should be called for new metrics"
+
+        # Find the call that registered 'new_metric'
+        registered_names = []
+        for call in metric_calls:
+            if call['num']:
+                registered_names.extend(call['num'])
+
+        assert 'new_metric' in registered_names, (
+            f"'new_metric' should be registered via _update_meta. "
+            f"Registered names: {registered_names}"
+        )
+
+        run.finish()
+
 
 class TestSyncUploaderPayloadFormat:
     """Unit tests for _SyncUploader payload formats.
