@@ -30,10 +30,14 @@ Hard Requirements:
     - MUST NOT break existing Neptune functionality under ANY condition
     - If pluto is down/misconfigured, silently continue with Neptune only
     - Zero impact on Neptune's behavior, return values, or exceptions
+    - MUST NOT affect signal handling (SIGINT/SIGTERM) - Neptune's behavior is preserved
+    - In multi-GPU (DDP/FSDP), exit logic must be identical to Neptune-only usage
 """
 
+import atexit
 import logging
 import os
+import threading
 from dataclasses import asdict, is_dataclass
 from datetime import datetime
 from typing import Any, Dict, List, Mapping, Optional, Union
@@ -256,11 +260,19 @@ class NeptuneRunWrapper:
     This wrapper intercepts Neptune API calls and forwards them to both
     the original Neptune Run and to pluto. All pluto operations are wrapped
     in try-except blocks to ensure Neptune functionality is never impacted.
+
+    IMPORTANT: This wrapper is designed to be TRANSPARENT with respect to
+    signal handling. Pluto's signal handlers are explicitly DISABLED so that
+    Neptune's exit behavior is preserved exactly. In multi-GPU settings
+    (DDP/FSDP), this ensures that the exit logic is identical to Neptune-only usage.
     """
 
     _neptune_run: Any
     _pluto_run: Optional[Any]
     _pluto: Optional[Any]
+
+    # Timeout for Pluto cleanup operations (should never block Neptune)
+    _PLUTO_CLEANUP_TIMEOUT_SECONDS: float = 5.0
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         """
@@ -268,7 +280,14 @@ class NeptuneRunWrapper:
 
         Neptune args/kwargs are passed through unchanged.
         pluto is configured via environment variables.
+
+        IMPORTANT: Pluto's signal handlers are DISABLED to ensure Neptune's
+        exit behavior is preserved. Pluto cleanup happens via atexit or
+        explicit close() calls, with timeouts to prevent blocking.
         """
+        self._closed = False
+        self._close_lock = threading.Lock()
+
         # Check if Neptune logging is disabled
         self._neptune_disabled = os.environ.get(
             'DISABLE_NEPTUNE_LOGGING', ''
@@ -327,7 +346,17 @@ class NeptuneRunWrapper:
             }
 
             # Add custom URLs if provided
-            settings = {}
+            # CRITICAL: Disable Pluto's signal handlers to preserve Neptune's
+            # exit behavior. This ensures multi-GPU (DDP/FSDP) exit logic is
+            # identical to Neptune-only usage.
+            # Use sync process with a short shutdown timeout to match Neptune's
+            # cleanup requirements. The timeout must be less than Neptune's
+            # 5-second cleanup timeout (use 3s for safety margin).
+            settings = {
+                'x_disable_signal_handlers': True,
+                'sync_process_enabled': True,
+                'sync_process_shutdown_timeout': 3.0,  # Short timeout for compat
+            }
             if 'url_app' in pluto_config:
                 settings['url_app'] = pluto_config['url_app']
             if 'url_api' in pluto_config:
@@ -339,16 +368,20 @@ class NeptuneRunWrapper:
             if 'api_key' in pluto_config:
                 settings['_auth'] = pluto_config['api_key']
 
-            if settings:
-                pluto_init_kwargs['settings'] = settings
+            pluto_init_kwargs['settings'] = settings
 
             # Initialize pluto run
             self._pluto_run = self._pluto.init(**pluto_init_kwargs)
             logger.info(
                 f'pluto.compat.neptune: Successfully initialized pluto run '
                 f'for project={pluto_config["project"]}, '
-                f'name={pluto_init_kwargs["name"]}'
+                f'name={pluto_init_kwargs["name"]} '
+                f'(signal handlers DISABLED for Neptune compatibility)'
             )
+
+            # Register atexit handler to ensure Pluto cleanup
+            # This is a safety net - cleanup should normally happen via close()
+            atexit.register(self._atexit_cleanup_pluto)
 
         except Exception as e:
             logger.warning(
@@ -358,6 +391,59 @@ class NeptuneRunWrapper:
             self._pluto_run = None
             # Clean up any partially initialized Pluto resources
             self._cleanup_pluto_state()
+
+    def _atexit_cleanup_pluto(self) -> None:
+        """
+        Atexit handler for Pluto cleanup only.
+
+        This runs after Neptune's atexit handlers and is a safety net
+        for cases where close() wasn't called explicitly. It uses a
+        timeout to ensure it never blocks the exit process.
+        """
+        self._finish_pluto_with_timeout(timeout=self._PLUTO_CLEANUP_TIMEOUT_SECONDS)
+
+    def _finish_pluto_with_timeout(self, timeout: float) -> None:
+        """
+        Finish the Pluto run with a timeout to prevent blocking.
+
+        This is designed to be non-blocking and silent on failure,
+        ensuring Neptune's exit behavior is never affected.
+
+        Uses a daemon thread so it doesn't block process exit.
+        """
+        with self._close_lock:
+            # Thread-safe double-cleanup prevention:
+            # 1. Check if already cleaned up (another thread got here first)
+            # 2. Capture reference to run object
+            # 3. Set to None BEFORE releasing lock (prevents other threads cleaning)
+            # The actual finish() call happens outside the lock to avoid blocking.
+            if self._pluto_run is None:
+                return
+            pluto_run = self._pluto_run
+            self._pluto_run = None  # Atomically prevent other threads from cleaning
+
+        # Use threading.Event to signal completion
+        done_event = threading.Event()
+
+        def _do_finish():
+            try:
+                pluto_run.finish()
+            except Exception as e:
+                logger.debug(f'pluto.compat.neptune: Error during Pluto finish: {e}')
+            finally:
+                done_event.set()
+
+        # Use daemon thread so it won't block process exit
+        thread = threading.Thread(target=_do_finish, daemon=True)
+        thread.start()
+
+        # Wait for completion with timeout
+        if not done_event.wait(timeout=timeout):
+            logger.debug(
+                f'pluto.compat.neptune: Pluto finish timed out after {timeout}s, '
+                f'continuing (data may be partially flushed)'
+            )
+        # Don't join the thread - let it run in background (it's a daemon)
 
     def _cleanup_pluto_state(self):
         """Clean up any lingering Pluto state after initialization failure."""
@@ -626,28 +712,38 @@ class NeptuneRunWrapper:
     def close(self, **kwargs):
         """
         Close both Neptune and pluto runs.
-        """
-        # Close pluto first (less critical)
-        if self._pluto_run:
-            try:
-                self._pluto_run.finish()
-            except Exception as e:
-                logger.warning(f'pluto.compat.neptune: Failed to close pluto run: {e}')
 
-        # Close Neptune (unless disabled)
+        Pluto cleanup uses a timeout to ensure it never blocks Neptune's close.
+        Neptune's close() is always called, preserving exact Neptune behavior.
+        """
+        with self._close_lock:
+            if self._closed:
+                # Already closed, just forward to Neptune if needed
+                if not self._neptune_disabled:
+                    return self._neptune_run.close(**kwargs)
+                return None
+            self._closed = True
+
+        # Close pluto first with timeout (non-blocking, silent failure)
+        self._finish_pluto_with_timeout(timeout=self._PLUTO_CLEANUP_TIMEOUT_SECONDS)
+
+        # Close Neptune (unless disabled) - this is the critical path
         if not self._neptune_disabled:
             return self._neptune_run.close(**kwargs)
         return None
 
     def terminate(self, **kwargs):
-        """Terminate both runs immediately."""
-        if self._pluto_run:
-            try:
-                self._pluto_run.finish()
-            except Exception as e:
-                logger.debug(
-                    f'pluto.compat.neptune: Failed to terminate pluto run: {e}'
-                )
+        """
+        Terminate both runs immediately.
+
+        Pluto cleanup uses a short timeout. Neptune's terminate() is always
+        called, preserving exact Neptune behavior.
+        """
+        with self._close_lock:
+            self._closed = True
+
+        # Terminate pluto with shorter timeout (it's a force-quit scenario)
+        self._finish_pluto_with_timeout(timeout=2.0)
 
         if not self._neptune_disabled:
             return self._neptune_run.terminate(**kwargs)
@@ -781,14 +877,17 @@ class NeptuneRunWrapper:
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
-        """Support context manager protocol."""
-        if self._pluto_run:
-            try:
-                self._pluto_run.finish()
-            except Exception as e:
-                logger.warning(
-                    f'pluto.compat.neptune: Failed to close pluto run on exit: {e}'
-                )
+        """
+        Support context manager protocol.
+
+        Pluto cleanup uses a timeout to ensure it never blocks Neptune's __exit__.
+        Neptune's __exit__ is always called, preserving exact Neptune behavior.
+        """
+        with self._close_lock:
+            self._closed = True
+
+        # Finish pluto with timeout (non-blocking, silent failure)
+        self._finish_pluto_with_timeout(timeout=self._PLUTO_CLEANUP_TIMEOUT_SECONDS)
 
         if self._neptune_disabled:
             return False

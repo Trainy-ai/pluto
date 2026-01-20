@@ -251,16 +251,15 @@ class System:
                 import pynvml
 
                 for h in self.gpu['nvidia']['handles']:
-                    dev = (
-                        str(pynvml.nvmlDeviceGetName(h))[2:-1].lower().replace(' ', '_')
-                    )
-                    d[f'{p}/gpu.nvda.{dev}.pct'] = pynvml.nvmlDeviceGetUtilizationRates(
-                        h
-                    ).gpu
-                    d[f'{p}/gpu.nvda.{dev}.mem.pct'] = (
-                        pynvml.nvmlDeviceGetUtilizationRates(h).memory
-                    )
-                    d[f'{p}/gpu.nvda.{dev}.power'] = pynvml.nvmlDeviceGetPowerUsage(h)
+                    idx = pynvml.nvmlDeviceGetIndex(h)
+                    name = pynvml.nvmlDeviceGetName(h)
+                    name = name.lower().replace(' ', '_').replace('-', '_')
+                    util = pynvml.nvmlDeviceGetUtilizationRates(h)
+                    mem = pynvml.nvmlDeviceGetMemoryInfo(h)
+                    d[f'{p}/gpu.{idx}.{name}.utilization'] = util.gpu
+                    d[f'{p}/gpu.{idx}.{name}.memory.used'] = mem.used
+                    d[f'{p}/gpu.{idx}.{name}.memory.utilization'] = util.memory
+                    d[f'{p}/gpu.{idx}.{name}.power'] = pynvml.nvmlDeviceGetPowerUsage(h)
         return d
 
     @PendingDeprecationWarning

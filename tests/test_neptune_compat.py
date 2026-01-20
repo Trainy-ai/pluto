@@ -1076,3 +1076,288 @@ class TestNeptuneRealBackend:
         url = run.get_run_url()
         assert 'neptune.ai' in url
         print('✓ Resilience test passed - Neptune worked despite mlop failure')
+
+
+class TestNeptuneCompatSignalHandlingTransparency:
+    """
+    Test that the Neptune compat layer is TRANSPARENT with respect to signal handling.
+
+    CRITICAL REQUIREMENT: When using pluto.compat.neptune, the exit/signal handling
+    behavior must be IDENTICAL to using Neptune alone. This is especially important
+    in multi-GPU (DDP/FSDP) settings where improper signal handling can cause hangs.
+
+    These tests verify:
+    1. Pluto's signal handlers are NOT registered when using the compat layer
+    2. Pluto cleanup uses timeouts and never blocks Neptune
+    3. Exit behavior is identical to Neptune-only usage
+    """
+
+    @pytest.fixture
+    def pluto_config_env(self, clean_env):
+        """Set up environment for pluto dual-logging."""
+        os.environ['PLUTO_PROJECT'] = 'signal-test'
+        yield
+
+    def test_pluto_signal_handlers_disabled_in_compat_layer(
+        self, mock_neptune_backend, pluto_config_env
+    ):
+        """
+        Test that Pluto's signal handlers are NOT registered when using compat layer.
+
+        This is critical for DDP/FSDP where Neptune's signal handling should be
+        preserved exactly.
+        """
+        import signal
+
+        import pluto.op as pluto_op
+
+        # Record initial signal handler state
+        initial_sigint = signal.getsignal(signal.SIGINT)
+        initial_sigterm = signal.getsignal(signal.SIGTERM)
+
+        # Track if pluto's handler was registered
+        pluto_op._signal_handler_registered = False
+
+        # Mock pluto.init to verify x_disable_signal_handlers is passed
+        mock_pluto_run = mock.MagicMock()
+        mock_pluto_run.config = {}
+        mock_pluto_run.finish = mock.MagicMock()
+
+        captured_settings = {}
+
+        def capture_init(**kwargs):
+            captured_settings.update(kwargs.get('settings', {}))
+            return mock_pluto_run
+
+        with mock.patch('pluto.init', side_effect=capture_init):
+            from neptune_scale import Run
+
+            run = Run(experiment_name='signal-test')
+
+            # Verify x_disable_signal_handlers was passed to pluto.init
+            assert (
+                captured_settings.get('x_disable_signal_handlers') is True
+            ), 'x_disable_signal_handlers must be True in compat layer'
+
+            # Verify signal handlers were NOT changed by Pluto
+            current_sigint = signal.getsignal(signal.SIGINT)
+            current_sigterm = signal.getsignal(signal.SIGTERM)
+
+            # The handlers should be the same as before (Pluto didn't register)
+            assert (
+                current_sigint == initial_sigint
+            ), 'SIGINT handler should not be changed by Pluto compat layer'
+            assert (
+                current_sigterm == initial_sigterm
+            ), 'SIGTERM handler should not be changed by Pluto compat layer'
+
+            run.close()
+
+    def test_pluto_cleanup_has_timeout(self, mock_neptune_backend, pluto_config_env):
+        """
+        Test that Pluto cleanup uses a timeout to prevent blocking Neptune.
+        """
+        mock_pluto_run = mock.MagicMock()
+        mock_pluto_run.config = {}
+
+        # Make finish() hang forever
+        import time
+
+        def slow_finish():
+            time.sleep(100)  # Would hang without timeout
+
+        mock_pluto_run.finish = slow_finish
+
+        with mock.patch('pluto.init', return_value=mock_pluto_run):
+            from neptune_scale import Run
+
+            run = Run(experiment_name='timeout-test')
+
+            # close() should complete quickly due to timeout, not hang
+            start = time.time()
+            run.close()
+            elapsed = time.time() - start
+
+            # Should complete within timeout + buffer (not hang for 100s)
+            assert (
+                elapsed < 10
+            ), f'close() took {elapsed}s, should be < 10s (timeout should work)'
+
+    def test_pluto_cleanup_silent_on_error(
+        self, mock_neptune_backend, pluto_config_env
+    ):
+        """
+        Test that Pluto cleanup errors don't propagate to Neptune.
+        """
+        mock_pluto_run = mock.MagicMock()
+        mock_pluto_run.config = {}
+        mock_pluto_run.finish = mock.MagicMock(
+            side_effect=Exception('Pluto cleanup failed catastrophically')
+        )
+
+        with mock.patch('pluto.init', return_value=mock_pluto_run):
+            from neptune_scale import Run
+
+            run = Run(experiment_name='error-test')
+
+            # close() should NOT raise, even if Pluto fails
+            run.close()
+
+            # Neptune should be closed successfully
+            assert run._neptune_run.closed
+
+    def test_close_is_idempotent(self, mock_neptune_backend, pluto_config_env):
+        """
+        Test that close() can be called multiple times safely.
+
+        This is important for signal handlers that might call close() after
+        atexit already called it.
+        """
+        mock_pluto_run = mock.MagicMock()
+        mock_pluto_run.config = {}
+        mock_pluto_run.finish = mock.MagicMock()
+
+        with mock.patch('pluto.init', return_value=mock_pluto_run):
+            from neptune_scale import Run
+
+            run = Run(experiment_name='idempotent-test')
+
+            # Call close() multiple times
+            run.close()
+            run.close()
+            run.close()
+
+            # Pluto finish should only be called once (via timeout wrapper)
+            # Neptune close should be called each time (normal behavior)
+            assert run._neptune_run.closed
+
+    def test_terminate_uses_shorter_timeout(
+        self, mock_neptune_backend, pluto_config_env
+    ):
+        """
+        Test that terminate() uses a shorter timeout than close().
+        """
+        import time
+
+        mock_pluto_run = mock.MagicMock()
+        mock_pluto_run.config = {}
+
+        # Track how long finish is allowed to run
+        finish_start = None
+        finish_end = None
+
+        def tracked_finish():
+            nonlocal finish_start, finish_end
+            finish_start = time.time()
+            time.sleep(10)  # Try to sleep 10s
+            finish_end = time.time()
+
+        mock_pluto_run.finish = tracked_finish
+
+        with mock.patch('pluto.init', return_value=mock_pluto_run):
+            from neptune_scale import Run
+
+            run = Run(experiment_name='terminate-test')
+
+            start = time.time()
+            run.terminate()
+            elapsed = time.time() - start
+
+            # terminate() should use 2s timeout, so should complete < 5s
+            assert elapsed < 5, f'terminate() took {elapsed}s, should use short timeout'
+
+    def test_atexit_handler_registered(self, mock_neptune_backend, pluto_config_env):
+        """
+        Test that atexit handler is registered for Pluto cleanup.
+        """
+        import atexit
+
+        mock_pluto_run = mock.MagicMock()
+        mock_pluto_run.config = {}
+        mock_pluto_run.finish = mock.MagicMock()
+
+        registered_handlers = []
+        original_register = atexit.register
+
+        def track_register(func, *args, **kwargs):
+            registered_handlers.append(func)
+            return original_register(func, *args, **kwargs)
+
+        with mock.patch('atexit.register', side_effect=track_register):
+            with mock.patch('pluto.init', return_value=mock_pluto_run):
+                from neptune_scale import Run
+
+                run = Run(experiment_name='atexit-test')
+
+                # Verify an atexit handler was registered
+                assert (
+                    len(registered_handlers) > 0
+                ), 'atexit handler should be registered'
+
+                # The handler should be the wrapper's cleanup method
+                handler_names = [
+                    h.__name__ for h in registered_handlers if hasattr(h, '__name__')
+                ]
+                assert (
+                    '_atexit_cleanup_pluto' in handler_names
+                ), 'atexit handler should be _atexit_cleanup_pluto'
+
+                run.close()
+
+    def test_context_manager_uses_timeout(self, mock_neptune_backend, pluto_config_env):
+        """
+        Test that __exit__ also uses timeout for Pluto cleanup.
+        """
+        import time
+
+        mock_pluto_run = mock.MagicMock()
+        mock_pluto_run.config = {}
+
+        def slow_finish():
+            time.sleep(100)
+
+        mock_pluto_run.finish = slow_finish
+
+        with mock.patch('pluto.init', return_value=mock_pluto_run):
+            from neptune_scale import Run
+
+            start = time.time()
+            with Run(experiment_name='context-timeout-test') as run:
+                run.log_metrics({'loss': 0.5}, step=0)
+            elapsed = time.time() - start
+
+            # Should complete quickly due to timeout
+            assert (
+                elapsed < 10
+            ), f'Context manager exit took {elapsed}s, should be < 10s'
+
+    def test_wrapper_closed_flag_prevents_double_cleanup(
+        self, mock_neptune_backend, pluto_config_env
+    ):
+        """
+        Test that the _closed flag prevents double cleanup of Pluto.
+        """
+        mock_pluto_run = mock.MagicMock()
+        mock_pluto_run.config = {}
+        finish_call_count = 0
+
+        def counting_finish():
+            nonlocal finish_call_count
+            finish_call_count += 1
+
+        mock_pluto_run.finish = counting_finish
+
+        with mock.patch('pluto.init', return_value=mock_pluto_run):
+            from neptune_scale import Run
+
+            run = Run(experiment_name='double-cleanup-test')
+
+            # Simulate multiple cleanup paths (close, atexit, __exit__)
+            run.close()
+            run._atexit_cleanup_pluto()
+            run.__exit__(None, None, None)
+
+            # Pluto finish should only be called once
+            assert (
+                finish_call_count == 1
+            ), f'Pluto finish called {finish_call_count} times, should be 1'

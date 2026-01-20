@@ -85,9 +85,20 @@ jobs:
           pluto login "${MLOP_API_TOKEN}"
 
       - name: Run DDP watch tests
+        timeout-minutes: 5
+        env:
+          PLUTO_DEBUG_LEVEL: DEBUG
         run: |
           set -euox pipefail
-          poetry run torchrun --standalone --nproc-per-node=2 -m pytest tests/test_pytorch.py -k test_pluto_watch_on_ddp_model -m distributed -rs
+          poetry run torchrun --standalone --nproc-per-node=2 -m pytest tests/test_pytorch.py -k test_pluto_watch_on_ddp_model -m distributed -rs -v 2>&1 | tee ddp_test.log
+
+      - name: Upload DDP test logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ddp-test-logs
+          path: ddp_test.log
+          retention-days: 7
 
       # TODO(asaiacai): FSDP requires GPU to test
       # - name: Run FSDP watch tests

@@ -3,7 +3,6 @@ import logging
 import sys
 import time
 
-from .api import make_compat_message_v1
 from .util import ANSI
 
 logger = logging.getLogger(f'{__name__.split(".")[0]}')
@@ -43,10 +42,15 @@ class ColorFormatter(logging.Formatter):
 
 class ConsoleHandler:
     def __init__(
-        self, logger, queue, level=logging.INFO, stream=sys.stdout, type='stdout'
+        self,
+        logger,
+        sync_manager=None,
+        level=logging.INFO,
+        stream=sys.stdout,
+        type='stdout',
     ):
         self.logger = logger
-        self.queue = queue
+        self.sync_manager = sync_manager
         self.level = level
         self.stream = stream
         self.type = type
@@ -56,9 +60,15 @@ class ConsoleHandler:
         for line in buf.splitlines():
             if line:  # do not log empty lines
                 self.count += 1
-                self.queue.put(
-                    make_compat_message_v1(self.level, line, time.time(), self.count)
-                )
+                timestamp_ms = int(time.time() * 1000)
+                if self.sync_manager is not None:
+                    log_type = logging._levelToName.get(self.level, 'INFO')
+                    self.sync_manager.enqueue_console_log(
+                        message=line,
+                        log_type=log_type,
+                        timestamp_ms=timestamp_ms,
+                        line_number=self.count,
+                    )
                 self.logger.log(self.level, line)
         self.stream.write(buf)
         self.stream.flush()
@@ -91,7 +101,7 @@ def input_hook(prompt='', logger=None):
     return content
 
 
-def setup_logger(settings, logger, console=None) -> None:
+def setup_logger(settings, logger, console=None, sync_manager=None) -> None:
     # TODO: capture stdout through rich
     if settings._nb_colab():
         rlogger = logging.getLogger()
@@ -108,7 +118,7 @@ def setup_logger(settings, logger, console=None) -> None:
     if settings._op_id and not settings.disable_console:
         if len(console.handlers) > 0:  # full logger
             return
-        logger, console = setup_logger_file(settings, logger, console)
+        logger, console = setup_logger_file(settings, logger, console, sync_manager)
 
 
 def teardown_logger(logger, console=None):
@@ -121,7 +131,7 @@ def teardown_logger(logger, console=None):
         teardown_logger(logger=console)
 
 
-def setup_logger_file(settings, logger, console):
+def setup_logger_file(settings, logger, console, sync_manager=None):
     console.setLevel(logging.DEBUG)
 
     file_handler = logging.FileHandler(f'{settings.get_dir()}/{settings.tag}.log')
@@ -143,10 +153,10 @@ def setup_logger_file(settings, logger, console):
     if settings.mode == 'debug':
         builtins.input = lambda prompt='': input_hook(prompt, logger=console)
     sys.stdout = ConsoleHandler(
-        console, settings.message, logging.INFO, sys.stdout, 'stdout'
+        console, sync_manager, logging.INFO, sys.stdout, 'stdout'
     )
     sys.stderr = ConsoleHandler(
-        console, settings.message, logging.ERROR, sys.stderr, 'stderr'
+        console, sync_manager, logging.ERROR, sys.stderr, 'stderr'
     )
 
     return logger, console

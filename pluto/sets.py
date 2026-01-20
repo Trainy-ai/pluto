@@ -70,6 +70,20 @@ class Settings:
     x_thread_join_timeout_seconds: int = 30
     x_grad_label: str = 'grad'
     x_param_label: str = 'param'
+    x_disable_signal_handlers: bool = False  # For compat layers (Neptune)
+
+    # Sync process settings (V2 architecture)
+    # When True (default): Data uploaded to server via background sync process
+    # When False: Offline mode - data stored locally in SQLite only (no upload)
+    sync_process_enabled: bool = True
+    sync_process_db_path: Optional[str] = None  # Override sync DB location
+    sync_process_flush_interval: float = 1.0  # Flush interval (seconds)
+    sync_process_shutdown_timeout: float = 30.0  # Max wait for sync
+    sync_process_orphan_timeout: float = 10.0  # Orphan detection timeout
+    sync_process_retry_max: int = 5  # Max retries for failed uploads
+    sync_process_retry_backoff: float = 2.0  # Exponential backoff multiplier
+    sync_process_batch_size: int = 100  # Max records per upload batch
+    sync_process_file_batch_size: int = 10  # Max files per upload batch
 
     host: Optional[str] = None
     url_view: Optional[str] = None

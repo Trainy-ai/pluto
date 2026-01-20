@@ -95,7 +95,8 @@ def make_compat_meta_v1(meta, dtype, settings):
 def make_compat_monitor_v1(data):
     if not ABBR:
         return data
-    pattern = re.compile('|'.join(map(re.escape, ABBR.keys())))
+    # Use word boundaries to avoid replacing 'mem' inside 'memory'
+    pattern = re.compile(r'\b(' + '|'.join(map(re.escape, ABBR.keys())) + r')\b')
     return {pattern.sub(lambda m: ABBR[m.group(0)], k): v for k, v in data.items()}
 
 
