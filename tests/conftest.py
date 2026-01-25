@@ -11,9 +11,14 @@ between tests, which is especially important for:
 import logging
 import os
 import signal
+import subprocess
 import time
 
 import pytest
+
+# Logger for test cleanup debugging
+_cleanup_logger = logging.getLogger('pluto.test.cleanup')
+_cleanup_logger.setLevel(logging.DEBUG)
 
 # Suppress pluto logging during tests to reduce noise
 logging.getLogger('pluto').setLevel(logging.WARNING)
@@ -58,12 +63,11 @@ def _cleanup_pluto_state():
         if hasattr(pluto, 'ops') and pluto.ops:
             for op in list(pluto.ops):  # Copy list to avoid mutation during iteration
                 try:
-                    # Use a short timeout to avoid blocking tests
-                    if hasattr(op, '_sync_manager') and op._sync_manager:
-                        op._sync_manager.stop(wait=False)  # Don't wait
-                    op.finish()
-                except Exception:
-                    pass  # Ignore errors during cleanup
+                    # Use SIGTERM code to trigger graceful shutdown with wait=False
+                    # This leverages Op.finish()'s built-in preemption handling
+                    op.finish(code=signal.SIGTERM)
+                except Exception as e:
+                    _cleanup_logger.debug(f'Error during pluto op cleanup in test: {e}')
 
         # Clear the ops list
         if hasattr(pluto, 'ops'):
@@ -84,8 +88,6 @@ def _terminate_orphan_sync_processes():
     Only terminates processes that match the pluto.sync pattern.
     """
     try:
-        import subprocess
-
         # Find pluto sync processes
         result = subprocess.run(
             ['pgrep', '-f', 'python.*-m.*pluto.sync'],
@@ -107,24 +109,8 @@ def _terminate_orphan_sync_processes():
             # Brief wait for processes to exit
             time.sleep(0.5)
 
-    except (subprocess.TimeoutExpired, FileNotFoundError, Exception):
-        pass  # pgrep not available or other error, skip cleanup
-
-
-@pytest.fixture
-def ensure_pluto_cleanup():
-    """
-    Explicit fixture for tests that need guaranteed pluto cleanup.
-
-    Usage:
-        def test_something(ensure_pluto_cleanup):
-            # Test code here
-            pass  # Cleanup runs automatically after test
-    """
-    yield
-    _cleanup_pluto_state()
-    # Extra wait to ensure all async operations complete
-    time.sleep(0.5)
+    except (subprocess.TimeoutExpired, FileNotFoundError, subprocess.SubprocessError, OSError):
+        pass  # pgrep not available or subprocess error, skip cleanup
 
 
 @pytest.fixture
@@ -159,6 +145,4 @@ def neptune_compat_env(tmp_path):
             os.environ.pop(var, None)
         else:
             os.environ[var] = value
-
-    # Ensure cleanup
-    _cleanup_pluto_state()
+    # Note: pluto cleanup is handled by the autouse cleanup_pluto_resources fixture
