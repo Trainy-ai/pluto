@@ -109,7 +109,12 @@ def _terminate_orphan_sync_processes():
             # Brief wait for processes to exit
             time.sleep(0.5)
 
-    except (subprocess.TimeoutExpired, FileNotFoundError, subprocess.SubprocessError, OSError):
+    except (
+        subprocess.TimeoutExpired,
+        FileNotFoundError,
+        subprocess.SubprocessError,
+        OSError,
+    ):
         pass  # pgrep not available or subprocess error, skip cleanup
 
 
