@@ -36,9 +36,12 @@ def cleanup_pluto_resources():
     3. Preventing resource leaks between tests
 
     The fixture:
-    - Waits for any running pluto operations to finish
-    - Terminates orphaned sync processes
+    - Finishes any running pluto operations (with SIGTERM for non-blocking)
     - Clears the global pluto.ops list
+
+    Note: Orphan sync process cleanup is done at session scope to avoid
+    killing processes from parallel tests.
+    See: cleanup_orphan_sync_processes_at_session_end
     """
     # Run the test first
     yield
@@ -53,8 +56,11 @@ def _cleanup_pluto_state():
 
     This handles:
     1. Finishing any active pluto runs
-    2. Terminating sync processes
-    3. Clearing global state
+    2. Clearing global state
+
+    Note: Does NOT terminate orphan sync processes here because in parallel
+    test execution (pytest-xdist), this could kill sync processes belonging
+    to other tests still running. Orphan cleanup is done at session scope.
     """
     try:
         import pluto
@@ -76,7 +82,20 @@ def _cleanup_pluto_state():
     except ImportError:
         pass  # pluto not installed, nothing to clean up
 
-    # Also clean up any orphaned sync processes
+
+@pytest.fixture(scope='session', autouse=True)
+def cleanup_orphan_sync_processes_at_session_end():
+    """
+    Session-scoped fixture that cleans up orphan sync processes at the end.
+
+    This runs only once after ALL tests complete, avoiding race conditions
+    in parallel test execution where killing sync processes during the
+    test run could affect other tests.
+    """
+    # Let all tests run first
+    yield
+
+    # Clean up at the end of the session
     _terminate_orphan_sync_processes()
 
 
@@ -86,6 +105,9 @@ def _terminate_orphan_sync_processes():
 
     This is a safety net for tests that don't properly clean up.
     Only terminates processes that match the pluto.sync pattern.
+
+    WARNING: Only call this at session scope, not per-test, because it
+    kills ALL matching processes which could affect parallel tests.
     """
     try:
         # Find pluto sync processes
