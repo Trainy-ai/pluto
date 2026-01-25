@@ -356,9 +356,9 @@ class TestSyncProcessShutdown:
         assert 'test_metric_gamma' in run.settings.meta
 
         # Verify _iface exists and would have been used for metadata
-        assert run._iface is not None, (
-            'ServerInterface must exist to register metric names with server'
-        )
+        assert (
+            run._iface is not None
+        ), 'ServerInterface must exist to register metric names with server'
 
         run.finish()
 
