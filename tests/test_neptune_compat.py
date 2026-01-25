@@ -1098,11 +1098,11 @@ class TestNeptuneCompatSignalHandlingTransparency:
         os.environ['PLUTO_PROJECT'] = 'signal-test'
         yield
 
-    def test_pluto_signal_handlers_disabled_in_compat_layer(
+    def test_pluto_signal_handlers_disabled_when_neptune_enabled(
         self, mock_neptune_backend, pluto_config_env
     ):
         """
-        Test that Pluto's signal handlers are NOT registered when using compat layer.
+        Test that Pluto's signal handlers are DISABLED when Neptune is enabled.
 
         This is critical for DDP/FSDP where Neptune's signal handling should be
         preserved exactly.
@@ -1134,24 +1134,110 @@ class TestNeptuneCompatSignalHandlingTransparency:
 
             run = Run(experiment_name='signal-test')
 
-            # Verify x_disable_signal_handlers was passed to pluto.init
-            assert (
-                captured_settings.get('x_disable_signal_handlers') is True
-            ), 'x_disable_signal_handlers must be True in compat layer'
+            # Verify x_disable_signal_handlers is True when Neptune is enabled
+            assert captured_settings.get('x_disable_signal_handlers') is True, (
+                'x_disable_signal_handlers must be True when Neptune is enabled'
+            )
 
             # Verify signal handlers were NOT changed by Pluto
             current_sigint = signal.getsignal(signal.SIGINT)
             current_sigterm = signal.getsignal(signal.SIGTERM)
 
             # The handlers should be the same as before (Pluto didn't register)
-            assert (
-                current_sigint == initial_sigint
-            ), 'SIGINT handler should not be changed by Pluto compat layer'
-            assert (
-                current_sigterm == initial_sigterm
-            ), 'SIGTERM handler should not be changed by Pluto compat layer'
+            assert current_sigint == initial_sigint, (
+                'SIGINT handler should not be changed by Pluto compat layer'
+            )
+            assert current_sigterm == initial_sigterm, (
+                'SIGTERM handler should not be changed by Pluto compat layer'
+            )
 
             run.close()
+
+    def test_pluto_signal_handlers_enabled_when_neptune_disabled(
+        self, mock_neptune_backend, clean_env
+    ):
+        """
+        Test that Pluto's signal handlers are ENABLED when Neptune is disabled.
+
+        When DISABLE_NEPTUNE_LOGGING=true, Pluto is the only logging system,
+        so it should handle signals for graceful shutdown.
+        """
+        os.environ['DISABLE_NEPTUNE_LOGGING'] = 'true'
+        os.environ['PLUTO_PROJECT'] = 'signal-test'
+
+        # Mock pluto.init to verify x_disable_signal_handlers is passed
+        mock_pluto_run = mock.MagicMock()
+        mock_pluto_run.config = {}
+        mock_pluto_run.finish = mock.MagicMock()
+
+        captured_settings = {}
+
+        def capture_init(**kwargs):
+            captured_settings.update(kwargs.get('settings', {}))
+            return mock_pluto_run
+
+        with mock.patch('pluto.init', side_effect=capture_init):
+            from neptune_scale import Run
+
+            run = Run(experiment_name='signal-test-neptune-disabled')
+
+            # Verify Neptune is disabled
+            assert run._neptune_disabled is True
+            assert run._neptune_run is None
+
+            # Verify x_disable_signal_handlers is False when Neptune is disabled
+            # (Pluto should handle signals since Neptune won't)
+            assert captured_settings.get('x_disable_signal_handlers') is False, (
+                'x_disable_signal_handlers must be False when Neptune is disabled'
+            )
+
+            run.close()
+
+    def test_signal_handler_setting_matches_neptune_state(
+        self, mock_neptune_backend, clean_env
+    ):
+        """
+        Test that x_disable_signal_handlers correctly reflects Neptune's state.
+
+        - Neptune enabled (default): x_disable_signal_handlers = True
+        - Neptune disabled: x_disable_signal_handlers = False
+        """
+        os.environ['PLUTO_PROJECT'] = 'signal-state-test'
+
+        mock_pluto_run = mock.MagicMock()
+        mock_pluto_run.config = {}
+        mock_pluto_run.finish = mock.MagicMock()
+
+        # Test 1: Neptune enabled (default)
+        captured_settings_enabled = {}
+
+        def capture_init_enabled(**kwargs):
+            captured_settings_enabled.update(kwargs.get('settings', {}))
+            return mock_pluto_run
+
+        with mock.patch('pluto.init', side_effect=capture_init_enabled):
+            from neptune_scale import Run
+
+            run1 = Run(experiment_name='neptune-enabled')
+            assert run1._neptune_disabled is False
+            assert captured_settings_enabled.get('x_disable_signal_handlers') is True
+            run1.close()
+
+        # Test 2: Neptune disabled
+        os.environ['DISABLE_NEPTUNE_LOGGING'] = 'true'
+        captured_settings_disabled = {}
+
+        def capture_init_disabled(**kwargs):
+            captured_settings_disabled.update(kwargs.get('settings', {}))
+            return mock_pluto_run
+
+        with mock.patch('pluto.init', side_effect=capture_init_disabled):
+            from neptune_scale import Run
+
+            run2 = Run(experiment_name='neptune-disabled')
+            assert run2._neptune_disabled is True
+            assert captured_settings_disabled.get('x_disable_signal_handlers') is False
+            run2.close()
 
     def test_pluto_cleanup_has_timeout(self, mock_neptune_backend, pluto_config_env):
         """
@@ -1179,9 +1265,9 @@ class TestNeptuneCompatSignalHandlingTransparency:
             elapsed = time.time() - start
 
             # Should complete within timeout + buffer (not hang for 100s)
-            assert (
-                elapsed < 10
-            ), f'close() took {elapsed}s, should be < 10s (timeout should work)'
+            assert elapsed < 10, (
+                f'close() took {elapsed}s, should be < 10s (timeout should work)'
+            )
 
     def test_pluto_cleanup_silent_on_error(
         self, mock_neptune_backend, pluto_config_env
@@ -1290,17 +1376,17 @@ class TestNeptuneCompatSignalHandlingTransparency:
                 run = Run(experiment_name='atexit-test')
 
                 # Verify an atexit handler was registered
-                assert (
-                    len(registered_handlers) > 0
-                ), 'atexit handler should be registered'
+                assert len(registered_handlers) > 0, (
+                    'atexit handler should be registered'
+                )
 
                 # The handler should be the wrapper's cleanup method
                 handler_names = [
                     h.__name__ for h in registered_handlers if hasattr(h, '__name__')
                 ]
-                assert (
-                    '_atexit_cleanup_pluto' in handler_names
-                ), 'atexit handler should be _atexit_cleanup_pluto'
+                assert '_atexit_cleanup_pluto' in handler_names, (
+                    'atexit handler should be _atexit_cleanup_pluto'
+                )
 
                 run.close()
 
@@ -1327,9 +1413,9 @@ class TestNeptuneCompatSignalHandlingTransparency:
             elapsed = time.time() - start
 
             # Should complete quickly due to timeout
-            assert (
-                elapsed < 10
-            ), f'Context manager exit took {elapsed}s, should be < 10s'
+            assert elapsed < 10, (
+                f'Context manager exit took {elapsed}s, should be < 10s'
+            )
 
     def test_wrapper_closed_flag_prevents_double_cleanup(
         self, mock_neptune_backend, pluto_config_env
@@ -1358,6 +1444,6 @@ class TestNeptuneCompatSignalHandlingTransparency:
             run.__exit__(None, None, None)
 
             # Pluto finish should only be called once
-            assert (
-                finish_call_count == 1
-            ), f'Pluto finish called {finish_call_count} times, should be 1'
+            assert finish_call_count == 1, (
+                f'Pluto finish called {finish_call_count} times, should be 1'
+            )
