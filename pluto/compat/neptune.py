@@ -417,7 +417,9 @@ class NeptuneRunWrapper:
         This is designed to be non-blocking and silent on failure,
         ensuring Neptune's exit behavior is never affected.
 
-        Uses a daemon thread so it doesn't block process exit.
+        Uses a non-daemon thread with explicit join timeout to ensure
+        proper cleanup on Python 3.12+ where daemon thread handling
+        is stricter during interpreter shutdown.
         """
         with self._close_lock:
             # Thread-safe double-cleanup prevention:
@@ -432,26 +434,40 @@ class NeptuneRunWrapper:
 
         # Use threading.Event to signal completion
         done_event = threading.Event()
+        finish_error = {'error': None}
 
         def _do_finish():
             try:
                 pluto_run.finish()
             except Exception as e:
-                logger.debug(f'pluto.compat.neptune: Error during Pluto finish: {e}')
+                # Capture error but don't log during atexit (stdout may be closed)
+                finish_error['error'] = e
             finally:
                 done_event.set()
 
-        # Use daemon thread so it won't block process exit
-        thread = threading.Thread(target=_do_finish, daemon=True)
+        # Use non-daemon thread to ensure cleanup completes on Python 3.12+
+        # Python 3.12 has stricter daemon thread handling during shutdown
+        thread = threading.Thread(target=_do_finish, daemon=False)
         thread.start()
 
         # Wait for completion with timeout
-        if not done_event.wait(timeout=timeout):
+        completed = done_event.wait(timeout=timeout)
+
+        if completed:
+            # Thread finished within timeout, join it to clean up resources
+            thread.join(timeout=1.0)  # Brief join to release thread resources
+            if finish_error['error']:
+                logger.debug(
+                    f'pluto.compat.neptune: Error during Pluto finish: '
+                    f'{finish_error["error"]}'
+                )
+        else:
             logger.debug(
                 f'pluto.compat.neptune: Pluto finish timed out after {timeout}s, '
                 f'continuing (data may be partially flushed)'
             )
-        # Don't join the thread - let it run in background (it's a daemon)
+            # Don't join timed-out thread - let it continue in background
+            # The sync process will handle cleanup via orphan detection
 
     def _cleanup_pluto_state(self):
         """Clean up any lingering Pluto state after initialization failure."""
