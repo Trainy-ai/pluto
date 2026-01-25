@@ -346,14 +346,17 @@ class NeptuneRunWrapper:
             }
 
             # Add custom URLs if provided
-            # CRITICAL: Disable Pluto's signal handlers to preserve Neptune's
-            # exit behavior. This ensures multi-GPU (DDP/FSDP) exit logic is
-            # identical to Neptune-only usage.
+            # Signal handler configuration:
+            # - When Neptune is ENABLED: Disable Pluto's signal handlers to preserve
+            #   Neptune's exit behavior. This ensures multi-GPU (DDP/FSDP) exit logic
+            #   is identical to Neptune-only usage.
+            # - When Neptune is DISABLED: Enable Pluto's signal handlers since Pluto
+            #   is the only logging system and needs to handle graceful shutdown.
             # Use sync process with a short shutdown timeout to match Neptune's
             # cleanup requirements. The timeout must be less than Neptune's
             # 5-second cleanup timeout (use 3s for safety margin).
             settings = {
-                'x_disable_signal_handlers': True,
+                'x_disable_signal_handlers': not self._neptune_disabled,
                 'sync_process_enabled': True,
                 'sync_process_shutdown_timeout': 3.0,  # Short timeout for compat
             }
@@ -372,11 +375,16 @@ class NeptuneRunWrapper:
 
             # Initialize pluto run
             self._pluto_run = self._pluto.init(**pluto_init_kwargs)
+            signal_status = (
+                'ENABLED (Neptune disabled)'
+                if self._neptune_disabled
+                else 'DISABLED (Neptune handles signals)'
+            )
             logger.info(
                 f'pluto.compat.neptune: Successfully initialized pluto run '
                 f'for project={pluto_config["project"]}, '
                 f'name={pluto_init_kwargs["name"]} '
-                f'(signal handlers DISABLED for Neptune compatibility)'
+                f'(signal handlers {signal_status})'
             )
 
             # Register atexit handler to ensure Pluto cleanup
