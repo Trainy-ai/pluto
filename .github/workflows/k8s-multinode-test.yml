@@ -14,7 +14,7 @@ on:
 jobs:
   k8s-multinode-test:
     # Use ubicloud runner for better performance and cost
-    runs-on: ubicloud-standard-4
+    runs-on: ubicloud-standard-8
     timeout-minutes: 20
     steps:
       - name: Checkout code
