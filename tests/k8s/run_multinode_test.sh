@@ -22,6 +22,12 @@ log() { echo -e "\033[0;32m[INFO]\033[0m $*"; }
 warn() { echo -e "\033[1;33m[WARN]\033[0m $*"; }
 error() { echo -e "\033[0;31m[ERROR]\033[0m $*"; exit 1; }
 
+# Get logs from all job pods using kubectl (konduktor logs requires VictoriaLogs)
+get_job_logs() {
+    local job_name="$1"
+    kubectl logs -l "jobset.sigs.k8s.io/jobset-name=${job_name}" --all-containers 2>&1 || true
+}
+
 check_prerequisites() {
     log "Checking prerequisites..."
     command -v docker &>/dev/null || error "docker not installed"
@@ -108,7 +114,7 @@ run_test() {
             konduktor status || true
             kubectl get pods -A || true
             kubectl describe pods -l jobset.sigs.k8s.io/jobset-name="${JOB_NAME}" 2>/dev/null || true
-            konduktor logs --no-follow "${JOB_NAME}" || true
+            get_job_logs "${JOB_NAME}"
             error "Timeout waiting for job after ${timeout}s"
         }
 
@@ -132,7 +138,7 @@ run_test() {
             log "Job failed - fetching logs..."
             kubectl get pods -A || true
             kubectl describe pods -l jobset.sigs.k8s.io/jobset-name="${JOB_NAME}" 2>/dev/null || true
-            konduktor logs --no-follow "${JOB_NAME}" || true
+            get_job_logs "${JOB_NAME}"
             error "Job failed"
         fi
 
@@ -142,7 +148,7 @@ run_test() {
     # Fetch and display job logs
     log "Fetching job logs..."
     local logs
-    logs=$(konduktor logs --no-follow "${JOB_NAME}" 2>&1 || true)
+    logs=$(get_job_logs "${JOB_NAME}")
     echo "${logs}"
 
     # Extract and prominently display the Pluto experiment URL
@@ -160,7 +166,7 @@ run_test() {
         echo "View your experiment at:"
         echo "  ${pluto_url}"
     else
-        warn "Could not extract Pluto URL from logs"
+        error "Could not extract Pluto URL from logs - test failed"
     fi
     echo "========================================"
     echo ""
