@@ -87,30 +87,51 @@ run_test() {
     log "Running test with PLUTO_RUN_ID: ${run_id}"
 
     # Launch job using konduktor CLI (following smoke test pattern)
+    log "Launching job with konduktor..."
     konduktor launch --name "${JOB_NAME}" -y "${SCRIPT_DIR}/multinode-job.yaml" \
         --env "PLUTO_RUN_ID=${run_id}" \
         --env "PLUTO_API_TOKEN=${PLUTO_API_TOKEN}" \
         --env "PLUTO_PROJECT=testing-ci"
 
+    log "Job launched. Checking initial status..."
+    konduktor status || true
+    kubectl get pods -A || true
+
     # Wait for job completion using konduktor status (following smoke test pattern)
     local timeout=300
     local start=$(date +%s)
+    local last_status_log=0
     while true; do
         local elapsed=$(($(date +%s) - start))
         [[ ${elapsed} -gt ${timeout} ]] && {
-            log "Timeout - fetching logs..."
+            log "Timeout - fetching debug info..."
+            konduktor status || true
+            kubectl get pods -A || true
+            kubectl describe pods -l jobset.sigs.k8s.io/jobset-name="${JOB_NAME}" 2>/dev/null || true
             konduktor logs --no-follow "${JOB_NAME}" || true
-            error "Timeout waiting for job"
+            error "Timeout waiting for job after ${timeout}s"
         }
 
+        # Log status every 30 seconds
+        if [[ $((elapsed - last_status_log)) -ge 30 ]]; then
+            log "Still waiting (${elapsed}s elapsed)..."
+            konduktor status 2>/dev/null || true
+            kubectl get pods -A 2>/dev/null | grep -E "NAME|${JOB_NAME}" || true
+            last_status_log=${elapsed}
+        fi
+
         # Check job status using konduktor status | grep pattern
-        if konduktor status 2>/dev/null | grep -q "${JOB_NAME}.*COMPLETED"; then
+        local status_output
+        status_output=$(konduktor status 2>/dev/null || true)
+        if echo "${status_output}" | grep -q "${JOB_NAME}.*COMPLETED"; then
             log "Job completed successfully"
             break
         fi
 
-        if konduktor status 2>/dev/null | grep -q "${JOB_NAME}.*FAILED"; then
+        if echo "${status_output}" | grep -q "${JOB_NAME}.*FAILED"; then
             log "Job failed - fetching logs..."
+            kubectl get pods -A || true
+            kubectl describe pods -l jobset.sigs.k8s.io/jobset-name="${JOB_NAME}" 2>/dev/null || true
             konduktor logs --no-follow "${JOB_NAME}" || true
             error "Job failed"
         fi
