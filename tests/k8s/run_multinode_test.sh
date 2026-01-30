@@ -1,15 +1,19 @@
 #!/bin/bash
-# K8s multinode E2E test runner
-# This script sets up a kind cluster, installs JobSet, and runs the multinode test.
+# K8s multinode E2E test runner using konduktor CLI
+#
+# This script demonstrates launching a distributed training job with konduktor
+# where all nodes share the same PLUTO_RUN_ID and log to the same Pluto run.
 #
 # Prerequisites:
 # - docker
 # - kind (https://kind.sigs.k8s.io/)
 # - kubectl
+# - pip install konduktor-nightly
 #
 # Environment variables:
 # - PLUTO_API_TOKEN: Required for authentication
 # - PLUTO_RUN_ID: Optional, will be generated if not set
+# - KEEP_CLUSTER: Set to "true" to keep the kind cluster after test
 
 set -euo pipefail
 
@@ -61,6 +65,20 @@ check_prerequisites() {
     log "Prerequisites OK"
 }
 
+# Install konduktor CLI
+install_konduktor() {
+    log "Installing konduktor CLI..."
+
+    if command -v konduktor &> /dev/null; then
+        log "konduktor already installed: $(konduktor --version 2>/dev/null || echo 'version unknown')"
+        return
+    fi
+
+    pip install konduktor-nightly
+
+    log "konduktor installed"
+}
+
 # Create kind cluster
 create_cluster() {
     log "Creating kind cluster: ${CLUSTER_NAME}"
@@ -75,7 +93,7 @@ create_cluster() {
     log "Cluster created"
 }
 
-# Install JobSet controller
+# Install JobSet controller (required by konduktor)
 install_jobset() {
     log "Installing JobSet controller ${JOBSET_VERSION}..."
 
@@ -99,26 +117,27 @@ build_image() {
     log "Image loaded"
 }
 
-# Run the multinode test
+# Run the multinode test using konduktor CLI
 run_test() {
     local run_id="${PLUTO_RUN_ID:-k8s-multinode-$(date +%s)-$(head /dev/urandom | tr -dc a-z0-9 | head -c 8)}"
-    local manifest_file="${SCRIPT_DIR}/jobset-multinode-test.yaml"
 
-    log "Running multinode test with PLUTO_RUN_ID: ${run_id}"
+    log "Running multinode test with konduktor"
+    log "PLUTO_RUN_ID: ${run_id}"
 
-    # Create a temporary manifest with the actual values
-    local tmp_manifest
-    tmp_manifest=$(mktemp)
-    sed -e "s/PLACEHOLDER_RUN_ID/${run_id}/g" \
-        -e "s/PLACEHOLDER_TOKEN/${PLUTO_API_TOKEN}/g" \
-        "${manifest_file}" > "${tmp_manifest}"
+    # Export environment variables for konduktor
+    export PLUTO_RUN_ID="${run_id}"
+    export PLUTO_API_TOKEN="${PLUTO_API_TOKEN}"
+    export PLUTO_PROJECT="testing-ci"
 
-    # Apply the JobSet
-    log "Applying JobSet manifest..."
-    kubectl apply -f "${tmp_manifest}"
+    # Launch the job using konduktor CLI
+    log "Launching job with: konduktor launch ${SCRIPT_DIR}/multinode-job.yaml"
+    konduktor launch "${SCRIPT_DIR}/multinode-job.yaml" \
+        --env "PLUTO_RUN_ID=${run_id}" \
+        --env "PLUTO_API_TOKEN=${PLUTO_API_TOKEN}" \
+        --env "PLUTO_PROJECT=testing-ci"
 
-    # Wait for the JobSet to complete
-    log "Waiting for JobSet to complete (timeout: 5m)..."
+    # Wait for the job to complete
+    log "Waiting for job to complete (timeout: 5m)..."
     local start_time
     start_time=$(date +%s)
     local timeout=300  # 5 minutes
@@ -129,37 +148,29 @@ run_test() {
         local elapsed=$((current_time - start_time))
 
         if [[ ${elapsed} -gt ${timeout} ]]; then
-            error "Timeout waiting for JobSet to complete"
+            error "Timeout waiting for job to complete"
         fi
 
-        # Check JobSet status
-        local status
-        status=$(kubectl get jobset pluto-multinode-test -o jsonpath='{.status.conditions[?(@.type=="Completed")].status}' 2>/dev/null || echo "")
-
-        if [[ "${status}" == "True" ]]; then
-            log "JobSet completed successfully!"
+        # Check job status via konduktor or kubectl
+        # konduktor queue shows job status
+        if konduktor queue 2>/dev/null | grep -q "pluto-multinode-e2e-test.*SUCCEEDED"; then
+            log "Job completed successfully!"
             break
         fi
 
-        # Check for failure
-        local failed
-        failed=$(kubectl get jobset pluto-multinode-test -o jsonpath='{.status.conditions[?(@.type=="Failed")].status}' 2>/dev/null || echo "")
-        if [[ "${failed}" == "True" ]]; then
-            warn "JobSet failed. Fetching logs..."
-            kubectl logs -l jobset.sigs.k8s.io/jobset-name=pluto-multinode-test --all-containers=true || true
-            error "JobSet failed"
+        if konduktor queue 2>/dev/null | grep -q "pluto-multinode-e2e-test.*FAILED"; then
+            warn "Job failed. Fetching logs..."
+            konduktor logs pluto-multinode-e2e-test || true
+            error "Job failed"
         fi
 
         log "Waiting... (${elapsed}s elapsed)"
         sleep 5
     done
 
-    # Get logs from all pods
-    log "Fetching pod logs..."
-    kubectl logs -l jobset.sigs.k8s.io/jobset-name=pluto-multinode-test --all-containers=true
-
-    # Cleanup
-    rm -f "${tmp_manifest}"
+    # Get logs from the job
+    log "Fetching job logs..."
+    konduktor logs pluto-multinode-e2e-test || true
 
     log "Test completed successfully!"
     log "Run ID: ${run_id}"
@@ -170,8 +181,8 @@ run_test() {
 cleanup() {
     log "Cleaning up..."
 
-    # Delete JobSet if it exists
-    kubectl delete jobset pluto-multinode-test --ignore-not-found=true || true
+    # Cancel the job if it's still running
+    konduktor cancel pluto-multinode-e2e-test 2>/dev/null || true
 
     # Optionally delete the cluster (controlled by KEEP_CLUSTER env var)
     if [[ "${KEEP_CLUSTER:-false}" != "true" ]]; then
@@ -186,12 +197,19 @@ cleanup() {
 
 # Main
 main() {
-    log "Starting k8s multinode E2E test"
+    log "Starting k8s multinode E2E test with konduktor"
+    log ""
+    log "This test demonstrates:"
+    log "  1. Launching a 2-node distributed job with konduktor"
+    log "  2. All nodes sharing the same PLUTO_RUN_ID"
+    log "  3. Each node logging metrics to the same Pluto run"
+    log ""
 
     # Set up trap for cleanup on exit
     trap cleanup EXIT
 
     check_prerequisites
+    install_konduktor
     create_cluster
     install_jobset
     build_image
