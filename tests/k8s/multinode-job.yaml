@@ -21,6 +21,7 @@ resources:
   cpus: 1
   memory: 2
   image_id: pluto-multinode-test:latest
+  image_pull_policy: Never  # Use local image loaded via kind
   labels:
     kueue.x-k8s.io/queue-name: user-queue
     maxRunDurationSeconds: "3200"
