@@ -125,39 +125,18 @@ install_kueue() {
 
 # Create ClusterQueue and LocalQueue for konduktor
 create_queues() {
-    log "Creating ClusterQueue and LocalQueue..."
+    log "Creating ResourceFlavor, ClusterQueue, and LocalQueue..."
 
-    # Create a ClusterQueue with CPU resources
-    kubectl apply -f - <<EOF
-apiVersion: kueue.x-k8s.io/v1beta1
-kind: ResourceFlavor
-metadata:
-  name: default-flavor
----
-apiVersion: kueue.x-k8s.io/v1beta1
-kind: ClusterQueue
-metadata:
-  name: cluster-queue
-spec:
-  namespaceSelector: {}
-  resourceGroups:
-  - coveredResources: ["cpu", "memory"]
-    flavors:
-    - name: default-flavor
-      resources:
-      - name: cpu
-        nominalQuota: 10
-      - name: memory
-        nominalQuota: 20Gi
----
-apiVersion: kueue.x-k8s.io/v1beta1
-kind: LocalQueue
-metadata:
-  namespace: default
-  name: user-queue
-spec:
-  clusterQueue: cluster-queue
-EOF
+    # Apply the kueue configuration from file
+    kubectl apply -f "${SCRIPT_DIR}/kueue-config.yaml"
+
+    # Wait for queues to be ready
+    log "Waiting for ClusterQueue to be ready..."
+    sleep 5  # Give kueue time to process
+
+    # Verify queues are created
+    kubectl get clusterqueue cluster-queue
+    kubectl get localqueue user-queue -n default
 
     log "Queues created"
 }

@@ -90,6 +90,7 @@ KEEP_CLUSTER=true ./tests/k8s/run_multinode_test.sh
 |------|---------|
 | `multinode_worker.py` | Python script that runs on each node |
 | `multinode-job.yaml` | Konduktor job definition (2 nodes with torchrun) |
+| `kueue-config.yaml` | Kueue ResourceFlavor, ClusterQueue, and LocalQueue |
 | `Dockerfile` | Container image with PyTorch + Pluto |
 | `run_multinode_test.sh` | Test orchestration script |
 
