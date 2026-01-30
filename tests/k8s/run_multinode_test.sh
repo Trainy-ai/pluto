@@ -23,9 +23,59 @@ warn() { echo -e "\033[1;33m[WARN]\033[0m $*"; }
 error() { echo -e "\033[0;31m[ERROR]\033[0m $*"; exit 1; }
 
 # Get logs from all job pods using kubectl (konduktor logs requires VictoriaLogs)
+# Searches all namespaces and saves to a file
+LOG_FILE=""
+
 get_job_logs() {
     local job_name="$1"
-    kubectl logs -l "jobset.sigs.k8s.io/jobset-name=${job_name}" --all-containers 2>&1 || true
+    local output=""
+
+    # Find pods across all namespaces with the jobset label
+    local pods
+    pods=$(kubectl get pods -A -l "jobset.sigs.k8s.io/jobset-name=${job_name}" -o jsonpath='{range .items[*]}{.metadata.namespace}/{.metadata.name}{"\n"}{end}' 2>/dev/null || true)
+
+    if [[ -z "${pods}" ]]; then
+        # Try without the label, just matching the job name pattern
+        pods=$(kubectl get pods -A -o jsonpath='{range .items[*]}{.metadata.namespace}/{.metadata.name}{"\n"}{end}' 2>/dev/null | grep "${job_name}" || true)
+    fi
+
+    if [[ -z "${pods}" ]]; then
+        echo "No pods found for job ${job_name}"
+        return
+    fi
+
+    echo "=== Found pods: ==="
+    echo "${pods}"
+    echo "==================="
+
+    while IFS= read -r pod_info; do
+        [[ -z "${pod_info}" ]] && continue
+        local ns="${pod_info%%/*}"
+        local pod="${pod_info##*/}"
+        echo ""
+        echo "=== Logs from ${ns}/${pod} ==="
+        kubectl logs -n "${ns}" "${pod}" --all-containers 2>&1 || true
+        # Also try previous logs in case container restarted
+        kubectl logs -n "${ns}" "${pod}" --all-containers --previous 2>&1 || true
+    done <<< "${pods}"
+}
+
+# Continuously capture logs to a file during job execution
+capture_logs_to_file() {
+    local job_name="$1"
+    [[ -z "${LOG_FILE}" ]] && return
+
+    # Find and log from all matching pods
+    local pods
+    pods=$(kubectl get pods -A -o jsonpath='{range .items[*]}{.metadata.namespace}/{.metadata.name}{"\n"}{end}' 2>/dev/null | grep "${job_name}" || true)
+
+    while IFS= read -r pod_info; do
+        [[ -z "${pod_info}" ]] && continue
+        local ns="${pod_info%%/*}"
+        local pod="${pod_info##*/}"
+        echo "=== Logs from ${ns}/${pod} ($(date)) ===" >> "${LOG_FILE}"
+        kubectl logs -n "${ns}" "${pod}" --all-containers 2>&1 >> "${LOG_FILE}" || true
+    done <<< "${pods}"
 }
 
 check_prerequisites() {
@@ -92,6 +142,10 @@ run_test() {
     local run_id="${PLUTO_RUN_ID:-k8s-multinode-$(date +%s)-$(head /dev/urandom | tr -dc a-z0-9 | head -c 8)}"
     log "Running test with PLUTO_RUN_ID: ${run_id}"
 
+    # Create log file to capture logs before pods get garbage collected
+    LOG_FILE=$(mktemp /tmp/pluto-multinode-logs.XXXXXX)
+    log "Capturing logs to: ${LOG_FILE}"
+
     # Launch job using konduktor CLI (following smoke test pattern)
     log "Launching job with konduktor..."
     konduktor launch --name "${JOB_NAME}" -y "${SCRIPT_DIR}/multinode-job.yaml" \
@@ -107,16 +161,25 @@ run_test() {
     local timeout=300
     local start=$(date +%s)
     local last_status_log=0
+    local last_log_capture=0
     while true; do
         local elapsed=$(($(date +%s) - start))
         [[ ${elapsed} -gt ${timeout} ]] && {
             log "Timeout - fetching debug info..."
             konduktor status || true
             kubectl get pods -A || true
-            kubectl describe pods -l jobset.sigs.k8s.io/jobset-name="${JOB_NAME}" 2>/dev/null || true
+            kubectl describe pods -A 2>/dev/null | grep -A 50 "${JOB_NAME}" || true
+            log "=== Captured logs so far ==="
+            cat "${LOG_FILE}" || true
             get_job_logs "${JOB_NAME}"
             error "Timeout waiting for job after ${timeout}s"
         }
+
+        # Capture logs every 10 seconds to catch them before pods disappear
+        if [[ $((elapsed - last_log_capture)) -ge 10 ]]; then
+            capture_logs_to_file "${JOB_NAME}"
+            last_log_capture=${elapsed}
+        fi
 
         # Log status every 30 seconds
         if [[ $((elapsed - last_status_log)) -ge 30 ]]; then
@@ -131,13 +194,18 @@ run_test() {
         status_output=$(konduktor status 2>/dev/null || true)
         if echo "${status_output}" | grep -q "${JOB_NAME}.*COMPLETED"; then
             log "Job completed successfully"
+            # Capture final logs immediately before pods might be cleaned up
+            capture_logs_to_file "${JOB_NAME}"
             break
         fi
 
         if echo "${status_output}" | grep -q "${JOB_NAME}.*FAILED"; then
             log "Job failed - fetching logs..."
             kubectl get pods -A || true
-            kubectl describe pods -l jobset.sigs.k8s.io/jobset-name="${JOB_NAME}" 2>/dev/null || true
+            kubectl describe pods -A 2>/dev/null | grep -A 50 "${JOB_NAME}" || true
+            capture_logs_to_file "${JOB_NAME}"
+            log "=== Captured logs ==="
+            cat "${LOG_FILE}" || true
             get_job_logs "${JOB_NAME}"
             error "Job failed"
         fi
@@ -145,15 +213,18 @@ run_test() {
         sleep 5
     done
 
-    # Fetch and display job logs
-    log "Fetching job logs..."
-    local logs
-    logs=$(get_job_logs "${JOB_NAME}")
-    echo "${logs}"
+    # Try to get any remaining logs
+    log "Fetching final job logs..."
+    get_job_logs "${JOB_NAME}" >> "${LOG_FILE}" 2>&1 || true
+
+    # Display all captured logs
+    log "=== ALL CAPTURED LOGS ==="
+    cat "${LOG_FILE}"
+    log "=== END CAPTURED LOGS ==="
 
     # Extract and prominently display the Pluto experiment URL
     local pluto_url
-    pluto_url=$(echo "${logs}" | grep -oP 'PLUTO_EXPERIMENT_URL=\K[^\s]+' | head -1 || true)
+    pluto_url=$(grep -oP 'PLUTO_EXPERIMENT_URL=\K[^\s]+' "${LOG_FILE}" | head -1 || true)
 
     echo ""
     echo "========================================"
@@ -166,6 +237,8 @@ run_test() {
         echo "View your experiment at:"
         echo "  ${pluto_url}"
     else
+        log "Log file contents for debugging:"
+        cat "${LOG_FILE}" || true
         error "Could not extract Pluto URL from logs - test failed"
     fi
     echo "========================================"
