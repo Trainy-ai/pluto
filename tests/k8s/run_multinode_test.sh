@@ -10,7 +10,7 @@
 # Options:
 # - KEEP_CLUSTER=true to keep cluster after test
 
-set -euo pipefail
+set -euox pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
@@ -58,8 +58,21 @@ setup_cluster() {
     kubectl wait --for=condition=available --timeout=120s deployment/jobset-controller-manager -n jobset-system >/dev/null
     kubectl wait --for=condition=available --timeout=120s deployment/kueue-controller-manager -n kueue-system >/dev/null
 
-    # Apply queue configuration
-    kubectl apply -f "${SCRIPT_DIR}/kueue-config.yaml" >/dev/null
+    # Wait for kueue webhook to be ready (deployment available != webhook ready)
+    kubectl wait --for=condition=ready --timeout=120s pod -l control-plane=kueue-controller-manager -n kueue-system >/dev/null
+
+    # Apply queue configuration with retry (webhook may still be initializing)
+    local retries=5
+    for ((i=1; i<=retries; i++)); do
+        if kubectl apply -f "${SCRIPT_DIR}/kueue-config.yaml" >/dev/null 2>&1; then
+            break
+        fi
+        if [[ $i -eq $retries ]]; then
+            error "Failed to apply kueue-config.yaml after ${retries} retries"
+        fi
+        log "Waiting for kueue webhook (attempt ${i}/${retries})..."
+        sleep 5
+    done
     sleep 5
 
     log "Cluster setup complete"
