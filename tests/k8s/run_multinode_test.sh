@@ -51,7 +51,7 @@ create_cluster() {
 setup_cluster() {
     log "Setting up cluster components..."
 
-    # Install required controllers
+    # Install required controllers (using kubectl for cluster setup only)
     kubectl apply --server-side -f "https://github.com/kubernetes-sigs/jobset/releases/download/v0.8.0/manifests.yaml" >/dev/null
     kubectl apply --server-side -f "https://github.com/kubernetes-sigs/kueue/releases/download/v0.10.1/manifests.yaml" >/dev/null
 
@@ -76,12 +76,13 @@ run_test() {
     local run_id="${PLUTO_RUN_ID:-k8s-multinode-$(date +%s)-$(head /dev/urandom | tr -dc a-z0-9 | head -c 8)}"
     log "Running test with PLUTO_RUN_ID: ${run_id}"
 
-    konduktor launch "${SCRIPT_DIR}/multinode-job.yaml" \
+    # Launch job using konduktor CLI (following smoke test pattern)
+    konduktor launch --name "${JOB_NAME}" -y "${SCRIPT_DIR}/multinode-job.yaml" \
         --env "PLUTO_RUN_ID=${run_id}" \
         --env "PLUTO_API_TOKEN=${PLUTO_API_TOKEN}" \
         --env "PLUTO_PROJECT=testing-ci"
 
-    # Wait for completion using konduktor status
+    # Wait for job completion using konduktor status (following smoke test pattern)
     local timeout=300
     local start=$(date +%s)
     while true; do
@@ -92,14 +93,13 @@ run_test() {
             error "Timeout waiting for job"
         }
 
-        local status
-        status=$(konduktor status "${JOB_NAME}" 2>/dev/null || echo "PENDING")
-
-        if [[ "${status}" == *"SUCCEEDED"* ]] || [[ "${status}" == *"COMPLETED"* ]]; then
+        # Check job status using konduktor status | grep pattern
+        if konduktor status 2>/dev/null | grep -q "${JOB_NAME}.*COMPLETED"; then
+            log "Job completed successfully"
             break
         fi
 
-        if [[ "${status}" == *"FAILED"* ]]; then
+        if konduktor status 2>/dev/null | grep -q "${JOB_NAME}.*FAILED"; then
             log "Job failed - fetching logs..."
             konduktor logs --no-follow "${JOB_NAME}" || true
             error "Job failed"
@@ -108,10 +108,33 @@ run_test() {
         sleep 5
     done
 
+    # Fetch and display job logs
     log "Fetching job logs..."
-    konduktor logs --no-follow "${JOB_NAME}" || true
+    local logs
+    logs=$(konduktor logs --no-follow "${JOB_NAME}" 2>&1 || true)
+    echo "${logs}"
 
-    log "Test passed! Run ID: ${run_id}"
+    # Extract and prominently display the Pluto experiment URL
+    local pluto_url
+    pluto_url=$(echo "${logs}" | grep -oP 'PLUTO_EXPERIMENT_URL=\K[^\s]+' | head -1 || true)
+
+    echo ""
+    echo "========================================"
+    echo "         TEST RESULTS"
+    echo "========================================"
+    echo "Run ID:     ${run_id}"
+    if [[ -n "${pluto_url}" ]]; then
+        echo "Pluto URL:  ${pluto_url}"
+        echo ""
+        echo "View your experiment at:"
+        echo "  ${pluto_url}"
+    else
+        warn "Could not extract Pluto URL from logs"
+    fi
+    echo "========================================"
+    echo ""
+
+    log "Test passed!"
 }
 
 cleanup() {

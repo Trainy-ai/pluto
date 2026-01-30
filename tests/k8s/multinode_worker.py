@@ -65,6 +65,12 @@ def main():
 
     print(f"[Node {rank}] Pluto initialized: server_id={run.id}, resumed={run.resumed}")
 
+    # Print the Pluto experiment URL (most important output!)
+    pluto_url = run.settings.url_view
+    print(f"[Node {rank}] ========================================")
+    print(f"[Node {rank}] PLUTO_EXPERIMENT_URL={pluto_url}")
+    print(f"[Node {rank}] ========================================")
+
     # Log metrics
     for step in range(5):
         run.log({
