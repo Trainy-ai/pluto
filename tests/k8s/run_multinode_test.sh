@@ -4,6 +4,11 @@
 # This script demonstrates launching a distributed training job with konduktor
 # where all nodes share the same PLUTO_RUN_ID and log to the same Pluto run.
 #
+# Based on the konduktor CI pattern - requires:
+# - JobSet controller
+# - Kueue controller
+# - LocalQueue 'user-queue'
+#
 # Prerequisites:
 # - docker
 # - kind (https://kind.sigs.k8s.io/)
@@ -22,6 +27,7 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 CLUSTER_NAME="pluto-multinode-test"
 IMAGE_NAME="pluto-multinode-test:latest"
 JOBSET_VERSION="v0.8.0"
+KUEUE_VERSION="v0.10.1"
 
 # Colors for output
 RED='\033[0;31m'
@@ -105,6 +111,57 @@ install_jobset() {
     log "JobSet controller installed"
 }
 
+# Install Kueue controller
+install_kueue() {
+    log "Installing Kueue ${KUEUE_VERSION}..."
+
+    kubectl apply --server-side -f "https://github.com/kubernetes-sigs/kueue/releases/download/${KUEUE_VERSION}/manifests.yaml"
+
+    log "Waiting for Kueue controller to be ready..."
+    kubectl wait --for=condition=available --timeout=120s deployment/kueue-controller-manager -n kueue-system
+
+    log "Kueue installed"
+}
+
+# Create ClusterQueue and LocalQueue for konduktor
+create_queues() {
+    log "Creating ClusterQueue and LocalQueue..."
+
+    # Create a ClusterQueue with CPU resources
+    kubectl apply -f - <<EOF
+apiVersion: kueue.x-k8s.io/v1beta1
+kind: ResourceFlavor
+metadata:
+  name: default-flavor
+---
+apiVersion: kueue.x-k8s.io/v1beta1
+kind: ClusterQueue
+metadata:
+  name: cluster-queue
+spec:
+  namespaceSelector: {}
+  resourceGroups:
+  - coveredResources: ["cpu", "memory"]
+    flavors:
+    - name: default-flavor
+      resources:
+      - name: cpu
+        nominalQuota: 10
+      - name: memory
+        nominalQuota: 20Gi
+---
+apiVersion: kueue.x-k8s.io/v1beta1
+kind: LocalQueue
+metadata:
+  namespace: default
+  name: user-queue
+spec:
+  clusterQueue: cluster-queue
+EOF
+
+    log "Queues created"
+}
+
 # Build and load test image
 build_image() {
     log "Building test image: ${IMAGE_NAME}"
@@ -148,6 +205,8 @@ run_test() {
         local elapsed=$((current_time - start_time))
 
         if [[ ${elapsed} -gt ${timeout} ]]; then
+            warn "Timeout waiting for job. Fetching logs..."
+            kubectl logs -l jobset.sigs.k8s.io/jobset-name=pluto-multinode-e2e-test --all-containers=true || true
             error "Timeout waiting for job to complete"
         fi
 
@@ -161,7 +220,16 @@ run_test() {
         if konduktor queue 2>/dev/null | grep -q "pluto-multinode-e2e-test.*FAILED"; then
             warn "Job failed. Fetching logs..."
             konduktor logs pluto-multinode-e2e-test || true
+            kubectl logs -l jobset.sigs.k8s.io/jobset-name=pluto-multinode-e2e-test --all-containers=true || true
             error "Job failed"
+        fi
+
+        # Also check via kubectl for JobSet completion
+        local jobset_status
+        jobset_status=$(kubectl get jobset pluto-multinode-e2e-test -o jsonpath='{.status.conditions[?(@.type=="Completed")].status}' 2>/dev/null || echo "")
+        if [[ "${jobset_status}" == "True" ]]; then
+            log "JobSet completed successfully!"
+            break
         fi
 
         log "Waiting... (${elapsed}s elapsed)"
@@ -170,7 +238,8 @@ run_test() {
 
     # Get logs from the job
     log "Fetching job logs..."
-    konduktor logs pluto-multinode-e2e-test || true
+    konduktor logs pluto-multinode-e2e-test 2>/dev/null || \
+        kubectl logs -l jobset.sigs.k8s.io/jobset-name=pluto-multinode-e2e-test --all-containers=true || true
 
     log "Test completed successfully!"
     log "Run ID: ${run_id}"
@@ -201,8 +270,9 @@ main() {
     log ""
     log "This test demonstrates:"
     log "  1. Launching a 2-node distributed job with konduktor"
-    log "  2. All nodes sharing the same PLUTO_RUN_ID"
-    log "  3. Each node logging metrics to the same Pluto run"
+    log "  2. Using torchrun for distributed coordination"
+    log "  3. All nodes sharing the same PLUTO_RUN_ID"
+    log "  4. Each node logging metrics to the same Pluto run"
     log ""
 
     # Set up trap for cleanup on exit
@@ -212,6 +282,8 @@ main() {
     install_konduktor
     create_cluster
     install_jobset
+    install_kueue
+    create_queues
     build_image
     run_test
 

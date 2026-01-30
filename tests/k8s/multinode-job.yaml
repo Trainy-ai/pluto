@@ -1,45 +1,45 @@
 # Konduktor job definition for multinode E2E test
-# This demonstrates how to use konduktor to launch a distributed training job
-# where all nodes share the same PLUTO_RUN_ID and log to the same Pluto run.
+# Based on the konduktor CI pattern for distributed training
 #
 # Launch with: konduktor launch tests/k8s/multinode-job.yaml
 #
-# Environment variables that konduktor injects:
-# - $MASTER_ADDR: Address of the master node (for torchrun rendezvous)
-# - $NUM_NODES: Total number of nodes in the job
-# - $RANK: Global rank of this node (0, 1, 2, ...)
-# - $SKYPILOT_NODE_RANK: Same as RANK (for compatibility)
+# Prerequisites:
+# - JobSet controller installed
+# - Kueue installed
+# - LocalQueue 'user-queue' created
+#
+# Environment variables injected by konduktor:
+# - $MASTER_ADDR: Address of the master node
+# - $NUM_NODES: Total number of nodes
+# - $RANK: Global rank of this node (0, 1, ...)
+# - $RDZV_CONF: Rendezvous configuration for torchrun
 
 name: pluto-multinode-e2e-test
 num_nodes: 2
 
 resources:
-  cpus: 2
-  memory: 4
-  cloud: kubernetes
+  cpus: 1
+  memory: 2
   image_id: pluto-multinode-test:latest
   labels:
     kueue.x-k8s.io/queue-name: user-queue
-
-# Environment variables for Pluto
-envs:
-  PLUTO_PROJECT: testing-ci
-  # PLUTO_RUN_ID and PLUTO_API_TOKEN should be set before launching
-  # or passed via: konduktor launch --env PLUTO_RUN_ID=xxx --env PLUTO_API_TOKEN=xxx
-
-setup: |
-  # Install pluto if not in image
-  pip install pluto-ml || true
+    maxRunDurationSeconds: "3200"
 
 run: |
   set -e
-
-  echo "[Node $RANK] Starting multinode E2E test"
+  echo "[Node $RANK] Starting multinode test"
   echo "[Node $RANK] MASTER_ADDR=$MASTER_ADDR"
   echo "[Node $RANK] NUM_NODES=$NUM_NODES"
   echo "[Node $RANK] PLUTO_RUN_ID=$PLUTO_RUN_ID"
 
-  # Run the multinode worker script
-  python /workspace/multinode_worker.py
+  torchrun \
+    --rdzv_id=123 \
+    --nnodes=$NUM_NODES \
+    --nproc_per_node=1 \
+    --master_addr=$MASTER_ADDR \
+    --master_port=1234 \
+    --node_rank=$RANK \
+    --rdzv_conf=$RDZV_CONF \
+    /workspace/multinode_worker.py
 
   echo "[Node $RANK] Test completed!"
