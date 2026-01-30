@@ -16,6 +16,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 CLUSTER_NAME="pluto-multinode-test"
 IMAGE_NAME="pluto-multinode-test:latest"
+JOB_NAME="pluto-multinode-e2e-test"
 
 log() { echo -e "\033[0;32m[INFO]\033[0m $*"; }
 warn() { echo -e "\033[1;33m[WARN]\033[0m $*"; }
@@ -51,14 +52,14 @@ setup_cluster() {
     log "Setting up cluster components..."
 
     # Install required controllers
-    kubectl apply --server-side -f "https://github.com/kubernetes-sigs/jobset/releases/download/v0.8.0/manifests.yaml"
-    kubectl apply --server-side -f "https://github.com/kubernetes-sigs/kueue/releases/download/v0.10.1/manifests.yaml"
+    kubectl apply --server-side -f "https://github.com/kubernetes-sigs/jobset/releases/download/v0.8.0/manifests.yaml" >/dev/null
+    kubectl apply --server-side -f "https://github.com/kubernetes-sigs/kueue/releases/download/v0.10.1/manifests.yaml" >/dev/null
 
-    kubectl wait --for=condition=available --timeout=120s deployment/jobset-controller-manager -n jobset-system
-    kubectl wait --for=condition=available --timeout=120s deployment/kueue-controller-manager -n kueue-system
+    kubectl wait --for=condition=available --timeout=120s deployment/jobset-controller-manager -n jobset-system >/dev/null
+    kubectl wait --for=condition=available --timeout=120s deployment/kueue-controller-manager -n kueue-system >/dev/null
 
     # Apply queue configuration
-    kubectl apply -f "${SCRIPT_DIR}/kueue-config.yaml"
+    kubectl apply -f "${SCRIPT_DIR}/kueue-config.yaml" >/dev/null
     sleep 5
 
     log "Cluster setup complete"
@@ -66,8 +67,8 @@ setup_cluster() {
 
 build_image() {
     log "Building test image..."
-    docker build -t "${IMAGE_NAME}" -f "${SCRIPT_DIR}/Dockerfile" "${REPO_ROOT}"
-    kind load docker-image "${IMAGE_NAME}" --name "${CLUSTER_NAME}"
+    docker build -t "${IMAGE_NAME}" -f "${SCRIPT_DIR}/Dockerfile" "${REPO_ROOT}" -q
+    kind load docker-image "${IMAGE_NAME}" --name "${CLUSTER_NAME}" >/dev/null
     log "Image ready"
 }
 
@@ -80,32 +81,44 @@ run_test() {
         --env "PLUTO_API_TOKEN=${PLUTO_API_TOKEN}" \
         --env "PLUTO_PROJECT=testing-ci"
 
-    # Wait for completion
+    # Wait for completion using konduktor status
     local timeout=300
     local start=$(date +%s)
     while true; do
         local elapsed=$(($(date +%s) - start))
-        [[ ${elapsed} -gt ${timeout} ]] && error "Timeout"
+        [[ ${elapsed} -gt ${timeout} ]] && {
+            log "Timeout - fetching logs..."
+            konduktor logs --no-follow "${JOB_NAME}" || true
+            error "Timeout waiting for job"
+        }
 
-        if kubectl get jobset pluto-multinode-e2e-test -o jsonpath='{.status.conditions[?(@.type=="Completed")].status}' 2>/dev/null | grep -q "True"; then
+        local status
+        status=$(konduktor status "${JOB_NAME}" 2>/dev/null || echo "PENDING")
+
+        if [[ "${status}" == *"SUCCEEDED"* ]] || [[ "${status}" == *"COMPLETED"* ]]; then
             break
         fi
-        if kubectl get jobset pluto-multinode-e2e-test -o jsonpath='{.status.conditions[?(@.type=="Failed")].status}' 2>/dev/null | grep -q "True"; then
-            kubectl logs -l jobset.sigs.k8s.io/jobset-name=pluto-multinode-e2e-test --all-containers=true || true
+
+        if [[ "${status}" == *"FAILED"* ]]; then
+            log "Job failed - fetching logs..."
+            konduktor logs --no-follow "${JOB_NAME}" || true
             error "Job failed"
         fi
+
         sleep 5
     done
 
-    kubectl logs -l jobset.sigs.k8s.io/jobset-name=pluto-multinode-e2e-test --all-containers=true || true
+    log "Fetching job logs..."
+    konduktor logs --no-follow "${JOB_NAME}" || true
+
     log "Test passed! Run ID: ${run_id}"
 }
 
 cleanup() {
     log "Cleaning up..."
-    konduktor cancel pluto-multinode-e2e-test 2>/dev/null || true
+    konduktor down "${JOB_NAME}" 2>/dev/null || true
     if [[ "${KEEP_CLUSTER:-false}" != "true" ]]; then
-        kind delete cluster --name "${CLUSTER_NAME}" || true
+        kind delete cluster --name "${CLUSTER_NAME}" 2>/dev/null || true
     fi
 }
 
