@@ -15,7 +15,7 @@ set -euox pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 CLUSTER_NAME="pluto-multinode-test"
-IMAGE_NAME="pluto-multinode-test:latest"
+IMAGE_NAME="pluto-multinode-test:local"
 JOB_NAME="pluto-multinode-e2e-test"
 
 log() { echo -e "\033[0;32m[INFO]\033[0m $*"; }
