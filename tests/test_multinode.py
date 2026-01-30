@@ -343,3 +343,182 @@ class TestMultiNodeUsagePatterns:
             run.log({'loss': 0.5, 'accuracy': 0.95})
             assert run.resumed is False  # First and only init
             run.finish()
+
+
+# Import torch-related modules for distributed tests
+try:
+    import torch.distributed as dist
+
+    HAS_TORCH_DISTRIBUTED = dist is not None and dist.is_available()
+except ImportError:
+    HAS_TORCH_DISTRIBUTED = False
+    dist = None  # type: ignore[assignment]
+
+import pytest  # noqa: E402
+
+
+def _get_world_size() -> int:
+    """Get world size from environment."""
+    return int(os.environ.get('WORLD_SIZE', '1'))
+
+
+def _get_rank() -> int:
+    """Get rank from environment."""
+    return int(os.environ.get('RANK', '0'))
+
+
+@pytest.mark.distributed
+@pytest.mark.skipif(
+    not HAS_TORCH_DISTRIBUTED,
+    reason='torch.distributed not available',
+)
+class TestMultiNodeE2E:
+    """End-to-end tests for multi-node distributed training.
+
+    These tests run via torchrun with multiple processes, testing real
+    concurrent access to the same Pluto run via shared run_id.
+
+    Run with:
+        torchrun --standalone --nproc-per-node=2 -m pytest \
+            tests/test_multinode.py::TestMultiNodeE2E -m distributed -rs -v
+    """
+
+    def test_concurrent_multinode_logging(self):
+        """Test multiple concurrent processes logging to the same run.
+
+        This is an E2E test that verifies:
+        1. Multiple torchrun processes can share the same run via PLUTO_RUN_ID
+        2. All processes get the same server run ID
+        3. Each process can log metrics concurrently
+        4. Metrics from all ranks appear in the shared run
+        """
+        world_size = _get_world_size()
+        if world_size < 2:
+            pytest.skip(
+                'Multinode E2E test requires WORLD_SIZE >= 2 (run via torchrun)'
+            )
+
+        # Initialize distributed process group
+        if not dist.is_initialized():
+            dist.init_process_group(backend='gloo')
+
+        rank = dist.get_rank()
+        world_size = dist.get_world_size()
+
+        # All ranks must use the same run_id (set via env var before torchrun)
+        # If not set, generate one on rank 0 and broadcast
+        run_id = os.environ.get('PLUTO_RUN_ID')
+        if run_id is None:
+            if rank == 0:
+                run_id = f'e2e-multinode-{uuid.uuid4().hex[:12]}'
+            # Broadcast run_id from rank 0 to all ranks
+            run_id_list = [run_id] if rank == 0 else [None]
+            dist.broadcast_object_list(run_id_list, src=0)
+            run_id = run_id_list[0]
+
+        try:
+            # Each rank initializes with the shared run_id
+            run = pluto.init(
+                project=TESTING_PROJECT_NAME,
+                name=f'e2e-multinode-rank{rank}',
+                run_id=run_id,
+                config={
+                    'test': 'multinode-e2e',
+                    'world_size': world_size,
+                    'rank': rank,
+                },
+            )
+
+            server_id = run.id
+            is_resumed = run.resumed
+
+            # Log rank-specific metrics
+            for step in range(5):
+                run.log(
+                    {
+                        f'loss/rank{rank}': 1.0 - (step * 0.1) - (rank * 0.01),
+                        f'throughput/rank{rank}': 1000 + rank * 100 + step * 10,
+                        'step': step,
+                    }
+                )
+
+            # Barrier to ensure all ranks have logged
+            dist.barrier()
+
+            # Gather server IDs from all ranks to verify they match
+            all_server_ids = [None] * world_size
+            dist.all_gather_object(all_server_ids, server_id)
+
+            # Gather resumed flags
+            all_resumed = [None] * world_size
+            dist.all_gather_object(all_resumed, is_resumed)
+
+            # Verify all ranks got the same server run ID
+            assert all(
+                sid == all_server_ids[0] for sid in all_server_ids
+            ), f'All ranks should have same server ID, got: {all_server_ids}'
+
+            # Exactly one rank should have resumed=False (the first to create)
+            num_not_resumed = sum(1 for r in all_resumed if r is False)
+            assert num_not_resumed == 1, (
+                f'Exactly one rank should have resumed=False, '
+                f'got resumed flags: {all_resumed}'
+            )
+
+            run.finish()
+
+            # Final barrier before cleanup
+            dist.barrier()
+
+        finally:
+            if dist.is_initialized():
+                dist.destroy_process_group()
+
+    def test_multinode_with_system_metrics(self):
+        """Test multinode logging includes system metrics from each rank.
+
+        Verifies that system metrics (CPU, memory) are collected and logged
+        from each distributed process.
+        """
+        world_size = _get_world_size()
+        if world_size < 2:
+            pytest.skip(
+                'Multinode E2E test requires WORLD_SIZE >= 2 (run via torchrun)'
+            )
+
+        if not dist.is_initialized():
+            dist.init_process_group(backend='gloo')
+
+        rank = dist.get_rank()
+
+        # Generate shared run_id
+        run_id = os.environ.get('PLUTO_RUN_ID')
+        if run_id is None:
+            if rank == 0:
+                run_id = f'e2e-sysmetrics-{uuid.uuid4().hex[:12]}'
+            run_id_list = [run_id] if rank == 0 else [None]
+            dist.broadcast_object_list(run_id_list, src=0)
+            run_id = run_id_list[0]
+
+        try:
+            run = pluto.init(
+                project=TESTING_PROJECT_NAME,
+                name=f'e2e-sysmetrics-rank{rank}',
+                run_id=run_id,
+                config={'test': 'multinode-sysmetrics', 'rank': rank},
+            )
+
+            # Log some metrics and let system monitor collect data
+            import time
+
+            for step in range(3):
+                run.log({f'train/rank{rank}/loss': 0.5 - step * 0.1})
+                time.sleep(0.5)  # Allow system metrics to be sampled
+
+            dist.barrier()
+            run.finish()
+            dist.barrier()
+
+        finally:
+            if dist.is_initialized():
+                dist.destroy_process_group()

@@ -100,6 +100,22 @@ jobs:
           path: ddp_test.log
           retention-days: 7
 
+      - name: Run multinode E2E tests
+        timeout-minutes: 5
+        env:
+          PLUTO_DEBUG_LEVEL: DEBUG
+        run: |
+          set -euox pipefail
+          poetry run torchrun --standalone --nproc-per-node=2 -m pytest tests/test_multinode.py::TestMultiNodeE2E -m distributed -rs -v 2>&1 | tee multinode_test.log
+
+      - name: Upload multinode test logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: multinode-test-logs
+          path: multinode_test.log
+          retention-days: 7
+
       # TODO(asaiacai): FSDP requires GPU to test
       # - name: Run FSDP watch tests
       #   run: |

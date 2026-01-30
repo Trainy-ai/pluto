@@ -1,0 +1,42 @@
+# Kueue configuration for konduktor multinode test
+# Based on konduktor CI setup
+#
+# This creates:
+# 1. ResourceFlavor - defines the resource type
+# 2. ClusterQueue - cluster-wide queue with resource quotas
+# 3. LocalQueue - namespace-scoped queue that references the ClusterQueue
+#
+# Apply with: kubectl apply -f kueue-config.yaml
+
+apiVersion: kueue.x-k8s.io/v1beta1
+kind: ResourceFlavor
+metadata:
+  name: default-flavor
+---
+apiVersion: kueue.x-k8s.io/v1beta1
+kind: ClusterQueue
+metadata:
+  name: cluster-queue
+spec:
+  namespaceSelector: {}  # Allow all namespaces
+  resourceGroups:
+  - coveredResources: ["cpu", "memory"]
+    flavors:
+    - name: default-flavor
+      resources:
+      - name: cpu
+        nominalQuota: 10
+      - name: memory
+        nominalQuota: 20Gi
+  # Preemption policy for gang scheduling
+  preemption:
+    reclaimWithinCohort: Any
+    withinClusterQueue: LowerPriority
+---
+apiVersion: kueue.x-k8s.io/v1beta1
+kind: LocalQueue
+metadata:
+  namespace: default
+  name: user-queue
+spec:
+  clusterQueue: cluster-queue
