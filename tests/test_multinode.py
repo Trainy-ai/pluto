@@ -313,9 +313,9 @@ class TestMultiNodeUsagePatterns:
             run.finish()
 
         # All should have the same server ID
-        assert all(
-            sid == server_ids[0] for sid in server_ids
-        ), f'All ranks should log to same run, got IDs: {server_ids}'
+        assert all(sid == server_ids[0] for sid in server_ids), (
+            f'All ranks should log to same run, got IDs: {server_ids}'
+        )
 
         # First should not be resumed, rest should be
         assert resumed_flags[0] is False
@@ -354,7 +354,7 @@ except ImportError:
     HAS_TORCH_DISTRIBUTED = False
     dist = None  # type: ignore[assignment]
 
-import pytest
+import pytest  # noqa: E402
 
 
 def _get_world_size() -> int:
@@ -434,11 +434,13 @@ class TestMultiNodeE2E:
 
             # Log rank-specific metrics
             for step in range(5):
-                run.log({
-                    f'loss/rank{rank}': 1.0 - (step * 0.1) - (rank * 0.01),
-                    f'throughput/rank{rank}': 1000 + rank * 100 + step * 10,
-                    'step': step,
-                })
+                run.log(
+                    {
+                        f'loss/rank{rank}': 1.0 - (step * 0.1) - (rank * 0.01),
+                        f'throughput/rank{rank}': 1000 + rank * 100 + step * 10,
+                        'step': step,
+                    }
+                )
 
             # Barrier to ensure all ranks have logged
             dist.barrier()
@@ -452,9 +454,9 @@ class TestMultiNodeE2E:
             dist.all_gather_object(all_resumed, is_resumed)
 
             # Verify all ranks got the same server run ID
-            assert all(
-                sid == all_server_ids[0] for sid in all_server_ids
-            ), f'All ranks should have same server ID, got: {all_server_ids}'
+            assert all(sid == all_server_ids[0] for sid in all_server_ids), (
+                f'All ranks should have same server ID, got: {all_server_ids}'
+            )
 
             # Exactly one rank should have resumed=False (the first to create)
             num_not_resumed = sum(1 for r in all_resumed if r is False)
@@ -508,6 +510,7 @@ class TestMultiNodeE2E:
 
             # Log some metrics and let system monitor collect data
             import time
+
             for step in range(3):
                 run.log({f'train/rank{rank}/loss': 0.5 - step * 0.1})
                 time.sleep(0.5)  # Allow system metrics to be sampled
