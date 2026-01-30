@@ -1,0 +1,41 @@
+# JobSet manifest for k8s multinode E2E test
+# This creates a 2-node job where all nodes share the same PLUTO_RUN_ID
+apiVersion: jobset.x-k8s.io/v1alpha2
+kind: JobSet
+metadata:
+  name: pluto-multinode-test
+spec:
+  replicatedJobs:
+    - name: worker
+      replicas: 2  # 2 nodes
+      template:
+        spec:
+          parallelism: 1
+          completions: 1
+          backoffLimit: 0
+          template:
+            spec:
+              restartPolicy: Never
+              containers:
+                - name: worker
+                  image: pluto-multinode-test:latest
+                  imagePullPolicy: Never  # Use local image in kind
+                  env:
+                    # PLUTO_RUN_ID and PLUTO_API_TOKEN are set via envFrom or directly
+                    - name: PLUTO_RUN_ID
+                      value: "PLACEHOLDER_RUN_ID"
+                    - name: PLUTO_API_TOKEN
+                      value: "PLACEHOLDER_TOKEN"
+                    # JobSet automatically sets:
+                    # - JOB_COMPLETION_INDEX (0, 1, ...)
+                    # - JOBSET_NAME
+                    # Set NUM_NODES for the worker script
+                    - name: NUM_NODES
+                      value: "2"
+                  resources:
+                    limits:
+                      cpu: "500m"
+                      memory: "512Mi"
+                    requests:
+                      cpu: "250m"
+                      memory: "256Mi"
