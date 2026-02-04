@@ -42,7 +42,7 @@ class SecretSanitizer:
         # e.g. postgresql://user:password@host:port/db
         self._patterns.append(
             (
-                re.compile(r'(://[^:/?#\s]+:)([^@\s]+)(@)'),
+                re.compile(r'(://[^:/?#\s]+:)(\S+)(@)'),
                 rf'\1{REDACTED}\3',
             )
         )

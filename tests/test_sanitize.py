@@ -178,6 +178,35 @@ class TestKeyValueAssignments:
         assert "my-app-secret-value" not in sanitize(line)
 
 
+# === Gemini review edge cases ===
+
+
+class TestGeminiReviewEdgeCases:
+    """Tests based on Gemini code review comments on PR #41."""
+
+    # Comment 3: Connection string with literal @ in password
+    def test_connection_string_password_with_at_sign(self):
+        """Password containing @ should be fully redacted."""
+        line = "Connecting to redis://user:h@ckme123@redis.example.com:6379/0"
+        result = sanitize(line)
+        assert "h@ckme123" not in result
+        assert "ckme123" not in result
+        assert "redis.example.com" in result
+
+    def test_connection_string_password_with_multiple_at_signs(self):
+        """Worst case: multiple @ in password."""
+        line = "mysql://root:p@ss@w0rd@localhost:3306/mydb"
+        result = sanitize(line)
+        assert "p@ss@w0rd" not in result
+        assert "localhost" in result
+
+    def test_quoted_secret_with_backslash(self):
+        """Secret value containing a backslash."""
+        line = "password='my\\secret'"
+        result = sanitize(line)
+        assert "my\\secret" not in result
+
+
 # === Things that should NOT be redacted ===
 
 
