@@ -34,6 +34,14 @@ You may also learn more about **Pluto** by checking out our [documentation](http
 
 <!-- You can try everything out in our [introductory tutorial](https://colab.research.google.com/github/Trainy-ai/pluto/blob/main/examples/intro.ipynb) and [torch tutorial](https://colab.research.google.com/github/Trainy-ai/pluto/blob/main/examples/torch.ipynb). -->
 
+## Migration
+
+### Neptune
+
+Want to move your run data from Neptune to Pluto. Checkout the official docs from the Neptune transition hub [here](https://docs.neptune.ai/transition_hub/migration/to_pluto).
+
+Before committing to Pluto, you want to see if there's parity between your Neptune and Pluto views? See our compatibility module documented [here](https://docs.trainy.ai/pluto/neptune-migration). Log to both Neptune and Pluto with a single import statement and no code changes.
+
 ## 🛠️ Development Setup
 
 Want to contribute? Here's the quickest way to get the local toolchain (including the linters used in CI) running:
