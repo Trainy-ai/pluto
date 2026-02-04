@@ -40,6 +40,7 @@ class Settings:
     disable_iface: bool = False
     disable_progress: bool = True
     disable_console: bool = False  # disable file-based logging
+    sanitize_logs: bool = True  # redact secrets before uploading console logs
 
     _op_name: Optional[str] = None
     _op_id: Optional[int] = None
@@ -276,6 +277,15 @@ def setup(settings: Union[Settings, Dict[str, Any], None] = None) -> Settings:
     env_run_id = _get_env_with_deprecation('PLUTO_RUN_ID', 'MLOP_RUN_ID')
     if env_run_id is not None and '_external_id' not in settings_dict:
         new_settings._external_id = env_run_id
+
+    # Read PLUTO_SANITIZE_LOGS environment variable
+    env_sanitize_logs = os.environ.get('PLUTO_SANITIZE_LOGS')
+    if env_sanitize_logs is not None and 'sanitize_logs' not in settings_dict:
+        new_settings.sanitize_logs = env_sanitize_logs.lower() not in (
+            '0',
+            'false',
+            'no',
+        )
 
     # Apply all settings (user params override env vars)
     new_settings.update(settings_dict)
