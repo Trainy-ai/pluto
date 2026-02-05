@@ -1,7 +1,5 @@
 """Tests for log sanitization of secrets before backend upload."""
 
-import pytest
-
 
 # === AWS ===
 
