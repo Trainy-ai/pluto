@@ -304,6 +304,33 @@ class SyncProcessManager:
             step=line_number,
         )
 
+    def enqueue_console_batch(
+        self,
+        lines: List[tuple],
+    ) -> None:
+        """Enqueue a batch of console log lines in a single transaction.
+
+        Args:
+            lines: List of (message, log_type, timestamp_ms, line_number) tuples.
+        """
+        if not lines:
+            return
+        records = [
+            (
+                self.run_id,
+                RecordType.CONSOLE,
+                {
+                    'message': message,
+                    'logType': log_type,
+                    'lineNumber': line_number,
+                },
+                timestamp_ms,
+                line_number,
+            )
+            for message, log_type, timestamp_ms, line_number in lines
+        ]
+        self.store.enqueue_batch(records)
+
     def enqueue_file(
         self,
         local_path: str,
@@ -439,8 +466,10 @@ def _sync_main(
     file_batch_size = settings_dict.get('sync_process_file_batch_size', 10)
 
     parent_check_interval = 5.0
+    cleanup_interval = 300.0  # Clean up completed records every 5 minutes
     last_parent_check = time.time()
     last_flush = time.time()
+    last_cleanup = time.time()
 
     try:
         while not shutdown_requested['value']:
@@ -476,6 +505,16 @@ def _sync_main(
                     if synced:
                         log.debug(f'Synced batch of {synced} records')
                     last_flush = time.time()
+
+                # Periodic cleanup of completed records to prevent
+                # unbounded table growth over long training runs
+                if time.time() - last_cleanup > cleanup_interval:
+                    deleted = store.cleanup_completed(
+                        older_than_seconds=cleanup_interval
+                    )
+                    if deleted:
+                        log.debug(f'Cleaned up {deleted} completed records')
+                    last_cleanup = time.time()
 
             except sqlite3.OperationalError as e:
                 # Transient SQLite errors (e.g. "database is locked") should not

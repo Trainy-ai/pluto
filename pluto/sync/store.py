@@ -551,6 +551,7 @@ class SyncStore:
                 runs.append(dict(row))
             return runs
 
+    @_retry_on_locked
     def cleanup_completed(self, older_than_seconds: float = 3600.0) -> int:
         """Remove completed records older than threshold. Returns count deleted."""
         cutoff = time.time() - older_than_seconds
