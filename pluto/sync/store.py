@@ -14,11 +14,47 @@ import threading
 import time
 from dataclasses import dataclass
 from enum import IntEnum
+from functools import wraps
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple, TypeVar
+
+F = TypeVar('F', bound=Callable[..., Any])
 
 logger = logging.getLogger(f'{__name__.split(".")[0]}')
 tag = 'SyncStore'
+
+# Default number of retries for transient SQLite errors (database is locked)
+_SQLITE_RETRY_COUNT = 5
+_SQLITE_RETRY_BASE_DELAY = 0.1  # seconds
+
+
+def _retry_on_locked(func: F) -> F:
+    """Retry a method on sqlite3.OperationalError (database is locked)."""
+
+    @wraps(func)
+    def wrapper(*args: Any, **kwargs: Any) -> Any:
+        last_error: Optional[Exception] = None
+        for attempt in range(_SQLITE_RETRY_COUNT):
+            try:
+                return func(*args, **kwargs)
+            except sqlite3.OperationalError as e:
+                if 'locked' not in str(e).lower():
+                    raise
+                last_error = e
+                delay = _SQLITE_RETRY_BASE_DELAY * (2**attempt)
+                logger.debug(
+                    '%s: %s retrying after "database is locked" '
+                    '(attempt %d/%d, wait %.1fs)',
+                    tag,
+                    func.__name__,
+                    attempt + 1,
+                    _SQLITE_RETRY_COUNT,
+                    delay,
+                )
+                time.sleep(delay)
+        raise last_error  # type: ignore[misc]
+
+    return wrapper  # type: ignore[return-value]
 
 
 class SyncStatus(IntEnum):
@@ -114,7 +150,7 @@ class SyncStore:
         )
         self.conn.execute('PRAGMA journal_mode=WAL')
         self.conn.execute('PRAGMA synchronous=NORMAL')  # Good balance of safety/speed
-        self.conn.execute('PRAGMA busy_timeout=5000')  # Wait up to 5s for locks
+        self.conn.execute('PRAGMA busy_timeout=30000')  # Wait up to 30s for locks
         self.conn.row_factory = sqlite3.Row
 
         self._init_schema()
@@ -244,6 +280,7 @@ class SyncStore:
                 (run_id, project, op_id, parent_pid, now, now, config_json),
             )
 
+    @_retry_on_locked
     def heartbeat(self, run_id: str) -> None:
         """Update heartbeat for a run (called by training process)."""
         with self._lock:
@@ -272,6 +309,7 @@ class SyncStore:
                 (run_id,),
             )
 
+    @_retry_on_locked
     def enqueue(
         self,
         run_id: str,
@@ -297,6 +335,7 @@ class SyncStore:
             )
             return cursor.lastrowid or 0
 
+    @_retry_on_locked
     def enqueue_batch(
         self,
         records: List[Tuple[str, RecordType, Dict[str, Any], int, Optional[int]]],
@@ -372,6 +411,7 @@ class SyncStore:
                 )
             return records
 
+    @_retry_on_locked
     def mark_in_progress(self, record_ids: List[int]) -> None:
         """Mark records as in-progress."""
         if not record_ids:
@@ -390,6 +430,7 @@ class SyncStore:
                 params,
             )
 
+    @_retry_on_locked
     def mark_completed(self, record_ids: List[int]) -> None:
         """Mark records as successfully synced."""
         if not record_ids:
@@ -408,6 +449,7 @@ class SyncStore:
                 params,
             )
 
+    @_retry_on_locked
     def mark_failed(
         self,
         record_ids: List[int],
@@ -527,6 +569,7 @@ class SyncStore:
     # File upload methods
     # ========================================================================
 
+    @_retry_on_locked
     def enqueue_file(
         self,
         run_id: str,
@@ -608,6 +651,7 @@ class SyncStore:
                 )
             return records
 
+    @_retry_on_locked
     def mark_files_in_progress(self, file_ids: List[int]) -> None:
         """Mark file records as in-progress."""
         if not file_ids:
@@ -626,6 +670,7 @@ class SyncStore:
                 params,
             )
 
+    @_retry_on_locked
     def mark_files_completed(self, file_ids: List[int]) -> None:
         """Mark file records as successfully uploaded."""
         if not file_ids:
@@ -644,6 +689,7 @@ class SyncStore:
                 params,
             )
 
+    @_retry_on_locked
     def mark_files_failed(
         self,
         file_ids: List[int],

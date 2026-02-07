@@ -16,6 +16,7 @@ import json
 import logging
 import os
 import signal
+import sqlite3
 import subprocess
 import sys
 import time
@@ -443,37 +444,45 @@ def _sync_main(
 
     try:
         while not shutdown_requested['value']:
-            # Check if parent is alive
-            if time.time() - last_parent_check > parent_check_interval:
-                if not _is_process_alive(parent_pid):
-                    log.warning('Parent process died, flushing and exiting')
-                    _flush_remaining(
-                        store, uploader, log, shutdown_timeout, max_retries
+            try:
+                # Check if parent is alive
+                if time.time() - last_parent_check > parent_check_interval:
+                    if not _is_process_alive(parent_pid):
+                        log.warning('Parent process died, flushing and exiting')
+                        _flush_remaining(
+                            store, uploader, log, shutdown_timeout, max_retries
+                        )
+                        return
+                    last_parent_check = time.time()
+
+                # Check for orphaned runs
+                orphaned = store.get_orphaned_runs(orphan_timeout)
+                for run_id in orphaned:
+                    log.info(f'Detected orphaned run: {run_id}')
+                    store.mark_run_finished(run_id)
+
+                # Check for finished runs that need final flush
+                unsynced = store.get_unsynced_runs()
+                for run_info in unsynced:
+                    if run_info['finished'] and run_info['pending_count'] == 0:
+                        store.mark_run_synced(run_info['run_id'])
+                        log.info(f'Run {run_info["run_id"]} fully synced')
+
+                # Periodic flush
+                if time.time() - last_flush > flush_interval:
+                    synced = _sync_batch(
+                        store, uploader, log, max_retries, batch_size, file_batch_size
                     )
-                    return
-                last_parent_check = time.time()
+                    if synced:
+                        log.debug(f'Synced batch of {synced} records')
+                    last_flush = time.time()
 
-            # Check for orphaned runs
-            orphaned = store.get_orphaned_runs(orphan_timeout)
-            for run_id in orphaned:
-                log.info(f'Detected orphaned run: {run_id}')
-                store.mark_run_finished(run_id)
-
-            # Check for finished runs that need final flush
-            unsynced = store.get_unsynced_runs()
-            for run_info in unsynced:
-                if run_info['finished'] and run_info['pending_count'] == 0:
-                    store.mark_run_synced(run_info['run_id'])
-                    log.info(f'Run {run_info["run_id"]} fully synced')
-
-            # Periodic flush
-            if time.time() - last_flush > flush_interval:
-                synced = _sync_batch(
-                    store, uploader, log, max_retries, batch_size, file_batch_size
-                )
-                if synced:
-                    log.debug(f'Synced batch of {synced} records')
-                last_flush = time.time()
+            except sqlite3.OperationalError as e:
+                # Transient SQLite errors (e.g. "database is locked") should not
+                # crash the sync process. Log and retry on the next iteration.
+                log.warning(f'Transient SQLite error (will retry): {e}')
+                time.sleep(1.0)  # Back off briefly before next attempt
+                continue
 
             # Short sleep to avoid busy loop
             time.sleep(0.1)
