@@ -523,7 +523,7 @@ def _sync_main(
                 if time.time() - last_health > health_interval:
                     try:
                         h = store.get_health_stats()
-                        log.info(
+                        log.debug(
                             'Health: pending=%d in_progress=%d '
                             'completed=%d failed=%d '
                             'total_rows=%d wal_kb=%d db_kb=%d '
