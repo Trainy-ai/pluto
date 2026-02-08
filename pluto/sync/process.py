@@ -467,9 +467,11 @@ def _sync_main(
 
     parent_check_interval = 5.0
     cleanup_interval = 300.0  # Clean up completed records every 5 minutes
+    health_interval = 60.0  # Log health diagnostics every 60 seconds
     last_parent_check = time.time()
     last_flush = time.time()
     last_cleanup = time.time()
+    last_health = time.time()
 
     try:
         while not shutdown_requested['value']:
@@ -515,6 +517,34 @@ def _sync_main(
                     if deleted:
                         log.debug(f'Cleaned up {deleted} completed records')
                     last_cleanup = time.time()
+
+                # Periodic health diagnostics — makes degradation
+                # visible in logs before it escalates to failures
+                if time.time() - last_health > health_interval:
+                    try:
+                        h = store.get_health_stats()
+                        log.info(
+                            'Health: pending=%d in_progress=%d '
+                            'completed=%d failed=%d '
+                            'total_rows=%d wal_kb=%d db_kb=%d '
+                            'writes=%d avg_ms=%.1f max_ms=%.1f '
+                            'retries=%d retry_failures=%d',
+                            h['pending'],
+                            h['in_progress'],
+                            h['completed'],
+                            h['failed'],
+                            h['total_rows'],
+                            h['wal_size_kb'],
+                            h['db_size_kb'],
+                            h['write_count'],
+                            h['write_avg_ms'],
+                            h['write_max_ms'],
+                            h['retries'],
+                            h['retry_failures'],
+                        )
+                    except Exception:
+                        pass  # Health check should never crash sync
+                    last_health = time.time()
 
             except sqlite3.OperationalError as e:
                 # Transient SQLite errors (e.g. "database is locked") should not

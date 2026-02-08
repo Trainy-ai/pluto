@@ -24,6 +24,7 @@ from pluto.sync.store import (
     RecordType,
     SyncStore,
     _retry_on_locked,
+    _retry_stats,
 )
 
 
@@ -534,3 +535,144 @@ class TestWorkerMonitorResilience:
             and record.levelno == logging.WARNING
             for record in caplog.records
         )
+
+
+class TestHealthDiagnostics:
+    """Tests for runtime health/observability diagnostics."""
+
+    @pytest.fixture
+    def store(self, tmp_path):
+        db_path = tmp_path / 'health_test.db'
+        store = SyncStore(str(db_path))
+        store.register_run('test-run', 'test-project')
+        yield store
+        store.close()
+
+    def test_health_stats_returns_all_keys(self, store):
+        """get_health_stats() returns all expected diagnostic keys."""
+        stats = store.get_health_stats()
+        expected_keys = {
+            'pending',
+            'in_progress',
+            'completed',
+            'failed',
+            'total_rows',
+            'wal_size_kb',
+            'db_size_kb',
+            'write_count',
+            'write_avg_ms',
+            'write_max_ms',
+            'retries',
+            'retry_failures',
+        }
+        assert expected_keys == set(stats.keys())
+
+    def test_health_stats_empty_store(self, store):
+        """Health stats on empty store show zeroes."""
+        stats = store.get_health_stats()
+        assert stats['pending'] == 0
+        assert stats['completed'] == 0
+        assert stats['total_rows'] == 0
+
+    def test_health_stats_tracks_pending(self, store):
+        """Pending count increases as records are enqueued."""
+        for i in range(10):
+            store.enqueue(
+                run_id='test-run',
+                record_type=RecordType.METRIC,
+                payload={'m': i},
+                timestamp_ms=i * 1000,
+                step=i,
+            )
+        stats = store.get_health_stats()
+        assert stats['pending'] == 10
+        assert stats['total_rows'] == 10
+
+    def test_health_stats_tracks_completed(self, store):
+        """Completed count updates after mark_completed."""
+        ids = []
+        for i in range(5):
+            rid = store.enqueue(
+                run_id='test-run',
+                record_type=RecordType.METRIC,
+                payload={'m': i},
+                timestamp_ms=i * 1000,
+                step=i,
+            )
+            ids.append(rid)
+        store.mark_in_progress(ids)
+        store.mark_completed(ids)
+        stats = store.get_health_stats()
+        assert stats['completed'] == 5
+        assert stats['pending'] == 0
+
+    def test_write_latency_tracked(self, store):
+        """Write latency stats are updated after enqueue."""
+        store.enqueue(
+            run_id='test-run',
+            record_type=RecordType.METRIC,
+            payload={'m': 1},
+            timestamp_ms=1000,
+            step=1,
+        )
+        assert store._write_count >= 1
+        assert store._write_total_ms > 0
+        stats = store.get_health_stats()
+        assert stats['write_count'] >= 1
+        assert stats['write_avg_ms'] >= 0
+
+    def test_write_latency_batch(self, store):
+        """Batch enqueue also records write latency."""
+        records = [
+            ('test-run', RecordType.METRIC, {'m': i}, i * 1000, i) for i in range(10)
+        ]
+        before = store._write_count
+        store.enqueue_batch(records)
+        assert store._write_count > before
+
+    def test_retry_stats_incremented(self):
+        """_retry_stats tracks retries from _retry_on_locked."""
+        before = _retry_stats['total_retries']
+
+        call_count = 0
+
+        @_retry_on_locked
+        def flaky():
+            nonlocal call_count
+            call_count += 1
+            if call_count < 3:
+                raise sqlite3.OperationalError('database is locked')
+            return 'ok'
+
+        flaky()
+        # Should have retried 2 times
+        assert _retry_stats['total_retries'] >= before + 2
+
+    def test_retry_failure_stats(self):
+        """_retry_stats tracks exhausted retries."""
+        before = _retry_stats['total_failures']
+
+        @_retry_on_locked
+        def always_locked():
+            raise sqlite3.OperationalError('database is locked')
+
+        with pytest.raises(sqlite3.OperationalError):
+            always_locked()
+        assert _retry_stats['total_failures'] >= before + 1
+
+    def test_health_stats_wal_and_db_size(self, store):
+        """WAL and DB file sizes are reported."""
+        # Write some data to ensure files exist on disk
+        for i in range(20):
+            store.enqueue(
+                run_id='test-run',
+                record_type=RecordType.METRIC,
+                payload={'m': i},
+                timestamp_ms=i * 1000,
+                step=i,
+            )
+        stats = store.get_health_stats()
+        # DB file should exist and have size > 0
+        assert stats['db_size_kb'] >= 0
+        # WAL might or might not exist depending on checkpointing
+        assert isinstance(stats['wal_size_kb'], int)

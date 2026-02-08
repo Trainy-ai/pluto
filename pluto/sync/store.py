@@ -27,6 +27,13 @@ tag = 'SyncStore'
 _SQLITE_RETRY_COUNT = 5
 _SQLITE_RETRY_BASE_DELAY = 0.1  # seconds
 
+# Global counters for observability — tracks cumulative retry/failure stats
+# across the process lifetime without any thread-safety overhead (GIL-protected).
+_retry_stats = {
+    'total_retries': 0,
+    'total_failures': 0,
+}
+
 
 def _retry_on_locked(func: F) -> F:
     """Retry a method on sqlite3.OperationalError (database is locked)."""
@@ -41,6 +48,7 @@ def _retry_on_locked(func: F) -> F:
                 if 'locked' not in str(e).lower():
                     raise
                 last_error = e
+                _retry_stats['total_retries'] += 1
                 delay = _SQLITE_RETRY_BASE_DELAY * (2**attempt)
                 logger.debug(
                     '%s: %s retrying after "database is locked" '
@@ -52,6 +60,7 @@ def _retry_on_locked(func: F) -> F:
                     delay,
                 )
                 time.sleep(delay)
+        _retry_stats['total_failures'] += 1
         raise last_error  # type: ignore[misc]
 
     return wrapper  # type: ignore[return-value]
@@ -126,6 +135,7 @@ class SyncStore:
     - Separate tables for different record types
     - Sync status tracking with retry support
     - Parent process monitoring via heartbeat
+    - Health diagnostics (queue depth, write latency, WAL size)
     """
 
     SCHEMA_VERSION = 1
@@ -138,6 +148,11 @@ class SyncStore:
         self.db_path = db_path
         self.parent_pid = parent_pid
         self._lock = threading.Lock()
+
+        # Write latency tracking (running stats, no memory growth)
+        self._write_count = 0
+        self._write_total_ms = 0.0
+        self._write_max_ms = 0.0
 
         # Ensure directory exists
         Path(db_path).parent.mkdir(parents=True, exist_ok=True)
@@ -283,11 +298,13 @@ class SyncStore:
     @_retry_on_locked
     def heartbeat(self, run_id: str) -> None:
         """Update heartbeat for a run (called by training process)."""
+        start = time.time()
         with self._lock:
             self.conn.execute(
                 'UPDATE runs SET last_heartbeat = ? WHERE run_id = ?',
                 (time.time(), run_id),
             )
+        self._record_write(start)
 
     def mark_run_finished(self, run_id: str) -> None:
         """Mark a run as finished (training complete, flush pending)."""
@@ -319,7 +336,7 @@ class SyncStore:
         step: Optional[int] = None,
     ) -> int:
         """Add a record to the sync queue. Returns record ID."""
-        now = time.time()
+        start = time.time()
         payload_json = json.dumps(payload)
 
         with self._lock:
@@ -331,9 +348,11 @@ class SyncStore:
                 )
                 VALUES (?, ?, ?, ?, ?, ?)
                 """,
-                (run_id, int(record_type), payload_json, timestamp_ms, step, now),
+                (run_id, int(record_type), payload_json, timestamp_ms, step, start),
             )
-            return cursor.lastrowid or 0
+            rid = cursor.lastrowid or 0
+        self._record_write(start)
+        return rid
 
     @_retry_on_locked
     def enqueue_batch(
@@ -341,7 +360,7 @@ class SyncStore:
         records: List[Tuple[str, RecordType, Dict[str, Any], int, Optional[int]]],
     ) -> List[int]:
         """Add multiple records to the sync queue. Returns record IDs."""
-        now = time.time()
+        start = time.time()
         ids = []
 
         with self._lock:
@@ -363,7 +382,7 @@ class SyncStore:
                             payload_json,
                             timestamp_ms,
                             step,
-                            now,
+                            start,
                         ),
                     )
                     ids.append(cursor.lastrowid or 0)
@@ -372,6 +391,7 @@ class SyncStore:
                 self.conn.rollback()
                 raise
 
+        self._record_write(start)
         return ids
 
     def get_pending_records(
@@ -743,6 +763,82 @@ class SyncStore:
                     (int(SyncStatus.PENDING), int(SyncStatus.IN_PROGRESS)),
                 )
             return cursor.fetchone()[0]
+
+    def _record_write(self, start: float) -> None:
+        """Record write latency for health tracking."""
+        elapsed_ms = (time.time() - start) * 1000
+        self._write_count += 1
+        self._write_total_ms += elapsed_ms
+        if elapsed_ms > self._write_max_ms:
+            self._write_max_ms = elapsed_ms
+
+    def get_health_stats(self) -> Dict[str, Any]:
+        """Return health diagnostics for the sync database.
+
+        This is designed to be called periodically (e.g. every 60s) and
+        logged so operators can spot degradation trends before they cause
+        failures.  All values are cheap O(1) or O(count) queries.
+
+        Returns dict with keys:
+          pending       – records waiting to be synced
+          in_progress   – records currently being synced
+          completed     – completed records (not yet cleaned up)
+          failed        – records that exhausted retries
+          total_rows    – total rows in sync_queue
+          wal_size_kb   – WAL file size in KB (0 if absent)
+          db_size_kb    – main database file size in KB
+          write_count   – total writes tracked this session
+          write_avg_ms  – average write latency (ms)
+          write_max_ms  – worst-case write latency (ms)
+          retries       – cumulative lock retries (_retry_on_locked)
+          retry_failures – times retries were exhausted
+        """
+        stats: Dict[str, Any] = {}
+
+        with self._lock:
+            # Queue depth by status
+            cursor = self.conn.execute(
+                """
+                SELECT status, COUNT(*) as cnt
+                FROM sync_queue
+                GROUP BY status
+                """
+            )
+            counts = {row['status']: row['cnt'] for row in cursor.fetchall()}
+
+        stats['pending'] = counts.get(int(SyncStatus.PENDING), 0)
+        stats['in_progress'] = counts.get(int(SyncStatus.IN_PROGRESS), 0)
+        stats['completed'] = counts.get(int(SyncStatus.COMPLETED), 0)
+        stats['failed'] = counts.get(int(SyncStatus.FAILED), 0)
+        stats['total_rows'] = sum(counts.values())
+
+        # File sizes (WAL + main DB)
+        wal_path = self.db_path + '-wal'
+        try:
+            stats['wal_size_kb'] = (
+                os.path.getsize(wal_path) // 1024 if os.path.exists(wal_path) else 0
+            )
+        except OSError:
+            stats['wal_size_kb'] = 0
+        try:
+            stats['db_size_kb'] = os.path.getsize(self.db_path) // 1024
+        except OSError:
+            stats['db_size_kb'] = 0
+
+        # Write latency stats
+        stats['write_count'] = self._write_count
+        stats['write_avg_ms'] = (
+            round(self._write_total_ms / self._write_count, 1)
+            if self._write_count > 0
+            else 0.0
+        )
+        stats['write_max_ms'] = round(self._write_max_ms, 1)
+
+        # Retry stats from the decorator
+        stats['retries'] = _retry_stats['total_retries']
+        stats['retry_failures'] = _retry_stats['total_failures']
+
+        return stats
 
     def close(self) -> None:
         """Close database connection."""
