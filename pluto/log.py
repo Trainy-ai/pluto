@@ -88,7 +88,9 @@ class ConsoleHandler:
                         self.sanitizer.sanitize(line) if self.sanitizer else line
                     )
                     log_type = logging._levelToName.get(self.level, 'INFO')
-                    self._log_buffer.append((sanitized_line, log_type, timestamp_ms, self.count))
+                    self._log_buffer.append(
+                        (sanitized_line, log_type, timestamp_ms, self.count)
+                    )
                 self.logger.log(self.level, line)
         # Flush the buffer if it's large enough or old enough
         if self._log_buffer and (
