@@ -41,6 +41,12 @@ class ColorFormatter(logging.Formatter):
 
 
 class ConsoleHandler:
+    # Flush buffered console logs after this many lines or this many seconds,
+    # whichever comes first.  Keeps SQLite write pressure low while still
+    # delivering logs promptly.
+    _FLUSH_SIZE = 50
+    _FLUSH_INTERVAL = 0.2  # seconds
+
     def __init__(
         self,
         logger,
@@ -57,6 +63,20 @@ class ConsoleHandler:
         self.type = type
         self.count = 0
         self.sanitizer = sanitizer
+        self._log_buffer: list = []
+        self._last_flush = 0.0
+
+    def _flush_log_buffer(self) -> None:
+        """Flush buffered console log lines to the sync store in one batch."""
+        if not self._log_buffer or self.sync_manager is None:
+            self._log_buffer.clear()
+            return
+        try:
+            self.sync_manager.enqueue_console_batch(self._log_buffer)
+        except Exception as e:
+            logger.debug('Failed to flush console log buffer: %s', e)
+        self._log_buffer.clear()
+        self._last_flush = time.time()
 
     def write(self, buf: str) -> None:
         for line in buf.splitlines():
@@ -68,17 +88,19 @@ class ConsoleHandler:
                         self.sanitizer.sanitize(line) if self.sanitizer else line
                     )
                     log_type = logging._levelToName.get(self.level, 'INFO')
-                    self.sync_manager.enqueue_console_log(
-                        message=sanitized_line,
-                        log_type=log_type,
-                        timestamp_ms=timestamp_ms,
-                        line_number=self.count,
-                    )
+                    self._log_buffer.append((sanitized_line, log_type, timestamp_ms, self.count))
                 self.logger.log(self.level, line)
+        # Flush the buffer if it's large enough or old enough
+        if self._log_buffer and (
+            len(self._log_buffer) >= self._FLUSH_SIZE
+            or time.time() - self._last_flush >= self._FLUSH_INTERVAL
+        ):
+            self._flush_log_buffer()
         self.stream.write(buf)
         self.stream.flush()
 
     def flush(self):
+        self._flush_log_buffer()
         self.stream.flush()
 
     def __getattr__(self, attr):

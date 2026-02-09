@@ -3,6 +3,7 @@ import logging
 import os
 import queue
 import signal
+import sqlite3
 import sys
 import threading
 import time
@@ -26,6 +27,7 @@ from .iface import ServerInterface
 from .log import setup_logger, teardown_logger
 from .store import DataStore
 from .sync import SyncProcessManager
+from .sync.store import HEALTH_METRIC_KEYS
 from .sys import System
 from .util import get_char, get_val, print_url, to_json
 
@@ -227,6 +229,8 @@ class OpMonitor:
                     if hasattr(r, 'json') and r.json()['status'] == 'CANCELLED':
                         logger.critical(f'{tag}: server finished run')
                         os._exit(signal.SIGINT.value)  # TODO: do a more graceful exit
+            except sqlite3.OperationalError as e:
+                logger.warning('%s: transient database error (will retry): %s', tag, e)
             except Exception as e:
                 logger.critical('%s: failed: %s', tag, e)
             time.sleep(self.op.settings.x_sys_sampling_interval)
@@ -369,6 +373,9 @@ class Op:
             sys_metric_names = list(
                 make_compat_monitor_v1(self.settings._sys.monitor()).keys()
             )
+            # Include sync health metrics so they appear on the dashboard
+            if self._sync_manager is not None:
+                sys_metric_names += [f'sys/pluto.{k}' for k in HEALTH_METRIC_KEYS]
             self._iface._update_meta(sys_metric_names)
 
         # Print URL where users can view the run
@@ -394,7 +401,14 @@ class Op:
         """Log run data"""
         # Use sync process if enabled (default: uploads data to server)
         if self._sync_manager is not None:
-            self._log_via_sync(data=data, step=step)
+            try:
+                self._log_via_sync(data=data, step=step)
+            except sqlite3.OperationalError as e:
+                # Never let a transient SQLite error crash the user's training.
+                # The data for this step is lost, but training continues.
+                logger.warning(
+                    '%s: dropping log data due to database error: %s', tag, e
+                )
         elif self.settings.mode == 'perf':
             self._queue.put((data, step), block=False)
         else:
@@ -825,6 +839,9 @@ class Op:
                 )
             except queue.Empty:
                 continue
+            except sqlite3.OperationalError as e:
+                logger.warning('%s: transient database error (will retry): %s', tag, e)
+                time.sleep(self.settings.x_internal_check_process)  # debounce
             except Exception as e:
                 time.sleep(self.settings.x_internal_check_process)  # debounce
                 logger.critical('%s: failed: %s', tag, e)

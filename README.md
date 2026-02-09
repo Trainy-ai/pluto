@@ -1,24 +1,20 @@
 [![pypi](https://img.shields.io/pypi/v/pluto-ml)](https://pypi.org/project/pluto-ml/)
 
-## THIS README/REPO IS CURRENTLY UNDER CONSTRUCTION WHILE WE UPDATE THE REFERENCES IN OUR FORK
+**Pluto** is an experiment tracking platform. It provides [self-hostable superior experimental tracking capabilities and lifecycle management for training ML models](https://docs.trainy.ai/pluto). To take an interactive look, [try out our demo environment](https://demo.pluto.trainy.ai/o/dev-org) or [get an account with us today](https://pluto.trainy.ai/auth/sign-up)!
 
-**Pluto** is a Machine Learning Operations (MLOps) framework. It provides [self-hostable superior experimental tracking capabilities and lifecycle management for training ML models](https://docs.trainy.ai/pluto). To get started, [try out our introductory notebook](https://colab.research.google.com/github/Trainy-ai/pluto/blob/main/examples/intro.ipynb) or [get an account with us today](https://pluto.trainy.ai/auth/sign-up)!
+## See it in action
 
-## 🎥 Demo
-
-**Pluto** adopts a KISS philosophy that allows it to outperform all other tools in this category. Supporting high and stable data throughput should be *THE* top priority for efficient MLOps.
-<video loop src='https://github.com/user-attachments/assets/efd9720e-6128-4278-85ec-ee6139a851af' alt="demo" width="1200" style="display: block; margin: auto;"></video>
-
-<p align="center">
-<strong>Pluto</strong> logger (bottom left) v. a conventional logger (bottom right)
-</p>
+https://github.com/user-attachments/assets/6aff6448-00b6-41f2-adf4-4b7aa853ede6
 
 ## 🚀 Getting Started
 
-- Try **Pluto** on our platform in [a notebook](https://colab.research.google.com/github/Trainy-ai/pluto/blob/main/examples/intro.ipynb) & start integrating in just 5 lines of Python code:
+Install the `pluto-ml` sdk
+
+```bash
+pip install -Uq "pluto-ml[full]"
+```
 
 ```python
-%pip install -Uq "pluto-ml[full]"
 import pluto
 
 pluto.init(project="hello-world")
@@ -37,6 +33,14 @@ sudo docker-compose --env-file .env up --build
 You may also learn more about **Pluto** by checking out our [documentation](https://docs.trainy.ai/pluto).
 
 <!-- You can try everything out in our [introductory tutorial](https://colab.research.google.com/github/Trainy-ai/pluto/blob/main/examples/intro.ipynb) and [torch tutorial](https://colab.research.google.com/github/Trainy-ai/pluto/blob/main/examples/torch.ipynb). -->
+
+## Migration
+
+### Neptune
+
+Want to move your run data from Neptune to Pluto. Checkout the official docs from the Neptune transition hub [here](https://docs.neptune.ai/transition_hub/migration/to_pluto).
+
+Before committing to Pluto, you want to see if there's parity between your Neptune and Pluto views? See our compatibility module documented [here](https://docs.trainy.ai/pluto/neptune-migration). Log to both Neptune and Pluto with a single import statement and no code changes.
 
 ## 🛠️ Development Setup
 
