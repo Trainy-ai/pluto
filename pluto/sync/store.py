@@ -23,6 +23,24 @@ F = TypeVar('F', bound=Callable[..., Any])
 logger = logging.getLogger(f'{__name__.split(".")[0]}')
 tag = 'SyncStore'
 
+# Metric names uploaded to the server as sys/sync.* for dashboard display.
+# Defined once here so Op.start() can register them and _sync_main can report them.
+HEALTH_METRIC_KEYS = [
+    'pending',
+    'in_progress',
+    'completed',
+    'failed',
+    'total_rows',
+    'lag_s',
+    'wal_size_kb',
+    'db_size_kb',
+    'write_count',
+    'write_avg_ms',
+    'write_max_ms',
+    'retries',
+    'retry_failures',
+]
+
 # Default number of retries for transient SQLite errors (database is locked)
 _SQLITE_RETRY_COUNT = 5
 _SQLITE_RETRY_BASE_DELAY = 0.1  # seconds

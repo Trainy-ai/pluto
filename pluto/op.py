@@ -27,6 +27,7 @@ from .iface import ServerInterface
 from .log import setup_logger, teardown_logger
 from .store import DataStore
 from .sync import SyncProcessManager
+from .sync.store import HEALTH_METRIC_KEYS
 from .sys import System
 from .util import get_char, get_val, print_url, to_json
 
@@ -372,6 +373,9 @@ class Op:
             sys_metric_names = list(
                 make_compat_monitor_v1(self.settings._sys.monitor()).keys()
             )
+            # Include sync health metrics so they appear on the dashboard
+            if self._sync_manager is not None:
+                sys_metric_names += [f'sys/sync.{k}' for k in HEALTH_METRIC_KEYS]
             self._iface._update_meta(sys_metric_names)
 
         # Print URL where users can view the run

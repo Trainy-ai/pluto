@@ -544,6 +544,7 @@ def _sync_main(
                             h['retries'],
                             h['retry_failures'],
                         )
+                        uploader.upload_health_stats(h)
                     except Exception:
                         pass  # Health check should never crash sync
                     last_health = time.time()
@@ -1013,6 +1014,21 @@ class _SyncUploader:
             return
 
         body = '\n'.join(lines) + '\n'
+        self._post_with_retry(self.url_num, body, self._get_headers())
+
+    def upload_health_stats(self, stats: Dict[str, Any]) -> None:
+        """Upload sync health diagnostics as sys/ metrics.
+
+        Posts directly to the numeric endpoint — bypasses SQLite entirely
+        to avoid circular write pressure from the health check itself.
+        """
+        if not self.url_num:
+            return
+
+        data = {f'sys/sync.{k}': v for k, v in stats.items()}
+        timestamp_ms = int(time.time() * 1000)
+        body = json.dumps({'time': timestamp_ms, 'step': 0, 'data': data})
+        body = body + '\n'
         self._post_with_retry(self.url_num, body, self._get_headers())
 
     def upload_data_batch(self, records: List[SyncRecord]) -> None:
