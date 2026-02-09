@@ -23,7 +23,7 @@ F = TypeVar('F', bound=Callable[..., Any])
 logger = logging.getLogger(f'{__name__.split(".")[0]}')
 tag = 'SyncStore'
 
-# Metric names uploaded to the server as sys/sync.* for dashboard display.
+# Metric names uploaded to the server as sys/pluto.* for dashboard display.
 # Defined once here so Op.start() can register them and _sync_main can report them.
 HEALTH_METRIC_KEYS = [
     'pending',
@@ -316,7 +316,7 @@ class SyncStore:
     @_retry_on_locked
     def heartbeat(self, run_id: str) -> None:
         """Update heartbeat for a run (called by training process)."""
-        start = time.time()
+        start = time.perf_counter()
         with self._lock:
             self.conn.execute(
                 'UPDATE runs SET last_heartbeat = ? WHERE run_id = ?',
@@ -354,7 +354,8 @@ class SyncStore:
         step: Optional[int] = None,
     ) -> int:
         """Add a record to the sync queue. Returns record ID."""
-        start = time.time()
+        start = time.perf_counter()
+        now = time.time()
         payload_json = json.dumps(payload)
 
         with self._lock:
@@ -366,7 +367,7 @@ class SyncStore:
                 )
                 VALUES (?, ?, ?, ?, ?, ?)
                 """,
-                (run_id, int(record_type), payload_json, timestamp_ms, step, start),
+                (run_id, int(record_type), payload_json, timestamp_ms, step, now),
             )
             rid = cursor.lastrowid or 0
         self._record_write(start)
@@ -378,7 +379,8 @@ class SyncStore:
         records: List[Tuple[str, RecordType, Dict[str, Any], int, Optional[int]]],
     ) -> List[int]:
         """Add multiple records to the sync queue. Returns record IDs."""
-        start = time.time()
+        start = time.perf_counter()
+        now = time.time()
         ids = []
 
         with self._lock:
@@ -400,7 +402,7 @@ class SyncStore:
                             payload_json,
                             timestamp_ms,
                             step,
-                            start,
+                            now,
                         ),
                     )
                     ids.append(cursor.lastrowid or 0)
@@ -784,7 +786,7 @@ class SyncStore:
 
     def _record_write(self, start: float) -> None:
         """Record write latency for health tracking."""
-        elapsed_ms = (time.time() - start) * 1000
+        elapsed_ms = (time.perf_counter() - start) * 1000
         self._write_count += 1
         self._write_total_ms += elapsed_ms
         if elapsed_ms > self._write_max_ms:
@@ -859,11 +861,11 @@ class SyncStore:
         # Write latency stats
         stats['write_count'] = self._write_count
         stats['write_avg_ms'] = (
-            round(self._write_total_ms / self._write_count, 1)
+            round(self._write_total_ms / self._write_count, 3)
             if self._write_count > 0
             else 0.0
         )
-        stats['write_max_ms'] = round(self._write_max_ms, 1)
+        stats['write_max_ms'] = round(self._write_max_ms, 3)
 
         # Retry stats from the decorator
         stats['retries'] = _retry_stats['total_retries']

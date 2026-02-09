@@ -908,7 +908,7 @@ class TestUploadHealthStats:
     """Tests for _SyncUploader.upload_health_stats()."""
 
     def test_upload_posts_prefixed_metrics(self):
-        """upload_health_stats sends sys/sync.* keys to url_num."""
+        """upload_health_stats sends sys/pluto.* keys to url_num."""
         from pluto.sync.process import _SyncUploader
 
         uploader = _SyncUploader(
@@ -940,10 +940,10 @@ class TestUploadHealthStats:
         payload = json.loads(captured['body'].strip())
         assert payload['step'] == 0
         assert 'time' in payload
-        assert payload['data']['sys/sync.pending'] == 10
-        assert payload['data']['sys/sync.lag_s'] == 5.2
-        assert payload['data']['sys/sync.write_avg_ms'] == 3.1
-        assert payload['data']['sys/sync.retries'] == 2
+        assert payload['data']['sys/pluto.pending'] == 10
+        assert payload['data']['sys/pluto.lag_s'] == 5.2
+        assert payload['data']['sys/pluto.write_avg_ms'] == 3.1
+        assert payload['data']['sys/pluto.retries'] == 2
 
     def test_upload_skipped_when_no_url(self):
         """upload_health_stats is a no-op when url_num is empty."""
@@ -990,21 +990,21 @@ class TestUploadHealthStats:
         payload = json.loads(captured['body'].strip())
         data = payload['data']
         for key in HEALTH_METRIC_KEYS:
-            assert f'sys/sync.{key}' in data, f'Missing sys/sync.{key}'
+            assert f'sys/pluto.{key}' in data, f'Missing sys/pluto.{key}'
 
 
 class TestHealthMetricRegistration:
     """Tests that sync health metrics are registered with the server."""
 
     def test_health_metrics_registered_in_op_start(self):
-        """Op.start() should register sys/sync.* names via _update_meta."""
+        """Op.start() should register sys/pluto.* names via _update_meta."""
         # Verify the registration list is correct
-        expected = [f'sys/sync.{k}' for k in HEALTH_METRIC_KEYS]
+        expected = [f'sys/pluto.{k}' for k in HEALTH_METRIC_KEYS]
         assert len(expected) == 13
-        assert 'sys/sync.pending' in expected
-        assert 'sys/sync.lag_s' in expected
-        assert 'sys/sync.write_avg_ms' in expected
-        assert 'sys/sync.retries' in expected
+        assert 'sys/pluto.pending' in expected
+        assert 'sys/pluto.lag_s' in expected
+        assert 'sys/pluto.write_avg_ms' in expected
+        assert 'sys/pluto.retries' in expected
 
     def test_health_keys_not_empty(self):
         """HEALTH_METRIC_KEYS should contain entries."""

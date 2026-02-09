@@ -375,7 +375,7 @@ class Op:
             )
             # Include sync health metrics so they appear on the dashboard
             if self._sync_manager is not None:
-                sys_metric_names += [f'sys/sync.{k}' for k in HEALTH_METRIC_KEYS]
+                sys_metric_names += [f'sys/pluto.{k}' for k in HEALTH_METRIC_KEYS]
             self._iface._update_meta(sys_metric_names)
 
         # Print URL where users can view the run

@@ -1025,7 +1025,7 @@ class _SyncUploader:
         if not self.url_num:
             return
 
-        data = {f'sys/sync.{k}': v for k, v in stats.items()}
+        data = {f'sys/pluto.{k}': v for k, v in stats.items()}
         timestamp_ms = int(time.time() * 1000)
         body = json.dumps({'time': timestamp_ms, 'step': 0, 'data': data})
         body = body + '\n'

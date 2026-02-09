@@ -71,8 +71,8 @@ class ConsoleHandler:
             return
         try:
             self.sync_manager.enqueue_console_batch(self._log_buffer)
-        except Exception:
-            pass  # Never break stdout/stderr on sync errors
+        except Exception as e:
+            logger.debug('Failed to flush console log buffer: %s', e)
         self._log_buffer.clear()
         self._last_flush = time.time()
 
