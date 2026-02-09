@@ -341,9 +341,7 @@ class System:
         ib_counters = self.get_infiniband_counters()
 
         # Combine all counters for rate calculation
-        all_counters: Dict[str, float] = {
-            k: float(v) for k, v in net_counters.items()
-        }
+        all_counters: Dict[str, float] = {k: float(v) for k, v in net_counters.items()}
         all_counters.update({k: float(v) for k, v in ib_counters.items()})
 
         # Calculate rates (bytes/sec, packets/sec)
