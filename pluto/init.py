@@ -1,4 +1,5 @@
 import logging
+import os
 from typing import Any, Dict, Optional, Union
 
 import pluto
@@ -104,6 +105,15 @@ def init(
     # Parameter takes precedence over environment variable (already handled in setup())
     if run_id is not None:
         settings._external_id = run_id
+
+    # Auto-add 'konduktor' tag when running inside a Konduktor job
+    if os.environ.get('KONDUKTOR_JOB_NAME'):
+        if tags is None:
+            tags = ['konduktor']
+        elif isinstance(tags, str):
+            tags = [tags, 'konduktor'] if tags != 'konduktor' else [tags]
+        elif 'konduktor' not in tags:
+            tags = list(tags) + ['konduktor']
 
     # Normalize tags before passing to Op
     normalized_tags = None
