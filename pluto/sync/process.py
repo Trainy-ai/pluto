@@ -526,7 +526,8 @@ def _sync_main(
                         log.debug(
                             'Health: pending=%d in_progress=%d '
                             'completed=%d failed=%d '
-                            'total_rows=%d wal_kb=%d db_kb=%d '
+                            'total_rows=%d lag_s=%.1f '
+                            'wal_kb=%d db_kb=%d '
                             'writes=%d avg_ms=%.1f max_ms=%.1f '
                             'retries=%d retry_failures=%d',
                             h['pending'],
@@ -534,6 +535,7 @@ def _sync_main(
                             h['completed'],
                             h['failed'],
                             h['total_rows'],
+                            h['lag_s'],
                             h['wal_size_kb'],
                             h['db_size_kb'],
                             h['write_count'],

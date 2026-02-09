@@ -557,6 +557,7 @@ class TestHealthDiagnostics:
             'completed',
             'failed',
             'total_rows',
+            'lag_s',
             'wal_size_kb',
             'db_size_kb',
             'write_count',
@@ -573,6 +574,34 @@ class TestHealthDiagnostics:
         assert stats['pending'] == 0
         assert stats['completed'] == 0
         assert stats['total_rows'] == 0
+        assert stats['lag_s'] == 0.0
+
+    def test_lag_tracks_oldest_pending_record(self, store):
+        """lag_s reflects the age of the oldest pending record."""
+        store.enqueue(
+            run_id='test-run',
+            record_type=RecordType.METRIC,
+            payload={'m': 1},
+            timestamp_ms=1000,
+            step=1,
+        )
+        stats = store.get_health_stats()
+        # Just created, so lag should be very small (< 2s)
+        assert 0 <= stats['lag_s'] < 2.0
+
+    def test_lag_zero_when_no_pending(self, store):
+        """lag_s is 0 when all records have been completed."""
+        rid = store.enqueue(
+            run_id='test-run',
+            record_type=RecordType.METRIC,
+            payload={'m': 1},
+            timestamp_ms=1000,
+            step=1,
+        )
+        store.mark_in_progress([rid])
+        store.mark_completed([rid])
+        stats = store.get_health_stats()
+        assert stats['lag_s'] == 0.0
 
     def test_health_stats_tracks_pending(self, store):
         """Pending count increases as records are enqueued."""

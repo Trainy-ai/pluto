@@ -785,6 +785,7 @@ class SyncStore:
           completed     – completed records (not yet cleaned up)
           failed        – records that exhausted retries
           total_rows    – total rows in sync_queue
+          lag_s         – age of oldest pending record in seconds (0 if none)
           wal_size_kb   – WAL file size in KB (0 if absent)
           db_size_kb    – main database file size in KB
           write_count   – total writes tracked this session
@@ -794,6 +795,7 @@ class SyncStore:
           retry_failures – times retries were exhausted
         """
         stats: Dict[str, Any] = {}
+        now = time.time()
 
         with self._lock:
             # Queue depth by status
@@ -805,6 +807,17 @@ class SyncStore:
                 """
             )
             counts = {row['status']: row['cnt'] for row in cursor.fetchall()}
+
+            # Lag: age of oldest pending record
+            cursor = self.conn.execute(
+                """
+                SELECT MIN(created_at) FROM sync_queue
+                WHERE status = ?
+                """,
+                (int(SyncStatus.PENDING),),
+            )
+            oldest = cursor.fetchone()[0]
+            stats['lag_s'] = round(now - oldest, 1) if oldest else 0.0
 
         stats['pending'] = counts.get(int(SyncStatus.PENDING), 0)
         stats['in_progress'] = counts.get(int(SyncStatus.IN_PROGRESS), 0)
