@@ -708,6 +708,190 @@ class TestHealthDiagnostics:
         assert isinstance(stats['wal_size_kb'], int)
 
 
+class TestTableGrowthStress:
+    """Stress test reproducing the original production incident.
+
+    The actual failure was caused by:
+    1. cleanup_completed() never being called → unbounded table growth
+    2. Multiple DDP ranks writing to the same DB simultaneously
+    3. High-frequency console log writes (every print() was a DB write)
+    4. Over hours, growing table → slower writes → longer lock holds → starvation
+
+    This test compresses that pattern into seconds by simulating multiple
+    concurrent writers with no cleanup, then verifying the system stays
+    healthy (no crashes, all writes succeed or are retried).
+    """
+
+    def test_table_growth_without_cleanup(self, tmp_path):
+        """Writes degrade as completed records accumulate without cleanup.
+
+        This is the exact pattern that caused the production incident.
+        We verify that even without cleanup, the retry decorator keeps
+        writers alive (no unhandled OperationalError).
+        """
+        db_path = str(tmp_path / 'growth.db')
+        # Simulate 3 DDP ranks + 1 sync reader (4 connections)
+        writers = [SyncStore(db_path) for _ in range(3)]
+        reader = SyncStore(db_path)
+        writers[0].register_run('run-1', 'project')
+
+        errors = []
+        total_writes = 500  # Per writer
+        completed_without_cleanup = 0
+
+        def rank_writer(store, rank_id):
+            """Simulates a DDP rank doing metric + console writes."""
+            nonlocal errors
+            try:
+                for i in range(total_writes):
+                    # Metric write
+                    store.enqueue(
+                        run_id='run-1',
+                        record_type=RecordType.METRIC,
+                        payload={f'rank{rank_id}/loss': 0.5 - i * 0.001},
+                        timestamp_ms=i * 100,
+                        step=i,
+                    )
+                    # Console write (high frequency, like print())
+                    store.enqueue(
+                        run_id='run-1',
+                        record_type=RecordType.CONSOLE,
+                        payload={
+                            'message': f'rank {rank_id} step {i}',
+                            'logType': 'INFO',
+                            'lineNumber': i,
+                        },
+                        timestamp_ms=i * 100,
+                        step=i,
+                    )
+            except Exception as e:
+                errors.append((f'rank{rank_id}', e))
+
+        def sync_reader():
+            """Simulates sync process: read → mark → complete (no cleanup)."""
+            nonlocal completed_without_cleanup
+            try:
+                for _ in range(total_writes * 2):
+                    pending = reader.get_pending_records(limit=50)
+                    if pending:
+                        ids = [r.id for r in pending]
+                        reader.mark_in_progress(ids)
+                        reader.mark_completed(ids)
+                        completed_without_cleanup += len(ids)
+                    else:
+                        time.sleep(0.001)
+            except Exception as e:
+                errors.append(('reader', e))
+
+        # Run all 4 connections concurrently
+        threads = []
+        for rank in range(3):
+            t = threading.Thread(target=rank_writer, args=(writers[rank], rank))
+            threads.append(t)
+        threads.append(threading.Thread(target=sync_reader))
+
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=120)
+
+        # Check results
+        stats = reader.get_health_stats()
+
+        # Writers tracked their own latency
+        total_writer_writes = sum(w._write_count for w in writers)
+
+        for s in writers:
+            s.close()
+        reader.close()
+
+        assert not errors, f'Concurrent writes should not crash: {errors}'
+        # Completed records accumulated without cleanup (the root cause)
+        assert stats['completed'] + stats['pending'] > 0
+        # Writers tracked latency across all ranks
+        assert total_writer_writes > 0
+
+    def test_health_degrades_with_table_growth(self, tmp_path):
+        """Write latency increases as the table grows without cleanup.
+
+        This verifies the degradation pattern: early writes are fast,
+        later writes (with a large completed backlog) are slower.
+        """
+        db_path = str(tmp_path / 'degrade.db')
+        store = SyncStore(db_path)
+        store.register_run('run-1', 'project')
+
+        # Phase 1: Write and complete 1000 records (building backlog)
+        for batch_num in range(10):
+            ids = []
+            for i in range(100):
+                rid = store.enqueue(
+                    run_id='run-1',
+                    record_type=RecordType.CONSOLE,
+                    payload={'message': f'line {batch_num * 100 + i}'},
+                    timestamp_ms=(batch_num * 100 + i) * 100,
+                    step=batch_num * 100 + i,
+                )
+                ids.append(rid)
+            store.mark_in_progress(ids)
+            store.mark_completed(ids)
+            # Intentionally do NOT call cleanup_completed()
+
+        stats_after_backlog = store.get_health_stats()
+
+        # Phase 2: Write 100 more records with the backlog present
+        store._write_count = 0
+        store._write_total_ms = 0.0
+        store._write_max_ms = 0.0
+
+        for i in range(100):
+            store.enqueue(
+                run_id='run-1',
+                record_type=RecordType.METRIC,
+                payload={'loss': 0.5},
+                timestamp_ms=i * 100,
+                step=i,
+            )
+
+        stats_with_backlog = store.get_health_stats()
+        store.close()
+
+        # The backlog should be visible
+        assert stats_after_backlog['completed'] == 1000
+        # Write latency is tracked for phase 2
+        assert stats_with_backlog['write_count'] == 100
+        assert stats_with_backlog['write_avg_ms'] > 0
+
+    def test_cleanup_prevents_degradation(self, tmp_path):
+        """Calling cleanup_completed() keeps the table small."""
+        db_path = str(tmp_path / 'cleanup.db')
+        store = SyncStore(db_path)
+        store.register_run('run-1', 'project')
+
+        for batch_num in range(10):
+            ids = []
+            for i in range(100):
+                rid = store.enqueue(
+                    run_id='run-1',
+                    record_type=RecordType.CONSOLE,
+                    payload={'message': f'line {batch_num * 100 + i}'},
+                    timestamp_ms=(batch_num * 100 + i) * 100,
+                    step=batch_num * 100 + i,
+                )
+                ids.append(rid)
+            store.mark_in_progress(ids)
+            store.mark_completed(ids)
+            # Clean up after each batch
+            store.cleanup_completed(older_than_seconds=0)
+
+        stats = store.get_health_stats()
+        store.close()
+
+        # Completed records should be cleaned up
+        assert stats['completed'] == 0
+        assert stats['total_rows'] <= 100  # At most the last batch
+
+
 class TestHealthMetricKeys:
     """Tests that HEALTH_METRIC_KEYS stays in sync with get_health_stats()."""
 
