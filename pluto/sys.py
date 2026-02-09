@@ -18,6 +18,10 @@ class System:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
 
+        # State tracking for rate calculations
+        self._prev_counters: Dict[str, float] = {}
+        self._prev_timestamp: Optional[float] = None
+
         self.uname: Dict[str, str] = platform.uname()._asdict()
         self.timezone: List[str] = list(time.tzname)
 
@@ -182,6 +186,116 @@ class System:
             )
         return d
 
+    def _calc_rate(
+        self,
+        current: Dict[str, float],
+        timestamp: float,
+    ) -> Dict[str, float]:
+        """
+        Calculate rates (per-second) for counter metrics.
+
+        Similar to Prometheus rate() function, computes the per-second rate
+        of change between the current and previous sample.
+
+        Args:
+            current: Dict of current counter values
+            timestamp: Current timestamp in seconds
+
+        Returns:
+            Dict of rate values (units per second)
+        """
+        rates: Dict[str, float] = {}
+
+        if self._prev_timestamp is None:
+            # First sample - store values but can't compute rate yet
+            self._prev_counters = current.copy()
+            self._prev_timestamp = timestamp
+            return rates
+
+        dt = timestamp - self._prev_timestamp
+        if dt <= 0:
+            return rates
+
+        for key, value in current.items():
+            prev_value = self._prev_counters.get(key)
+            if prev_value is not None:
+                # Handle counter reset (e.g., process restart or OS reset)
+                if value >= prev_value:
+                    delta = value - prev_value
+                else:
+                    # Counter reset to zero - use current value as delta (approximation)
+                    delta = value
+                rates[key] = delta / dt
+
+        # Update previous values
+        self._prev_counters = current.copy()
+        self._prev_timestamp = timestamp
+
+        return rates
+
+    def get_infiniband_counters(self) -> Dict[str, int]:
+        """
+        Read InfiniBand port counters from sysfs.
+
+        Returns counters for all InfiniBand devices and ports found at
+        /sys/class/infiniband/*/ports/*/counters/
+
+        Key counters:
+        - port_rcv_data: Bytes received (raw is 4-byte words, converted)
+        - port_xmit_data: Bytes transmitted (raw is 4-byte words, converted)
+        - port_rcv_packets: Packets received
+        - port_xmit_packets: Packets transmitted
+
+        Returns:
+            Dict with keys like 'ib.<device>.<port>.rcv_bytes', etc.
+        """
+        counters: Dict[str, int] = {}
+        ib_base = '/sys/class/infiniband'
+
+        if not os.path.exists(ib_base):
+            return counters
+
+        try:
+            for device in os.listdir(ib_base):
+                ports_dir = os.path.join(ib_base, device, 'ports')
+                if not os.path.isdir(ports_dir):
+                    continue
+
+                for port in os.listdir(ports_dir):
+                    counters_dir = os.path.join(ports_dir, port, 'counters')
+                    if not os.path.isdir(counters_dir):
+                        continue
+
+                    prefix = f'ib.{device}.{port}'
+
+                    # Read data and packet counters
+                    counters_to_read = [
+                        ('port_rcv_data', 'rcv_bytes', 4),
+                        ('port_xmit_data', 'xmit_bytes', 4),
+                        ('port_rcv_packets', 'rcv_packets', 1),
+                        ('port_xmit_packets', 'xmit_packets', 1),
+                    ]
+
+                    for counter_name, metric_name, multiplier in counters_to_read:
+                        counter_path = os.path.join(counters_dir, counter_name)
+                        if os.path.exists(counter_path):
+                            try:
+                                with open(counter_path, 'r') as f:
+                                    value = int(f.read().strip())
+                                    key = f'{prefix}.{metric_name}'
+                                    counters[key] = value * multiplier
+                            except (IOError, ValueError) as e:
+                                logger.debug(
+                                    '%s: failed to read IB counter %s: %s',
+                                    tag,
+                                    counter_path,
+                                    e,
+                                )
+        except OSError as e:
+            logger.debug('%s: failed to enumerate InfiniBand devices: %s', tag, e)
+
+        return counters
+
     def get_info(self) -> Dict[str, Any]:
         d: Dict[str, Any] = {
             'process': {
@@ -225,6 +339,25 @@ class System:
 
     def monitor(self) -> Dict[str, Union[int, float]]:
         p = self.settings.x_sys_label
+        now = time.time()
+
+        # Collect network counters
+        net_io = psutil.net_io_counters()._asdict()
+        net_counters = {
+            f'net.{k}': v for k, v in net_io.items() if k.startswith('bytes')
+        }
+
+        # Collect InfiniBand counters
+        ib_counters = self.get_infiniband_counters()
+
+        # Combine all counters for rate calculation
+        all_counters: Dict[str, float] = {k: float(v) for k, v in net_counters.items()}
+        all_counters.update({k: float(v) for k, v in ib_counters.items()})
+
+        # Calculate rates (bytes/sec, packets/sec)
+        rates = self._calc_rate(all_counters, now)
+
+        # Build output dict
         d: Dict[str, Union[int, float]] = {
             **{
                 f'{p}/cpu.pct.{i}': v
@@ -240,11 +373,12 @@ class System:
                 for k, v in psutil.disk_usage(self.settings.get_dir())._asdict().items()
                 if k in ('used',)
             },
-            **{
-                f'{p}/net.{k}': v
-                for k, v in psutil.net_io_counters()._asdict().items()
-                if k.startswith('bytes')
-            },
+            # Raw network counters (cumulative)
+            **{f'{p}/{k}': v for k, v in net_counters.items()},
+            # InfiniBand counters (cumulative)
+            **{f'{p}/{k}': v for k, v in ib_counters.items()},
+            # Network and InfiniBand rates (bytes/sec or packets/sec)
+            **{f'{p}/{k}.rate': v for k, v in rates.items()},
         }
         if self.gpu:
             if self.gpu.get('nvidia'):
