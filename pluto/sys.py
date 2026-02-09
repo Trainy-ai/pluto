@@ -209,11 +209,11 @@ class System:
         for key, value in current.items():
             prev_value = self._prev_counters.get(key)
             if prev_value is not None:
-                # Handle counter wrap-around (assume 64-bit counters)
+                # Handle counter reset (e.g., process restart or OS reset)
                 if value >= prev_value:
                     delta = value - prev_value
                 else:
-                    # Counter wrapped - use current value as delta (approximation)
+                    # Counter reset to zero - use current value as delta (approximation)
                     delta = value
                 rates[key] = delta / dt
 
@@ -258,39 +258,22 @@ class System:
 
                     prefix = f'ib.{device}.{port}'
 
-                    # Read data counters (in 4-byte words, convert to bytes)
-                    for counter_name, metric_name in [
-                        ('port_rcv_data', 'rcv_bytes'),
-                        ('port_xmit_data', 'xmit_bytes'),
-                    ]:
-                        counter_path = os.path.join(counters_dir, counter_name)
-                        if os.path.exists(counter_path):
-                            try:
-                                with open(counter_path, 'r') as f:
-                                    # Convert from 4-byte words to bytes
-                                    counters[f'{prefix}.{metric_name}'] = (
-                                        int(f.read().strip()) * 4
-                                    )
-                            except (IOError, ValueError) as e:
-                                logger.debug(
-                                    '%s: failed to read IB counter %s: %s',
-                                    tag,
-                                    counter_path,
-                                    e,
-                                )
+                    # Read data and packet counters
+                    counters_to_read = [
+                        ('port_rcv_data', 'rcv_bytes', 4),
+                        ('port_xmit_data', 'xmit_bytes', 4),
+                        ('port_rcv_packets', 'rcv_packets', 1),
+                        ('port_xmit_packets', 'xmit_packets', 1),
+                    ]
 
-                    # Read packet counters (already in packets)
-                    for counter_name, metric_name in [
-                        ('port_rcv_packets', 'rcv_packets'),
-                        ('port_xmit_packets', 'xmit_packets'),
-                    ]:
+                    for counter_name, metric_name, multiplier in counters_to_read:
                         counter_path = os.path.join(counters_dir, counter_name)
                         if os.path.exists(counter_path):
                             try:
                                 with open(counter_path, 'r') as f:
-                                    counters[f'{prefix}.{metric_name}'] = int(
-                                        f.read().strip()
-                                    )
+                                    value = int(f.read().strip())
+                                    key = f'{prefix}.{metric_name}'
+                                    counters[key] = value * multiplier
                             except (IOError, ValueError) as e:
                                 logger.debug(
                                     '%s: failed to read IB counter %s: %s',
@@ -358,9 +341,10 @@ class System:
         ib_counters = self.get_infiniband_counters()
 
         # Combine all counters for rate calculation
-        all_counters: Dict[str, float] = {**net_counters}
-        for k, v in ib_counters.items():
-            all_counters[k] = float(v)
+        all_counters: Dict[str, float] = {
+            k: float(v) for k, v in net_counters.items()
+        }
+        all_counters.update({k: float(v) for k, v in ib_counters.items()})
 
         # Calculate rates (bytes/sec, packets/sec)
         rates = self._calc_rate(all_counters, now)
@@ -383,12 +367,10 @@ class System:
             },
             # Raw network counters (cumulative)
             **{f'{p}/{k}': v for k, v in net_counters.items()},
-            # Network rates (bytes/sec)
-            **{f'{p}/{k}.rate': v for k, v in rates.items() if k.startswith('net.')},
             # InfiniBand counters (cumulative)
             **{f'{p}/{k}': v for k, v in ib_counters.items()},
-            # InfiniBand rates (bytes/sec or packets/sec)
-            **{f'{p}/{k}.rate': v for k, v in rates.items() if k.startswith('ib.')},
+            # Network and InfiniBand rates (bytes/sec or packets/sec)
+            **{f'{p}/{k}.rate': v for k, v in rates.items()},
         }
         if self.gpu:
             if self.gpu.get('nvidia'):
