@@ -16,6 +16,7 @@ import json
 import logging
 import os
 import signal
+import sqlite3
 import subprocess
 import sys
 import time
@@ -303,6 +304,33 @@ class SyncProcessManager:
             step=line_number,
         )
 
+    def enqueue_console_batch(
+        self,
+        lines: List[tuple],
+    ) -> None:
+        """Enqueue a batch of console log lines in a single transaction.
+
+        Args:
+            lines: List of (message, log_type, timestamp_ms, line_number) tuples.
+        """
+        if not lines:
+            return
+        records = [
+            (
+                self.run_id,
+                RecordType.CONSOLE,
+                {
+                    'message': message,
+                    'logType': log_type,
+                    'lineNumber': line_number,
+                },
+                timestamp_ms,
+                line_number,
+            )
+            for message, log_type, timestamp_ms, line_number in lines
+        ]
+        self.store.enqueue_batch(records)
+
     def enqueue_file(
         self,
         local_path: str,
@@ -438,42 +466,95 @@ def _sync_main(
     file_batch_size = settings_dict.get('sync_process_file_batch_size', 10)
 
     parent_check_interval = 5.0
+    cleanup_interval = 300.0  # Clean up completed records every 5 minutes
+    health_interval = 60.0  # Log health diagnostics every 60 seconds
     last_parent_check = time.time()
     last_flush = time.time()
+    last_cleanup = time.time()
+    last_health = time.time()
 
     try:
         while not shutdown_requested['value']:
-            # Check if parent is alive
-            if time.time() - last_parent_check > parent_check_interval:
-                if not _is_process_alive(parent_pid):
-                    log.warning('Parent process died, flushing and exiting')
-                    _flush_remaining(
-                        store, uploader, log, shutdown_timeout, max_retries
+            try:
+                # Check if parent is alive
+                if time.time() - last_parent_check > parent_check_interval:
+                    if not _is_process_alive(parent_pid):
+                        log.warning('Parent process died, flushing and exiting')
+                        _flush_remaining(
+                            store, uploader, log, shutdown_timeout, max_retries
+                        )
+                        return
+                    last_parent_check = time.time()
+
+                # Check for orphaned runs
+                orphaned = store.get_orphaned_runs(orphan_timeout)
+                for run_id in orphaned:
+                    log.info(f'Detected orphaned run: {run_id}')
+                    store.mark_run_finished(run_id)
+
+                # Check for finished runs that need final flush
+                unsynced = store.get_unsynced_runs()
+                for run_info in unsynced:
+                    if run_info['finished'] and run_info['pending_count'] == 0:
+                        store.mark_run_synced(run_info['run_id'])
+                        log.info(f'Run {run_info["run_id"]} fully synced')
+
+                # Periodic flush
+                if time.time() - last_flush > flush_interval:
+                    synced = _sync_batch(
+                        store, uploader, log, max_retries, batch_size, file_batch_size
                     )
-                    return
-                last_parent_check = time.time()
+                    if synced:
+                        log.debug(f'Synced batch of {synced} records')
+                    last_flush = time.time()
 
-            # Check for orphaned runs
-            orphaned = store.get_orphaned_runs(orphan_timeout)
-            for run_id in orphaned:
-                log.info(f'Detected orphaned run: {run_id}')
-                store.mark_run_finished(run_id)
+                # Periodic cleanup of completed records to prevent
+                # unbounded table growth over long training runs
+                if time.time() - last_cleanup > cleanup_interval:
+                    deleted = store.cleanup_completed(
+                        older_than_seconds=cleanup_interval
+                    )
+                    if deleted:
+                        log.debug(f'Cleaned up {deleted} completed records')
+                    last_cleanup = time.time()
 
-            # Check for finished runs that need final flush
-            unsynced = store.get_unsynced_runs()
-            for run_info in unsynced:
-                if run_info['finished'] and run_info['pending_count'] == 0:
-                    store.mark_run_synced(run_info['run_id'])
-                    log.info(f'Run {run_info["run_id"]} fully synced')
+                # Periodic health diagnostics — makes degradation
+                # visible in logs before it escalates to failures
+                if time.time() - last_health > health_interval:
+                    try:
+                        h = store.get_health_stats()
+                        log.debug(
+                            'Health: pending=%d in_progress=%d '
+                            'completed=%d failed=%d '
+                            'total_rows=%d lag_s=%.1f '
+                            'wal_kb=%d db_kb=%d '
+                            'writes=%d avg_ms=%.1f max_ms=%.1f '
+                            'retries=%d retry_failures=%d',
+                            h['pending'],
+                            h['in_progress'],
+                            h['completed'],
+                            h['failed'],
+                            h['total_rows'],
+                            h['lag_s'],
+                            h['wal_size_kb'],
+                            h['db_size_kb'],
+                            h['write_count'],
+                            h['write_avg_ms'],
+                            h['write_max_ms'],
+                            h['retries'],
+                            h['retry_failures'],
+                        )
+                        uploader.upload_health_stats(h)
+                    except Exception:
+                        pass  # Health check should never crash sync
+                    last_health = time.time()
 
-            # Periodic flush
-            if time.time() - last_flush > flush_interval:
-                synced = _sync_batch(
-                    store, uploader, log, max_retries, batch_size, file_batch_size
-                )
-                if synced:
-                    log.debug(f'Synced batch of {synced} records')
-                last_flush = time.time()
+            except sqlite3.OperationalError as e:
+                # Transient SQLite errors (e.g. "database is locked") should not
+                # crash the sync process. Log and retry on the next iteration.
+                log.warning(f'Transient SQLite error (will retry): {e}')
+                time.sleep(1.0)  # Back off briefly before next attempt
+                continue
 
             # Short sleep to avoid busy loop
             time.sleep(0.1)
@@ -933,6 +1014,21 @@ class _SyncUploader:
             return
 
         body = '\n'.join(lines) + '\n'
+        self._post_with_retry(self.url_num, body, self._get_headers())
+
+    def upload_health_stats(self, stats: Dict[str, Any]) -> None:
+        """Upload sync health diagnostics as sys/ metrics.
+
+        Posts directly to the numeric endpoint — bypasses SQLite entirely
+        to avoid circular write pressure from the health check itself.
+        """
+        if not self.url_num:
+            return
+
+        data = {f'sys/pluto.{k}': v for k, v in stats.items()}
+        timestamp_ms = int(time.time() * 1000)
+        body = json.dumps({'time': timestamp_ms, 'step': 0, 'data': data})
+        body = body + '\n'
         self._post_with_retry(self.url_num, body, self._get_headers())
 
     def upload_data_batch(self, records: List[SyncRecord]) -> None:
