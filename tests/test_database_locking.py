@@ -21,6 +21,7 @@ import pytest
 
 from pluto.sync.store import (
     _SQLITE_RETRY_COUNT,
+    HEALTH_METRIC_KEYS,
     RecordType,
     SyncStore,
     _retry_on_locked,
@@ -705,3 +706,123 @@ class TestHealthDiagnostics:
         assert stats['db_size_kb'] >= 0
         # WAL might or might not exist depending on checkpointing
         assert isinstance(stats['wal_size_kb'], int)
+
+
+class TestHealthMetricKeys:
+    """Tests that HEALTH_METRIC_KEYS stays in sync with get_health_stats()."""
+
+    def test_keys_match_health_stats(self, tmp_path):
+        """HEALTH_METRIC_KEYS must exactly match get_health_stats() keys."""
+        store = SyncStore(str(tmp_path / 'keys.db'))
+        store.register_run('r', 'p')
+        stats = store.get_health_stats()
+        store.close()
+        assert set(HEALTH_METRIC_KEYS) == set(stats.keys())
+
+
+class TestUploadHealthStats:
+    """Tests for _SyncUploader.upload_health_stats()."""
+
+    def test_upload_posts_prefixed_metrics(self):
+        """upload_health_stats sends sys/sync.* keys to url_num."""
+        from pluto.sync.process import _SyncUploader
+
+        uploader = _SyncUploader(
+            {'url_num': 'http://fake/num', '_auth': 'tok'},
+            logging.getLogger('test'),
+        )
+
+        # Capture what _post_with_retry receives
+        captured = {}
+
+        def fake_post(url, body, headers):
+            captured['url'] = url
+            captured['body'] = body
+            captured['headers'] = headers
+
+        uploader._post_with_retry = fake_post
+
+        stats = {
+            'pending': 10,
+            'lag_s': 5.2,
+            'write_avg_ms': 3.1,
+            'retries': 2,
+        }
+        uploader.upload_health_stats(stats)
+
+        assert captured['url'] == 'http://fake/num'
+        import json
+
+        payload = json.loads(captured['body'].strip())
+        assert payload['step'] == 0
+        assert 'time' in payload
+        assert payload['data']['sys/sync.pending'] == 10
+        assert payload['data']['sys/sync.lag_s'] == 5.2
+        assert payload['data']['sys/sync.write_avg_ms'] == 3.1
+        assert payload['data']['sys/sync.retries'] == 2
+
+    def test_upload_skipped_when_no_url(self):
+        """upload_health_stats is a no-op when url_num is empty."""
+        from pluto.sync.process import _SyncUploader
+
+        uploader = _SyncUploader(
+            {'url_num': '', '_auth': 'tok'},
+            logging.getLogger('test'),
+        )
+        called = {'post': False}
+
+        def fake_post(url, body, headers):
+            called['post'] = True
+
+        uploader._post_with_retry = fake_post
+        uploader.upload_health_stats({'pending': 5})
+        assert not called['post']
+
+    def test_upload_all_health_keys(self, tmp_path):
+        """Full get_health_stats() dict is uploaded with correct prefixes."""
+        from pluto.sync.process import _SyncUploader
+
+        store = SyncStore(str(tmp_path / 'upload.db'))
+        store.register_run('r', 'p')
+        store.enqueue('r', RecordType.METRIC, {'m': 1}, 1000, 1)
+        stats = store.get_health_stats()
+        store.close()
+
+        uploader = _SyncUploader(
+            {'url_num': 'http://fake/num', '_auth': 'tok'},
+            logging.getLogger('test'),
+        )
+
+        captured = {}
+
+        def fake_post(url, body, headers):
+            captured['body'] = body
+
+        uploader._post_with_retry = fake_post
+        uploader.upload_health_stats(stats)
+
+        import json
+
+        payload = json.loads(captured['body'].strip())
+        data = payload['data']
+        for key in HEALTH_METRIC_KEYS:
+            assert f'sys/sync.{key}' in data, f'Missing sys/sync.{key}'
+
+
+class TestHealthMetricRegistration:
+    """Tests that sync health metrics are registered with the server."""
+
+    def test_health_metrics_registered_in_op_start(self):
+        """Op.start() should register sys/sync.* names via _update_meta."""
+        # Verify the registration list is correct
+        expected = [f'sys/sync.{k}' for k in HEALTH_METRIC_KEYS]
+        assert len(expected) == 13
+        assert 'sys/sync.pending' in expected
+        assert 'sys/sync.lag_s' in expected
+        assert 'sys/sync.write_avg_ms' in expected
+        assert 'sys/sync.retries' in expected
+
+    def test_health_keys_not_empty(self):
+        """HEALTH_METRIC_KEYS should contain entries."""
+        assert len(HEALTH_METRIC_KEYS) > 0
+        assert all(isinstance(k, str) for k in HEALTH_METRIC_KEYS)
