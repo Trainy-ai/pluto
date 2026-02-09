@@ -269,105 +269,131 @@ class TestConcurrentWriteContention:
     simulate the training process and sync process writing concurrently.
     """
 
-    def test_two_connections_concurrent_writes(self, tmp_path):
-        """Two connections can write concurrently with WAL mode."""
+    def test_many_connections_concurrent_writes(self, tmp_path):
+        """Multiple connections can write concurrently with WAL mode."""
         db_path = str(tmp_path / 'concurrent.db')
+        num_writers = 6
+        writes_per_writer = 200
 
-        store1 = SyncStore(db_path)
-        store1.register_run('run-1', 'project')
+        store_main = SyncStore(db_path)
+        store_main.register_run('run-1', 'project')
 
-        store2 = SyncStore(db_path)
-
+        stores = [SyncStore(db_path) for _ in range(num_writers)]
         errors = []
-        results = {'store1': [], 'store2': []}
+        results = {i: [] for i in range(num_writers)}
 
-        def writer1():
+        def writer(idx, store):
             try:
-                for i in range(50):
-                    rid = store1.enqueue(
+                for i in range(writes_per_writer):
+                    rid = store.enqueue(
                         run_id='run-1',
                         record_type=RecordType.METRIC,
-                        payload={'metric': i},
+                        payload={'metric': i, 'writer': idx},
                         timestamp_ms=i * 1000,
                         step=i,
                     )
-                    results['store1'].append(rid)
+                    results[idx].append(rid)
             except Exception as e:
-                errors.append(('store1', e))
+                errors.append((f'writer-{idx}', e))
 
-        def writer2():
+        def reader_drainer(store):
+            """Continuously read and complete records to add read contention."""
             try:
-                for i in range(50):
-                    store2.heartbeat('run-1')
-                    pending = store2.get_pending_records(limit=10)
+                for _ in range(writes_per_writer * 2):
+                    pending = store.get_pending_records(limit=20)
                     if pending:
                         ids = [r.id for r in pending]
-                        store2.mark_in_progress(ids)
-                        store2.mark_completed(ids)
+                        store.mark_in_progress(ids)
+                        store.mark_completed(ids)
+                    store.heartbeat('run-1')
             except Exception as e:
-                errors.append(('store2', e))
+                errors.append(('reader', e))
 
-        t1 = threading.Thread(target=writer1)
-        t2 = threading.Thread(target=writer2)
-        t1.start()
-        t2.start()
-        t1.join(timeout=30)
-        t2.join(timeout=30)
+        threads = []
+        for idx in range(num_writers):
+            threads.append(threading.Thread(target=writer, args=(idx, stores[idx])))
+        # Add two reader/drainer threads using their own connections
+        reader_stores = [SyncStore(db_path) for _ in range(2)]
+        for rs in reader_stores:
+            threads.append(threading.Thread(target=reader_drainer, args=(rs,)))
 
-        store1.close()
-        store2.close()
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=60)
+
+        for s in stores + reader_stores:
+            s.close()
+        store_main.close()
 
         assert not errors, f'Concurrent writes should not error: {errors}'
-        assert len(results['store1']) == 50
+        for idx in range(num_writers):
+            assert len(results[idx]) == writes_per_writer
 
     def test_high_frequency_writes_with_contention(self, tmp_path):
-        """Stress test: rapid writes from multiple connections."""
+        """Stress test: rapid writes from many connections with heavy contention."""
         db_path = str(tmp_path / 'stress.db')
+        num_writers = 4
+        num_readers = 4
+        write_count = 500
 
-        store1 = SyncStore(db_path)
-        store1.register_run('run-1', 'project')
+        store_main = SyncStore(db_path)
+        store_main.register_run('run-1', 'project')
 
-        store2 = SyncStore(db_path)
-
+        writer_stores = [SyncStore(db_path) for _ in range(num_writers)]
+        reader_stores = [SyncStore(db_path) for _ in range(num_readers)]
         errors = []
-        write_count = 200
+        written = {i: 0 for i in range(num_writers)}
 
-        def rapid_writer():
+        def rapid_writer(idx, store):
             try:
                 for i in range(write_count):
-                    store1.enqueue(
+                    store.enqueue(
                         run_id='run-1',
                         record_type=RecordType.METRIC,
                         payload={'m': i},
                         timestamp_ms=i,
                         step=i,
                     )
+                    written[idx] += 1
             except Exception as e:
-                errors.append(('writer', e))
+                errors.append((f'writer-{idx}', e))
 
-        def rapid_reader_writer():
+        def rapid_reader_writer(idx, store):
             try:
-                for i in range(write_count):
-                    pending = store2.get_pending_records(limit=20)
+                for _ in range(write_count):
+                    pending = store.get_pending_records(limit=20)
                     if pending:
                         ids = [r.id for r in pending]
-                        store2.mark_in_progress(ids)
-                        store2.mark_completed(ids)
-                    store2.heartbeat('run-1')
+                        store.mark_in_progress(ids)
+                        store.mark_completed(ids)
+                    store.heartbeat('run-1')
+                    store.get_health_stats()
             except Exception as e:
-                errors.append(('reader_writer', e))
+                errors.append((f'reader-{idx}', e))
 
-        t1 = threading.Thread(target=rapid_writer)
-        t2 = threading.Thread(target=rapid_reader_writer)
-        t1.start()
-        t2.start()
-        t1.join(timeout=60)
-        t2.join(timeout=60)
+        threads = []
+        for i in range(num_writers):
+            threads.append(
+                threading.Thread(target=rapid_writer, args=(i, writer_stores[i]))
+            )
+        for i in range(num_readers):
+            threads.append(
+                threading.Thread(target=rapid_reader_writer, args=(i, reader_stores[i]))
+            )
 
-        store1.close()
-        store2.close()
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=120)
+
+        for s in writer_stores + reader_stores:
+            s.close()
+        store_main.close()
 
         assert not errors, f'High-frequency writes should not error: {errors}'
+        for i in range(num_writers):
+            assert written[i] == write_count, f'Writer {i} only wrote {written[i]}'
 
 
 class TestSyncMainResilience:
