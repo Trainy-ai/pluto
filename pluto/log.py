@@ -54,6 +54,7 @@ class ConsoleHandler:
         level=logging.INFO,
         stream=sys.stdout,
         type='stdout',
+        sanitizer=None,
     ):
         self.logger = logger
         self.sync_manager = sync_manager
@@ -61,6 +62,7 @@ class ConsoleHandler:
         self.stream = stream
         self.type = type
         self.count = 0
+        self.sanitizer = sanitizer
         self._log_buffer: list = []
         self._last_flush = 0.0
 
@@ -82,8 +84,13 @@ class ConsoleHandler:
                 self.count += 1
                 timestamp_ms = int(time.time() * 1000)
                 if self.sync_manager is not None:
+                    sanitized_line = (
+                        self.sanitizer.sanitize(line) if self.sanitizer else line
+                    )
                     log_type = logging._levelToName.get(self.level, 'INFO')
-                    self._log_buffer.append((line, log_type, timestamp_ms, self.count))
+                    self._log_buffer.append(
+                        (sanitized_line, log_type, timestamp_ms, self.count)
+                    )
                 self.logger.log(self.level, line)
         # Flush the buffer if it's large enough or old enough
         if self._log_buffer and (
@@ -172,13 +179,19 @@ def setup_logger_file(settings, logger, console, sync_manager=None):
     file_handler.setFormatter(file_formatter)
     console.addHandler(file_handler)  # TODO: fix slow file writes
 
+    sanitizer = None
+    if getattr(settings, 'sanitize_logs', True):
+        from .sanitize import SecretSanitizer
+
+        sanitizer = SecretSanitizer()
+
     if settings.mode == 'debug':
         builtins.input = lambda prompt='': input_hook(prompt, logger=console)
     sys.stdout = ConsoleHandler(
-        console, sync_manager, logging.INFO, sys.stdout, 'stdout'
+        console, sync_manager, logging.INFO, sys.stdout, 'stdout', sanitizer
     )
     sys.stderr = ConsoleHandler(
-        console, sync_manager, logging.ERROR, sys.stderr, 'stderr'
+        console, sync_manager, logging.ERROR, sys.stderr, 'stderr', sanitizer
     )
 
     return logger, console
