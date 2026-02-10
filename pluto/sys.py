@@ -301,17 +301,20 @@ class System:
         job_name = os.environ.get('KONDUKTOR_JOB_NAME')
         if not job_name:
             return {}
-        d: Dict[str, Any] = {
-            'job_name': job_name,
-            'num_nodes': os.environ.get('NUM_NODES'),
-            'num_gpus_per_node': os.environ.get('NUM_GPUS_PER_NODE'),
-            'rank': os.environ.get('RANK'),
-            'master_addr': os.environ.get('MASTER_ADDR'),
-            'accelerator_type': os.environ.get('KONDUKTOR_ACCELERATOR_TYPE'),
-            'node_name': os.environ.get('KONDUKTOR_NODENAME'),
-            'restart_attempt': os.environ.get('RESTART_ATTEMPT'),
-            'namespace': os.environ.get('KONDUKTOR_NAMESPACE'),
+        env_keys = {
+            'num_nodes': 'NUM_NODES',
+            'num_gpus_per_node': 'NUM_GPUS_PER_NODE',
+            'rank': 'RANK',
+            'master_addr': 'MASTER_ADDR',
+            'accelerator_type': 'KONDUKTOR_ACCELERATOR_TYPE',
+            'node_name': 'KONDUKTOR_NODENAME',
+            'restart_attempt': 'RESTART_ATTEMPT',
+            'namespace': 'KONDUKTOR_NAMESPACE',
         }
+        d: Dict[str, Any] = {
+            key: os.environ.get(env_var) for key, env_var in env_keys.items()
+        }
+        d['job_name'] = job_name
         # Cost-relevant: total GPU count for this job
         try:
             gpus = int(d.get('num_gpus_per_node') or 0)

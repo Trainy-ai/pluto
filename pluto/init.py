@@ -106,25 +106,15 @@ def init(
     if run_id is not None:
         settings._external_id = run_id
 
-    # Auto-add 'konduktor' tag when running inside a Konduktor job
-    if os.environ.get('KONDUKTOR_JOB_NAME'):
-        if tags is None:
-            tags = ['konduktor']
-        elif isinstance(tags, str):
-            tags = [tags, 'konduktor'] if tags != 'konduktor' else [tags]
-        elif 'konduktor' not in tags:
-            tags = list(tags) + ['konduktor']
-
     # Normalize tags before passing to Op
-    normalized_tags = None
-    if tags:
-        if isinstance(tags, str):
-            normalized_tags = [tags]
-        else:
-            normalized_tags = list(tags)
+    normalized_tags = [tags] if isinstance(tags, str) else list(tags or [])
+
+    # Auto-add 'konduktor' tag when running inside a Konduktor job
+    if os.environ.get('KONDUKTOR_JOB_NAME') and 'konduktor' not in normalized_tags:
+        normalized_tags.append('konduktor')
 
     try:
-        op_init = OpInit(config=config, tags=normalized_tags)
+        op_init = OpInit(config=config, tags=normalized_tags or None)
         op_init.setup(settings=settings)
         op = op_init.init()
 
