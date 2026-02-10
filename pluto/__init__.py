@@ -37,7 +37,7 @@ __all__ = (
     'setup',
 )
 
-__version__ = '0.0.5'
+__version__ = '0.0.6'
 
 
 # Replaced with the current commit when building the wheels.
