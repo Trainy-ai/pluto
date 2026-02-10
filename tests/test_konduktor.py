@@ -1,4 +1,4 @@
-"""Tests for Konduktor integration: get_konduktor() in sys.py and auto-tag in init.py."""
+"""Tests for Konduktor integration: get_konduktor() and auto-tag."""
 
 import os
 from unittest.mock import patch
@@ -87,7 +87,14 @@ class TestGetKonduktor:
             k: v
             for k, v in os.environ.items()
             if not k.startswith('KONDUKTOR_')
-            and k not in ('NUM_NODES', 'NUM_GPUS_PER_NODE', 'RANK', 'MASTER_ADDR', 'RESTART_ATTEMPT')
+            and k
+            not in (
+                'NUM_NODES',
+                'NUM_GPUS_PER_NODE',
+                'RANK',
+                'MASTER_ADDR',
+                'RESTART_ATTEMPT',
+            )
         }
         env_clean['KONDUKTOR_JOB_NAME'] = 'minimal-test'
         with patch.dict(os.environ, env_clean, clear=True):
