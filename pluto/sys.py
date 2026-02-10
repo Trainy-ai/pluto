@@ -296,6 +296,34 @@ class System:
 
         return counters
 
+    def get_konduktor(self) -> Dict[str, Any]:
+        """Detect and collect Konduktor job metadata from environment."""
+        job_name = os.environ.get('KONDUKTOR_JOB_NAME')
+        if not job_name:
+            return {}
+        env_keys = {
+            'num_nodes': 'NUM_NODES',
+            'num_gpus_per_node': 'NUM_GPUS_PER_NODE',
+            'rank': 'RANK',
+            'master_addr': 'MASTER_ADDR',
+            'accelerator_type': 'KONDUKTOR_ACCELERATOR_TYPE',
+            'node_name': 'KONDUKTOR_NODENAME',
+            'restart_attempt': 'RESTART_ATTEMPT',
+            'namespace': 'KONDUKTOR_NAMESPACE',
+        }
+        d: Dict[str, Any] = {
+            key: os.environ.get(env_var) for key, env_var in env_keys.items()
+        }
+        d['job_name'] = job_name
+        # Cost-relevant: total GPU count for this job
+        try:
+            gpus = int(d.get('num_gpus_per_node') or 0)
+            nodes = int(d.get('num_nodes') or 0)
+            d['total_gpus'] = gpus * nodes
+        except (ValueError, TypeError):
+            pass
+        return d
+
     def get_info(self) -> Dict[str, Any]:
         d: Dict[str, Any] = {
             'process': {
@@ -327,6 +355,9 @@ class System:
                 }
         if self.git:
             d['git'] = self.git
+        konduktor = self.get_konduktor()
+        if konduktor:
+            d['konduktor'] = konduktor
         if self.settings.mode == 'debug':
             d['process']['environ'] = self.environ
             d = {
