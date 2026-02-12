@@ -830,3 +830,544 @@ class TestValueConversion:
         result = _convert_value(h)
         assert result.__class__.__name__ == 'Histogram'
         assert result.__class__.__module__.startswith('pluto.data')
+
+
+# ---------------------------------------------------------------------------
+# Helpers for parity contract tests
+# ---------------------------------------------------------------------------
+
+
+def _make_mock_op(**overrides):
+    """Create a consistently-configured mock Op for contract tests."""
+    op = MagicMock()
+    op.id = overrides.get('id', 1)
+    op.run_id = overrides.get('run_id', None)
+    op.tags = list(overrides.get('tags', []))
+    op.resumed = overrides.get('resumed', False)
+    op.settings = MagicMock()
+    op.settings._op_name = overrides.get('name', 'test-run')
+    op.settings.project = overrides.get('project', 'test-project')
+    op.settings.url_view = overrides.get('url_view', None)
+    op.settings.get_dir.return_value = '/tmp/pluto'
+    op.config = {}
+    return op
+
+
+class TestParityContract:
+    """Snapshot/contract tests that pin the exact pluto calls the compat layer
+    produces for common wandb usage patterns.
+
+    Each test simulates a realistic wandb workflow end-to-end via the
+    module-level API and asserts the full call sequence that reaches
+    the underlying pluto.Op mock.
+    """
+
+    def test_standard_training_loop(self):
+        """Standard loop: init → config → log N steps → finish."""
+        import pluto.compat.wandb as wandb
+
+        with mock.patch('pluto.init') as mock_init:
+            mock_op = _make_mock_op()
+            mock_init.return_value = mock_op
+
+            run = wandb.init(project='my-project', config={'lr': 0.01, 'epochs': 5})
+
+            # --- init assertions ---
+            mock_init.assert_called_once()
+            init_kw = mock_init.call_args[1]
+            assert init_kw['project'] == 'my-project'
+            # config should be forwarded
+            assert init_kw['config']['lr'] == 0.01
+            assert init_kw['config']['epochs'] == 5
+
+            # --- log loop ---
+            for i in range(5):
+                wandb.log({'loss': 1.0 / (i + 1), 'acc': i * 0.2})
+
+            assert mock_op.log.call_count == 5
+            # First call
+            first_data = mock_op.log.call_args_list[0][0][0]
+            assert first_data == {'loss': 1.0, 'acc': 0.0}
+            # Last call
+            last_data = mock_op.log.call_args_list[4][0][0]
+            assert last_data['loss'] == pytest.approx(0.2)
+            assert last_data['acc'] == pytest.approx(0.8)
+
+            # --- summary tracks last values ---
+            assert run.summary['loss'] == pytest.approx(0.2)
+            assert run.summary['acc'] == pytest.approx(0.8)
+
+            # --- finish ---
+            wandb.finish()
+            mock_op.finish.assert_called_once()
+
+    def test_nested_metric_namespaces(self):
+        """Nested dicts are flattened with / separators before reaching pluto."""
+        import pluto.compat.wandb as wandb
+
+        with mock.patch('pluto.init') as mock_init:
+            mock_op = _make_mock_op()
+            mock_init.return_value = mock_op
+
+            wandb.init(project='test')
+            wandb.log(
+                {
+                    'train': {'loss': 0.5, 'acc': 0.9},
+                    'val': {'loss': 0.6, 'acc': 0.85},
+                    'lr': 0.001,
+                }
+            )
+
+            logged = mock_op.log.call_args[0][0]
+            assert set(logged.keys()) == {
+                'train/loss',
+                'train/acc',
+                'val/loss',
+                'val/acc',
+                'lr',
+            }
+            assert logged['train/loss'] == 0.5
+            assert logged['val/acc'] == 0.85
+            assert logged['lr'] == 0.001
+
+            wandb.finish()
+
+    def test_commit_false_buffering(self):
+        """commit=False accumulates data; next commit=True flushes all."""
+        import pluto.compat.wandb as wandb
+
+        with mock.patch('pluto.init') as mock_init:
+            mock_op = _make_mock_op()
+            mock_init.return_value = mock_op
+
+            wandb.init(project='test')
+
+            # These should NOT call op.log
+            wandb.log({'loss': 0.5}, commit=False)
+            wandb.log({'acc': 0.9}, commit=False)
+            assert mock_op.log.call_count == 0
+
+            # This flushes everything
+            wandb.log({'lr': 0.01})
+            assert mock_op.log.call_count == 1
+
+            flushed = mock_op.log.call_args[0][0]
+            assert flushed == {'loss': 0.5, 'acc': 0.9, 'lr': 0.01}
+
+            wandb.finish()
+
+    def test_commit_false_later_values_win(self):
+        """When same key is buffered then committed, last value wins."""
+        import pluto.compat.wandb as wandb
+
+        with mock.patch('pluto.init') as mock_init:
+            mock_op = _make_mock_op()
+            mock_init.return_value = mock_op
+
+            wandb.init(project='test')
+
+            wandb.log({'loss': 0.5}, commit=False)
+            wandb.log({'loss': 0.3})  # overrides buffered value
+
+            flushed = mock_op.log.call_args[0][0]
+            assert flushed['loss'] == 0.3
+
+            wandb.finish()
+
+    def test_explicit_step_forwarded(self):
+        """step= kwarg is passed through to pluto op.log."""
+        import pluto.compat.wandb as wandb
+
+        with mock.patch('pluto.init') as mock_init:
+            mock_op = _make_mock_op()
+            mock_init.return_value = mock_op
+
+            wandb.init(project='test')
+
+            wandb.log({'x': 1}, step=0)
+            wandb.log({'x': 2}, step=5)
+            wandb.log({'x': 3}, step=100)
+
+            steps = [c[1]['step'] for c in mock_op.log.call_args_list]
+            assert steps == [0, 5, 100]
+
+            wandb.finish()
+
+    def test_config_mutations_sync(self):
+        """Config changes after init reach pluto via update_config."""
+        import pluto.compat.wandb as wandb
+
+        with mock.patch('pluto.init') as mock_init:
+            mock_op = _make_mock_op()
+            mock_init.return_value = mock_op
+
+            run = wandb.init(project='test', config={'lr': 0.01})
+
+            # Attribute assignment
+            wandb.config.batch_size = 32
+            mock_op.update_config.assert_called_with({'batch_size': 32})
+
+            # Dict assignment
+            wandb.config['optimizer'] = 'adam'
+            mock_op.update_config.assert_called_with({'optimizer': 'adam'})
+
+            # Bulk update
+            wandb.config.update({'dropout': 0.1, 'weight_decay': 1e-4})
+            mock_op.update_config.assert_called_with(
+                {'dropout': 0.1, 'weight_decay': 1e-4}
+            )
+
+            # All values accessible
+            assert run.config.as_dict() == {
+                'lr': 0.01,
+                'batch_size': 32,
+                'optimizer': 'adam',
+                'dropout': 0.1,
+                'weight_decay': 1e-4,
+            }
+
+            wandb.finish()
+
+    def test_config_from_argparse(self):
+        """argparse.Namespace passed to init is forwarded as config dict."""
+        import argparse
+
+        import pluto.compat.wandb as wandb
+
+        with mock.patch('pluto.init') as mock_init:
+            mock_op = _make_mock_op()
+            mock_init.return_value = mock_op
+
+            args = argparse.Namespace(lr=0.001, epochs=10, model='resnet50')
+            wandb.init(project='test', config=args)
+
+            init_kw = mock_init.call_args[1]
+            assert init_kw['config']['lr'] == 0.001
+            assert init_kw['config']['epochs'] == 10
+            assert init_kw['config']['model'] == 'resnet50'
+
+            wandb.finish()
+
+    def test_config_include_exclude_keys(self):
+        """config_include_keys and config_exclude_keys filter correctly."""
+        import pluto.compat.wandb as wandb
+
+        with mock.patch('pluto.init') as mock_init:
+            mock_op = _make_mock_op()
+            mock_init.return_value = mock_op
+
+            # include_keys: only lr and epochs pass through
+            wandb.init(
+                project='test',
+                config={'lr': 0.01, 'epochs': 5, 'secret': 'xxx'},
+                config_include_keys=['lr', 'epochs'],
+            )
+            init_kw = mock_init.call_args[1]
+            assert 'lr' in init_kw['config']
+            assert 'epochs' in init_kw['config']
+            assert 'secret' not in init_kw['config']
+            wandb.finish()
+
+            mock_init.reset_mock()
+            mock_init.return_value = mock_op
+
+            # exclude_keys: secret filtered out
+            wandb.init(
+                project='test',
+                config={'lr': 0.01, 'epochs': 5, 'secret': 'xxx'},
+                config_exclude_keys=['secret'],
+            )
+            init_kw = mock_init.call_args[1]
+            assert 'lr' in init_kw['config']
+            assert 'secret' not in init_kw['config']
+            wandb.finish()
+
+    def test_tags_lifecycle(self):
+        """Tags from init() and runtime mutations reach pluto correctly."""
+        import pluto.compat.wandb as wandb
+
+        with mock.patch('pluto.init') as mock_init:
+            mock_op = _make_mock_op(tags=['baseline', 'v1'])
+            mock_init.return_value = mock_op
+
+            run = wandb.init(project='test', tags=['baseline', 'v1'])
+
+            # init forwards tags
+            assert mock_init.call_args[1]['tags'] == ['baseline', 'v1']
+
+            # Runtime tag mutation via property setter
+            run.tags = ['baseline', 'v1', 'promoted']
+            mock_op.add_tags.assert_called_once_with(['promoted'])
+
+            wandb.finish()
+
+    def test_data_type_conversion_in_log(self):
+        """wandb data types logged via log() arrive as pluto types at op.log."""
+        import pluto.compat.wandb as wandb
+        from pluto.compat.wandb.data_types import Histogram, Image, Table
+
+        with mock.patch('pluto.init') as mock_init:
+            mock_op = _make_mock_op()
+            mock_init.return_value = mock_op
+
+            wandb.init(project='test')
+
+            img_data = np.random.randint(0, 255, (8, 8, 3), dtype=np.uint8)
+            wandb.log(
+                {
+                    'loss': 0.5,
+                    'image': Image(img_data, caption='sample'),
+                    'table': Table(columns=['a', 'b'], data=[[1, 2]]),
+                    'dist': Histogram(sequence=[1, 2, 3, 4, 5]),
+                }
+            )
+
+            logged = mock_op.log.call_args[0][0]
+
+            # Scalars pass through
+            assert logged['loss'] == 0.5
+
+            # Data types are converted to pluto equivalents
+            assert logged['image'].__class__.__module__.startswith('pluto.file')
+            assert logged['image'].__class__.__name__ == 'Image'
+
+            assert logged['table'].__class__.__module__.startswith('pluto.data')
+            assert logged['table'].__class__.__name__ == 'Table'
+
+            assert logged['dist'].__class__.__module__.startswith('pluto.data')
+            assert logged['dist'].__class__.__name__ == 'Histogram'
+
+            wandb.finish()
+
+    def test_summary_tracks_last_scalar_per_key(self):
+        """summary auto-updates to last-logged scalar; non-scalars ignored."""
+        import pluto.compat.wandb as wandb
+
+        with mock.patch('pluto.init') as mock_init:
+            mock_op = _make_mock_op()
+            mock_init.return_value = mock_op
+
+            run = wandb.init(project='test')
+
+            wandb.log({'loss': 1.0, 'name': 'first'})
+            wandb.log({'loss': 0.5, 'name': 'second'})
+            wandb.log({'loss': 0.1, 'name': 'third'})
+
+            assert run.summary['loss'] == pytest.approx(0.1)
+            # Strings are not tracked in summary
+            assert 'name' not in run.summary
+
+            # Manual override still works
+            run.summary['best_loss'] = 0.05
+            assert run.summary['best_loss'] == 0.05
+
+            wandb.finish()
+
+    def test_context_manager_lifecycle(self):
+        """with wandb.init() as run: produces correct init/finish sequence."""
+        import pluto.compat.wandb as wandb
+
+        with mock.patch('pluto.init') as mock_init:
+            mock_op = _make_mock_op()
+            mock_init.return_value = mock_op
+
+            with wandb.init(project='test') as run:
+                run.log({'step': 1})
+                run.log({'step': 2})
+
+            # init called exactly once
+            mock_init.assert_called_once()
+            # Two log calls
+            assert mock_op.log.call_count == 2
+            # finish called exactly once with success code
+            mock_op.finish.assert_called_once_with(code=0)
+
+    def test_context_manager_exception_exit_code(self):
+        """Exception inside context manager produces exit_code=1."""
+        import pluto.compat.wandb as wandb
+
+        with mock.patch('pluto.init') as mock_init:
+            mock_op = _make_mock_op()
+            mock_init.return_value = mock_op
+
+            with pytest.raises(RuntimeError):
+                with wandb.init(project='test') as run:
+                    run.log({'step': 1})
+                    raise RuntimeError('training crashed')
+
+            mock_op.finish.assert_called_once_with(code=1)
+
+    def test_reinit_finishes_previous_run(self):
+        """Calling init() twice finishes the first run before creating second."""
+        import pluto.compat.wandb as wandb
+
+        with mock.patch('pluto.init') as mock_init:
+            op1 = _make_mock_op(id=1)
+            op2 = _make_mock_op(id=2)
+            mock_init.side_effect = [op1, op2]
+
+            wandb.init(project='test')
+            run2 = wandb.init(project='test', reinit=True)
+
+            # First run was finished before second started
+            op1.finish.assert_called_once()
+            assert run2.id == '2'
+
+            wandb.finish()
+
+    def test_watch_forwards_to_op(self):
+        """wandb.watch() forwards model and log_freq to op.watch."""
+        import pluto.compat.wandb as wandb
+
+        with mock.patch('pluto.init') as mock_init:
+            mock_op = _make_mock_op()
+            mock_init.return_value = mock_op
+
+            wandb.init(project='test')
+
+            model = MagicMock()
+            wandb.watch(model, log_freq=100)
+
+            mock_op.watch.assert_called_once_with(model, log_freq=100)
+
+            wandb.finish()
+
+    def test_alert_forwards_to_op(self):
+        """wandb.alert() forwards title, text, level to op.alert."""
+        import pluto.compat.wandb as wandb
+
+        with mock.patch('pluto.init') as mock_init:
+            mock_op = _make_mock_op()
+            mock_init.return_value = mock_op
+
+            wandb.init(project='test')
+            wandb.alert(title='Divergence', text='Loss is NaN', level='ERROR')
+
+            mock_op.alert.assert_called_once_with(
+                title='Divergence',
+                message='Loss is NaN',
+                level='ERROR',
+            )
+
+            wandb.finish()
+
+    def test_full_realistic_workflow(self):
+        """End-to-end: init with config+tags, log mixed data, mutate config,
+        update summary, finish. Asserts complete call sequence."""
+        import argparse
+
+        import pluto.compat.wandb as wandb
+        from pluto.compat.wandb.data_types import Image
+
+        with mock.patch('pluto.init') as mock_init:
+            mock_op = _make_mock_op(tags=['experiment'])
+            mock_init.return_value = mock_op
+
+            # 1. Init with argparse config and tags
+            args = argparse.Namespace(lr=0.001, batch_size=64)
+            run = wandb.init(
+                project='cifar10',
+                name='resnet-run-1',
+                config=args,
+                tags=['experiment'],
+            )
+
+            # 2. Update config post-init
+            wandb.config.update({'scheduler': 'cosine'})
+
+            # 3. Training loop with mixed types
+            for epoch in range(3):
+                wandb.log(
+                    {
+                        'train': {'loss': 1.0 / (epoch + 1)},
+                        'epoch': epoch,
+                    }
+                )
+
+            # 4. Log an image
+            img = Image(np.zeros((4, 4, 3), dtype=np.uint8))
+            wandb.log({'sample': img})
+
+            # 5. Manual summary
+            run.summary['best_epoch'] = 2
+
+            # 6. Finish
+            wandb.finish()
+
+            # --- Assertions ---
+
+            # init forwarded correctly
+            init_kw = mock_init.call_args[1]
+            assert init_kw['project'] == 'cifar10'
+            assert init_kw['name'] == 'resnet-run-1'
+            assert init_kw['tags'] == ['experiment']
+            assert init_kw['config']['lr'] == 0.001
+            assert init_kw['config']['batch_size'] == 64
+
+            # config mutation synced
+            mock_op.update_config.assert_any_call({'scheduler': 'cosine'})
+
+            # 3 training steps + 1 image = 4 log calls
+            assert mock_op.log.call_count == 4
+
+            # Training steps flattened correctly
+            for i in range(3):
+                call_data = mock_op.log.call_args_list[i][0][0]
+                assert 'train/loss' in call_data
+                assert 'epoch' in call_data
+
+            # Image converted to pluto type
+            img_call = mock_op.log.call_args_list[3][0][0]
+            assert img_call['sample'].__class__.__module__.startswith('pluto.file')
+
+            # Summary state
+            assert run.summary['best_epoch'] == 2
+            assert run.summary['epoch'] == 2
+            assert run.summary['train/loss'] == pytest.approx(1.0 / 3)
+
+            # finish called
+            mock_op.finish.assert_called_once()
+
+    def test_module_state_reset_after_finish(self):
+        """After finish(), module-level config/summary/run are reset."""
+        import pluto.compat.wandb as wandb
+
+        with mock.patch('pluto.init') as mock_init:
+            mock_op = _make_mock_op()
+            mock_init.return_value = mock_op
+
+            wandb.init(project='test', config={'lr': 0.01})
+            assert wandb.run is not None
+            assert 'lr' in wandb.config
+
+            wandb.finish()
+
+            assert wandb.run is None
+            assert len(wandb.config) == 0
+            assert len(wandb.summary) == 0
+
+    def test_log_artifact_call_sequence(self, tmp_path):
+        """log_artifact with Artifact object produces one op.log per file."""
+        import pluto.compat.wandb as wandb
+        from pluto.compat.wandb.data_types import Artifact
+
+        with mock.patch('pluto.init') as mock_init:
+            mock_op = _make_mock_op()
+            mock_init.return_value = mock_op
+
+            wandb.init(project='test')
+
+            f1 = tmp_path / 'weights.pt'
+            f2 = tmp_path / 'config.json'
+            f1.write_bytes(b'\x00' * 50)
+            f2.write_text('{}')
+
+            art = Artifact('checkpoint', type='model')
+            art.add_file(str(f1), name='weights.pt')
+            art.add_file(str(f2), name='config.json')
+            wandb.log_artifact(art)
+
+            # Each file in the artifact produces one op.log call
+            assert mock_op.log.call_count == 2
+
+            wandb.finish()
