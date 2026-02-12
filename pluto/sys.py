@@ -1,7 +1,10 @@
+import ctypes
+import ctypes.util
 import importlib.metadata
 import logging
 import os
 import platform
+import socket
 import time
 from typing import Any, Dict, List, Mapping, Optional, Union, cast
 
@@ -324,6 +327,247 @@ class System:
             pass
         return d
 
+    def get_os_info(self) -> Dict[str, Any]:
+        """Collect OS, kernel, Python, and glibc information."""
+        d: Dict[str, Any] = {}
+
+        # Hostname
+        try:
+            d['hostname'] = socket.gethostname()
+        except Exception:
+            d['hostname'] = platform.node()
+
+        # OS / distribution info
+        try:
+            # platform.freedesktop_os_release() available in Python 3.10+
+            if hasattr(platform, 'freedesktop_os_release'):
+                os_release = platform.freedesktop_os_release()
+                d['os'] = {
+                    'name': os_release.get('NAME', ''),
+                    'version': os_release.get(
+                        'VERSION', os_release.get('BUILD_ID', '')
+                    ),
+                    'pretty_name': os_release.get('PRETTY_NAME', ''),
+                    'id': os_release.get('ID', ''),
+                }
+            else:
+                # Fallback: read /etc/os-release directly
+                d['os'] = self._read_os_release()
+        except Exception:
+            d['os'] = {
+                'name': platform.system(),
+                'version': platform.version(),
+            }
+
+        # Linux kernel version
+        d['kernel'] = platform.release()
+
+        # Python version
+        d['python'] = {
+            'version': platform.python_version(),
+            'implementation': platform.python_implementation(),
+            'compiler': platform.python_compiler(),
+        }
+
+        # glibc version
+        try:
+            glibc = platform.libc_ver()
+            if glibc[0]:
+                d['glibc'] = glibc[1]
+            else:
+                # Fallback: use ctypes to query glibc directly
+                libc_name = ctypes.util.find_library('c')
+                if libc_name:
+                    libc = ctypes.CDLL(libc_name)
+                    gnu_get_libc_version = libc.gnu_get_libc_version
+                    gnu_get_libc_version.restype = ctypes.c_char_p
+                    d['glibc'] = gnu_get_libc_version().decode('ascii')
+        except Exception:
+            pass
+
+        return d
+
+    def _read_os_release(self) -> Dict[str, str]:
+        """Fallback to read /etc/os-release for Python < 3.10."""
+        d: Dict[str, str] = {}
+        for path in ('/etc/os-release', '/usr/lib/os-release'):
+            if os.path.exists(path):
+                try:
+                    with open(path, 'r') as f:
+                        for line in f:
+                            line = line.strip()
+                            if '=' in line:
+                                key, _, value = line.partition('=')
+                                value = value.strip('"').strip("'")
+                                if key in ('NAME', 'VERSION', 'PRETTY_NAME', 'ID'):
+                                    d[key.lower()] = value
+                except Exception:
+                    pass
+                break
+        return d
+
+    def get_cuda_info(self) -> Dict[str, Any]:
+        """Collect CUDA and cuDNN version information from system and PyTorch."""
+        d: Dict[str, Any] = {}
+
+        # System CUDA version from nvidia-smi
+        try:
+            nvcc_out = run_cmd('nvcc --version')
+            if nvcc_out:
+                import re
+
+                m = re.search(r'release\s+([\d.]+)', nvcc_out)
+                if m:
+                    d['cuda_nvcc'] = m.group(1)
+        except Exception:
+            pass
+
+        # CUDA version reported by nvidia-smi (driver-supported max)
+        if self.gpu.get('nvidia', {}).get('smi'):
+            try:
+                import re
+
+                m = re.search(r'CUDA Version:\s+([\d.]+)', self.gpu['nvidia']['smi'])
+                if m:
+                    d['cuda_driver'] = m.group(1)
+            except Exception:
+                pass
+
+        # PyTorch CUDA/cuDNN versions
+        try:
+            import torch
+
+            d['cuda_pytorch'] = getattr(torch.version, 'cuda', None)
+            try:
+                d['cudnn_pytorch'] = str(torch.backends.cudnn.version())
+            except Exception:
+                pass
+        except ImportError:
+            pass
+
+        return d
+
+    def get_nccl_info(self) -> Dict[str, Any]:
+        """Collect NCCL version information and NCCL environment variables."""
+        d: Dict[str, Any] = {}
+
+        # PyTorch NCCL version
+        try:
+            import torch
+
+            if hasattr(torch.cuda, 'nccl') and hasattr(torch.cuda.nccl, 'version'):
+                nccl_ver = torch.cuda.nccl.version()
+                if isinstance(nccl_ver, tuple):
+                    d['nccl_pytorch'] = '.'.join(str(x) for x in nccl_ver)
+                else:
+                    d['nccl_pytorch'] = str(nccl_ver)
+        except Exception:
+            pass
+
+        # System NCCL version: check the shared library
+        try:
+            libnccl = ctypes.util.find_library('nccl')
+            if libnccl:
+                nccl_lib = ctypes.CDLL(libnccl)
+                # ncclGetVersion returns an int: major*10000 + minor*100 + patch
+                nccl_get_version = nccl_lib.ncclGetVersion
+                version = ctypes.c_int()
+                result = nccl_get_version(ctypes.byref(version))
+                if result == 0:  # ncclSuccess
+                    v = version.value
+                    major = v // 10000
+                    minor = (v % 10000) // 100
+                    patch = v % 100
+                    d['nccl_system'] = f'{major}.{minor}.{patch}'
+        except Exception:
+            pass
+
+        # NCCL environment variables
+        nccl_env: Dict[str, str] = {}
+        for key, value in os.environ.items():
+            if key.startswith('NCCL_'):
+                nccl_env[key] = value
+        if nccl_env:
+            d['nccl_env'] = nccl_env
+
+        return d
+
+    def get_infiniband_info(self) -> Dict[str, Any]:
+        """Collect InfiniBand device info: link type, speed, mode (IB vs RoCE)."""
+        d: Dict[str, Any] = {}
+        ib_base = '/sys/class/infiniband'
+
+        if not os.path.exists(ib_base):
+            return d
+
+        try:
+            devices: List[Dict[str, Any]] = []
+            for device in sorted(os.listdir(ib_base)):
+                dev_info: Dict[str, Any] = {'name': device}
+
+                # Read board_id / fw_ver if available
+                for attr in ('board_id', 'fw_ver', 'hca_type'):
+                    attr_path = os.path.join(ib_base, device, attr)
+                    if os.path.exists(attr_path):
+                        try:
+                            with open(attr_path, 'r') as f:
+                                dev_info[attr] = f.read().strip()
+                        except Exception:
+                            pass
+
+                # Enumerate ports
+                ports_dir = os.path.join(ib_base, device, 'ports')
+                if os.path.isdir(ports_dir):
+                    ports: List[Dict[str, str]] = []
+                    for port in sorted(os.listdir(ports_dir)):
+                        port_info: Dict[str, str] = {'port': port}
+                        port_dir = os.path.join(ports_dir, port)
+
+                        # link_layer: InfiniBand or Ethernet (RoCE)
+                        for attr in ('link_layer', 'state', 'rate', 'phys_state'):
+                            attr_path = os.path.join(port_dir, attr)
+                            if os.path.exists(attr_path):
+                                try:
+                                    with open(attr_path, 'r') as f:
+                                        port_info[attr] = f.read().strip()
+                                except Exception:
+                                    pass
+
+                        # GID table entry 0 for RoCE mode detection
+                        gid_path = os.path.join(port_dir, 'gids', '0')
+                        if os.path.exists(gid_path):
+                            try:
+                                with open(gid_path, 'r') as f:
+                                    gid = f.read().strip()
+                                    empty = '0000:0000:0000:0000:0000:0000:0000:0000'
+                                    if gid and gid != empty:
+                                        port_info['gid_0'] = gid
+                            except Exception:
+                                pass
+
+                        # RoCE type from gid_attrs if available
+                        gid_type_path = os.path.join(
+                            port_dir, 'gid_attrs', 'types', '0'
+                        )
+                        if os.path.exists(gid_type_path):
+                            try:
+                                with open(gid_type_path, 'r') as f:
+                                    port_info['roce_type'] = f.read().strip()
+                            except Exception:
+                                pass
+
+                        ports.append(port_info)
+                    dev_info['ports'] = ports
+
+                devices.append(dev_info)
+
+            if devices:
+                d['devices'] = devices
+        except OSError as e:
+            logger.debug('%s: failed to enumerate InfiniBand info: %s', tag, e)
+
+        return d
+
     def get_info(self) -> Dict[str, Any]:
         d: Dict[str, Any] = {
             'process': {
@@ -347,6 +591,39 @@ class System:
             'boot_time': self.boot_time,
             'requirements': self.requirements,
         }
+
+        # OS, kernel, Python, glibc, hostname
+        try:
+            os_info = self.get_os_info()
+            if os_info:
+                d['os_info'] = os_info
+        except Exception as e:
+            logger.debug('%s: failed to collect OS info: %s', tag, e)
+
+        # CUDA / cuDNN versions
+        try:
+            cuda_info = self.get_cuda_info()
+            if cuda_info:
+                d['cuda'] = cuda_info
+        except Exception as e:
+            logger.debug('%s: failed to collect CUDA info: %s', tag, e)
+
+        # NCCL versions and environment variables
+        try:
+            nccl_info = self.get_nccl_info()
+            if nccl_info:
+                d['nccl'] = nccl_info
+        except Exception as e:
+            logger.debug('%s: failed to collect NCCL info: %s', tag, e)
+
+        # InfiniBand / RoCE device info
+        try:
+            ib_info = self.get_infiniband_info()
+            if ib_info:
+                d['infiniband'] = ib_info
+        except Exception as e:
+            logger.debug('%s: failed to collect InfiniBand info: %s', tag, e)
+
         if self.gpu:
             d['gpu'] = {}
             if self.gpu.get('nvidia'):
