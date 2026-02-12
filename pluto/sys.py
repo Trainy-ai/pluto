@@ -5,6 +5,7 @@ import logging
 import os
 import platform
 import socket
+import sys as _sys
 import time
 from typing import Any, Dict, List, Mapping, Optional, Union, cast
 
@@ -367,6 +368,7 @@ class System:
             'version': platform.python_version(),
             'implementation': platform.python_implementation(),
             'compiler': platform.python_compiler(),
+            'executable': _sys.executable,
         }
 
         # glibc version
@@ -444,6 +446,14 @@ class System:
                 pass
         except ImportError:
             pass
+
+        # CUDA environment variables
+        cuda_env: Dict[str, str] = {}
+        for key, value in os.environ.items():
+            if key.startswith('CUDA_'):
+                cuda_env[key] = value
+        if cuda_env:
+            d['cuda_env'] = cuda_env
 
         return d
 
