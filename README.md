@@ -22,13 +22,7 @@ pluto.log({"e": 2.718})
 pluto.finish()
 ```
 
-- Self-host your very own **Pluto** instance using the [Pluto Server](https://github.com/Trainy-ai/pluto-server) & get started in just 3 commands with **docker-compose**
-
-```bash
-git clone --recurse-submodules https://github.com/Trainy-ai/pluto-server.git; cd pluto-server
-cp .env.example .env
-sudo docker-compose --env-file .env up --build
-```
+- Self-host your very own **Pluto** instance using the [Pluto Server](https://github.com/Trainy-ai/pluto-server)
 
 You may also learn more about **Pluto** by checking out our [documentation](https://docs.trainy.ai/pluto).
 
