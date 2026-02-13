@@ -17,7 +17,7 @@ class Summary:
         """Called internally after each log() call to update last values."""
         store = object.__getattribute__(self, '_data')
         for k, v in data.items():
-            if isinstance(v, (int, float)) and not isinstance(v, bool):
+            if isinstance(v, (int, float)):
                 store[k] = v
             elif hasattr(v, 'item') and callable(v.item):
                 store[k] = v.item()

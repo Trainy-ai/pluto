@@ -1,6 +1,7 @@
 """wandb.Run-compatible wrapper around pluto.Op."""
 
 import logging
+import time as _time
 from typing import Any, Dict, List, Optional, Sequence, Union
 
 from .config import Config
@@ -61,6 +62,7 @@ class Run:
         self._pending_data: Dict[str, Any] = {}
         self._step = 0
         self._watched_models: List[Any] = []
+        self._start_time: float = _time.time()
 
     # -- Properties matching wandb.Run --
 
@@ -167,9 +169,7 @@ class Run:
 
     @property
     def start_time(self) -> float:
-        import time
-
-        return time.time()
+        return self._start_time
 
     @property
     def sweep_id(self) -> Optional[str]:
@@ -338,10 +338,12 @@ class Run:
                     logger.debug('%s: log_artifact file failed: %s', tag, e)
             return artifact_or_path
         elif isinstance(artifact_or_path, str):
+            import os
+
             from pluto.file import Artifact as PlutoArtifact
 
             art = PlutoArtifact(data=artifact_or_path, caption=name)
-            log_name = name or 'artifact'
+            log_name = name or os.path.basename(artifact_or_path)
             try:
                 self._op.log({log_name: art})
             except Exception as e:

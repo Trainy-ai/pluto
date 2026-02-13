@@ -34,7 +34,6 @@ class Image:
         self.data_or_path = data_or_path
         self.caption = caption
         self._mode = mode
-        self._grouping = grouping
 
     def _to_pluto(self) -> Any:
         from pluto.file import Image as PlutoImage
@@ -161,7 +160,7 @@ class Histogram:
 
         if self.np_histogram is not None:
             # np_histogram is a tuple of (values, bin_edges)
-            return PlutoHistogram(data=self.np_histogram, bins=self.np_histogram)
+            return PlutoHistogram(data=self.np_histogram, bins=self.np_histogram[1])
         if self.sequence is not None:
             return PlutoHistogram(data=self.sequence, bins=self.num_bins)
         return PlutoHistogram(data=[0], bins=1)

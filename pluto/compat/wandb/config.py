@@ -18,7 +18,6 @@ class Config:
         # Use object.__setattr__ to avoid triggering our __setattr__
         object.__setattr__(self, '_op', op)
         object.__setattr__(self, '_data', {})
-        object.__setattr__(self, '_allow_val_change', True)
 
     def _load(self, data: Optional[Dict[str, Any]]) -> None:
         if data:
