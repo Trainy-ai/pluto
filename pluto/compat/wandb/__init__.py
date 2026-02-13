@@ -128,19 +128,14 @@ def init(
     global run
     global summary
 
-    # If reinit, finish the previous run first
+    # Finish any previous run before creating a new one
     if run is not None:
-        if reinit:
-            try:
-                run.finish()
-            except Exception:
-                pass
-        else:
+        if not reinit:
             logger.debug('%s: init called with existing run, finishing previous', tag)
-            try:
-                run.finish()
-            except Exception:
-                pass
+        try:
+            run.finish()
+        except Exception:
+            pass
 
     # Resolve project from env if not provided
     project = (
@@ -162,14 +157,12 @@ def init(
             tags = [t.strip() for t in env_tags.split(',') if t.strip()]
 
     # Filter config keys if requested
-    config_dict: Optional[Dict[str, Any]] = None
+    config_dict: Dict[str, Any] = {}
     if config is not None:
         if isinstance(config, dict):
             config_dict = dict(config)
         elif hasattr(config, '__dict__'):
             config_dict = vars(config)
-        else:
-            config_dict = {}
 
         if config_dict and config_include_keys:
             config_dict = {
@@ -189,8 +182,6 @@ def init(
 
     # Map wandb run_id / resume
     run_id = id
-    if resume in ('allow', 'must', 'auto', True) and id:
-        run_id = id
 
     # Store wandb-only metadata in config
     extra_config: Dict[str, Any] = {}
@@ -201,7 +192,7 @@ def init(
     if job_type:
         extra_config['_wandb_job_type'] = job_type
 
-    merged_config = {**(config_dict or {}), **extra_config} or None
+    merged_config = {**config_dict, **extra_config} or None
 
     # Initialize pluto
     try:
@@ -215,7 +206,12 @@ def init(
             run_id=run_id,
         )
     except Exception as e:
-        logger.warning('%s: pluto.init() failed (%s), creating disabled run', tag, e)
+        logger.warning(
+            '%s: pluto.init() failed (%s), creating disabled run',
+            tag,
+            e,
+            exc_info=True,
+        )
         # Return a disabled run that no-ops everything
         return _create_disabled_run(
             name=name,
