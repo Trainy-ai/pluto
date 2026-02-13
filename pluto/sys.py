@@ -4,6 +4,7 @@ import importlib.metadata
 import logging
 import os
 import platform
+import re
 import socket
 import sys as _sys
 import time
@@ -416,8 +417,6 @@ class System:
         try:
             nvcc_out = run_cmd('nvcc --version')
             if nvcc_out:
-                import re
-
                 m = re.search(r'release\s+([\d.]+)', nvcc_out)
                 if m:
                     d['cuda_nvcc'] = m.group(1)
@@ -427,8 +426,6 @@ class System:
         # CUDA version reported by nvidia-smi (driver-supported max)
         if self.gpu.get('nvidia', {}).get('smi'):
             try:
-                import re
-
                 m = re.search(r'CUDA Version:\s+([\d.]+)', self.gpu['nvidia']['smi'])
                 if m:
                     d['cuda_driver'] = m.group(1)
@@ -502,10 +499,11 @@ class System:
 
         return d
 
-    def get_infiniband_info(self) -> Dict[str, Any]:
+    def get_infiniband_info(
+        self, ib_base: str = '/sys/class/infiniband'
+    ) -> Dict[str, Any]:
         """Collect InfiniBand device info: link type, speed, mode (IB vs RoCE)."""
         d: Dict[str, Any] = {}
-        ib_base = '/sys/class/infiniband'
 
         if not os.path.exists(ib_base):
             return d

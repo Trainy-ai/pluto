@@ -249,17 +249,18 @@ class TestGetInfinibandInfo(TestSystemInfoHelper):
 
     def test_mock_ib_sysfs(self, tmp_path):
         """Test IB parsing with a mocked sysfs tree."""
-        ib_base = tmp_path / 'sys' / 'class' / 'infiniband'
+        ib_base = tmp_path
         dev_dir = ib_base / 'mlx5_0'
         port_dir = dev_dir / 'ports' / '1'
-        counters_dir = port_dir / 'counters'
-
-        # Create directory structure
-        counters_dir.mkdir(parents=True)
+        gid_dir = port_dir / 'gids'
+        gid_attrs_dir = port_dir / 'gid_attrs' / 'types'
+        gid_dir.mkdir(parents=True)
+        gid_attrs_dir.mkdir(parents=True)
 
         # Device attributes
         (dev_dir / 'fw_ver').write_text('20.31.1014\n')
         (dev_dir / 'board_id').write_text('MT_0000000223\n')
+        (dev_dir / 'hca_type').write_text('ConnectX-6\n')
 
         # Port attributes
         (port_dir / 'link_layer').write_text('InfiniBand\n')
@@ -267,67 +268,27 @@ class TestGetInfinibandInfo(TestSystemInfoHelper):
         (port_dir / 'rate').write_text('200 Gb/sec (4X HDR)\n')
         (port_dir / 'phys_state').write_text('5: LinkUp\n')
 
+        # GID info for RoCE detection
+        (gid_dir / '0').write_text('fe80:0000:0000:0000:ec0d:9a03:0078:a8b2\n')
+        (gid_attrs_dir / '0').write_text('RoCE v2\n')
+
         sys_obj = self._make_system()
-        with patch.object(
-            type(sys_obj),
-            'get_infiniband_info',
-            wraps=sys_obj.get_infiniband_info,
-        ):
-            # Patch the ib_base path
-            original = sys_obj.get_infiniband_info
+        result = sys_obj.get_infiniband_info(ib_base=str(ib_base))
 
-            def patched_get_ib_info():
-                old_exists = os.path.exists
-                old_isdir = os.path.isdir
-                old_listdir = os.listdir
-
-                # Redirect sysfs reads to our tmp_path
-                def mock_exists(path):
-                    if '/sys/class/infiniband' in str(path):
-                        new_path = str(path).replace(
-                            '/sys/class/infiniband',
-                            str(ib_base),
-                        )
-                        return old_exists(new_path)
-                    return old_exists(path)
-
-                def mock_isdir(path):
-                    if '/sys/class/infiniband' in str(path):
-                        new_path = str(path).replace(
-                            '/sys/class/infiniband',
-                            str(ib_base),
-                        )
-                        return old_isdir(new_path)
-                    return old_isdir(path)
-
-                def mock_listdir(path):
-                    if '/sys/class/infiniband' in str(path):
-                        new_path = str(path).replace(
-                            '/sys/class/infiniband',
-                            str(ib_base),
-                        )
-                        return old_listdir(new_path)
-                    return old_listdir(path)
-
-                with (
-                    patch('os.path.exists', side_effect=mock_exists),
-                    patch('os.path.isdir', side_effect=mock_isdir),
-                    patch('os.listdir', side_effect=mock_listdir),
-                    patch('builtins.open', wraps=open),
-                ):
-                    # We need a different approach - just call with
-                    # patched ib_base
-                    pass
-
-                return original()
-
-        # Simpler approach: test the structure directly
-        # by verifying what we'd get from a real IB device
-        if os.path.exists('/sys/class/infiniband'):
-            result = sys_obj.get_infiniband_info()
-            if result.get('devices'):
-                dev = result['devices'][0]
-                assert 'name' in dev
+        assert 'devices' in result
+        assert len(result['devices']) == 1
+        dev = result['devices'][0]
+        assert dev['name'] == 'mlx5_0'
+        assert dev['fw_ver'] == '20.31.1014'
+        assert dev['board_id'] == 'MT_0000000223'
+        assert dev['hca_type'] == 'ConnectX-6'
+        assert 'ports' in dev
+        assert len(dev['ports']) == 1
+        port = dev['ports'][0]
+        assert port['port'] == '1'
+        assert port['link_layer'] == 'InfiniBand'
+        assert port['gid_0'] == 'fe80:0000:0000:0000:ec0d:9a03:0078:a8b2'
+        assert port['roce_type'] == 'RoCE v2'
 
 
 class TestGetInfoIntegration(TestSystemInfoHelper):
