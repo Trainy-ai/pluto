@@ -175,7 +175,7 @@ class TestSummary:
         s._update_from_log({'loss': 0.5, 'image': 'not_a_scalar', 'flag': True})
         assert s['loss'] == 0.5
         assert 'image' not in s
-        assert 'flag' not in s  # bools excluded
+        assert s['flag'] is True  # bools are scalar subclass of int
 
     def test_manual_override(self):
         from pluto.compat.wandb.summary import Summary
@@ -412,7 +412,7 @@ class TestRun:
 
         # Setting tags
         run.tags = ('tag1', 'tag2')
-        op.add_tags.assert_called()
+        op.add_tags.assert_called_with(['tag2'])
 
     def test_name_setter(self):
         run, op = self._make_run(name='original')
