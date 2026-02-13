@@ -1371,3 +1371,132 @@ class TestParityContract:
             assert mock_op.log.call_count == 2
 
             wandb.finish()
+
+
+class TestTopLevelWandbPackage:
+    """Tests that ``import wandb`` resolves to the pluto shim and that
+    all common import patterns used in real wandb code work."""
+
+    def test_import_wandb(self):
+        """Plain ``import wandb`` works and exposes the core API."""
+        import wandb
+
+        assert hasattr(wandb, 'init')
+        assert hasattr(wandb, 'log')
+        assert hasattr(wandb, 'finish')
+        assert hasattr(wandb, 'watch')
+        assert hasattr(wandb, 'config')
+        assert hasattr(wandb, 'summary')
+        assert hasattr(wandb, 'run')
+        assert hasattr(wandb, 'Image')
+        assert hasattr(wandb, 'Table')
+        assert hasattr(wandb, 'Histogram')
+        assert hasattr(wandb, 'Audio')
+        assert hasattr(wandb, 'Video')
+        assert hasattr(wandb, 'Html')
+        assert hasattr(wandb, 'Artifact')
+        assert hasattr(wandb, 'AlertLevel')
+        assert hasattr(wandb, 'Api')
+
+    def test_from_wandb_import_init(self):
+        """``from wandb import init, log, finish`` works."""
+        from wandb import finish, init, log  # noqa: F401
+
+    def test_from_wandb_import_data_types(self):
+        """``from wandb import Image, Table, ...`` works."""
+        from wandb import (  # noqa: F401
+            AlertLevel,
+            Artifact,
+            Audio,
+            Histogram,
+            Html,
+            Image,
+            Table,
+            Video,
+        )
+
+    def test_from_wandb_import_api(self):
+        """``from wandb import Api`` works."""
+        from wandb import Api  # noqa: F401
+
+        api = Api()
+        with pytest.raises(NotImplementedError):
+            api.runs()
+
+    def test_wandb_sdk_import(self):
+        """``import wandb.sdk`` works."""
+        import wandb.sdk  # noqa: F401
+
+        assert hasattr(wandb.sdk, 'init')
+
+    def test_wandb_sdk_data_types_import(self):
+        """``from wandb.sdk.data_types import Image`` works."""
+        from wandb.sdk.data_types import Image  # noqa: F401
+
+    def test_wandb_data_types_import(self):
+        """``from wandb.data_types import Table`` works."""
+        from wandb.data_types import Table  # noqa: F401
+
+    def test_wandb_plot_import(self):
+        """``from wandb import plot; wandb.plot.line_series(...)`` works."""
+        import wandb.plot
+
+        # Should be no-ops, not errors
+        result = wandb.plot.line_series([1, 2], [[1, 2]], title='test')
+        assert result is None
+        assert wandb.plot.confusion_matrix() is None
+        assert wandb.plot.roc_curve() is None
+        assert wandb.plot.pr_curve() is None
+
+    def test_wandb_apis_import(self):
+        """``from wandb.apis import Api`` works."""
+        from wandb.apis import Api  # noqa: F401
+
+    def test_wandb_util_import(self):
+        """``from wandb.util import generate_id`` works."""
+        from wandb.util import generate_id
+
+        rid = generate_id()
+        assert isinstance(rid, str)
+        assert len(rid) == 8
+
+    def test_wandb_login(self):
+        """``wandb.login()`` returns True (no-op)."""
+        import wandb
+
+        assert wandb.login() is True
+
+    def test_wandb_init_log_finish_e2e(self):
+        """Full workflow through top-level ``import wandb``."""
+        import wandb
+
+        with mock.patch('pluto.init') as mock_init:
+            mock_op = _make_mock_op()
+            mock_init.return_value = mock_op
+
+            run = wandb.init(project='test-shim')
+            wandb.config.lr = 0.01
+            wandb.log({'loss': 0.5})
+            wandb.log({'loss': 0.3})
+            assert run.summary['loss'] == pytest.approx(0.3)
+            wandb.finish()
+
+            mock_init.assert_called_once()
+            assert mock_init.call_args[1]['project'] == 'test-shim'
+            assert mock_op.log.call_count == 2
+            mock_op.finish.assert_called_once()
+
+    def test_wandb_settings_class(self):
+        """``wandb.Settings(...)`` works."""
+        import wandb
+
+        s = wandb.Settings(mode='offline')
+        assert s.mode == 'offline'
+
+    def test_wandb_integration_lightning_import(self):
+        """``from wandb.integration.lightning import WandbLogger`` works."""
+        try:
+            from wandb.integration.lightning import WandbLogger  # noqa: F401
+        except ImportError:
+            # Lightning not installed — that's fine, the import path itself resolved
+            pytest.skip('lightning not installed')
