@@ -294,8 +294,33 @@ class Run:
         goal: Optional[str] = None,
         overwrite: Optional[bool] = None,
     ) -> Any:
-        """Define metric behavior. No-op in pluto (returns a stub)."""
-        logger.debug('%s: define_metric is a no-op', tag)
+        """Define metric behavior (aggregation, custom x-axis)."""
+        # Build definition dict for client-side aggregation
+        definition: dict = {'name': name}
+        if step_metric is not None:
+            definition['step_metric'] = step_metric
+        if summary is not None:
+            definition['summary'] = summary
+        if goal is not None:
+            definition['goal'] = goal
+        if hidden is not None:
+            definition['hidden'] = hidden
+
+        # Register with Summary for client-side aggregation
+        self._summary._set_metric_definition(name, definition)
+
+        # Forward to Op for server sync
+        try:
+            self._op.define_metric(
+                name,
+                step_metric=step_metric,
+                summary=summary,
+                goal=goal,
+                hidden=hidden,
+            )
+        except Exception as e:
+            logger.debug('%s: define_metric server sync failed: %s', tag, e)
+
         return _MetricStub(name)
 
     def save(
@@ -381,10 +406,9 @@ class Run:
     def __enter__(self) -> 'Run':
         return self
 
-    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> bool:
+    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
         exit_code = 1 if exc_type else 0
         self.finish(exit_code=exit_code)
-        return False
 
     def __repr__(self) -> str:
         return f'<Run {self.project}/{self.id} ({self.name})>'

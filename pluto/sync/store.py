@@ -103,6 +103,7 @@ class RecordType(IntEnum):
     TAGS = 4
     SYSTEM = 5
     CONSOLE = 6  # stdout/stderr logs
+    METRIC_DEF = 7  # metric definitions (define_metric)
 
 
 @dataclass

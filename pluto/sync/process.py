@@ -284,6 +284,17 @@ class SyncProcessManager:
             timestamp_ms=timestamp_ms,
         )
 
+    def enqueue_metric_definition(
+        self, definition: Dict[str, Any], timestamp_ms: int
+    ) -> None:
+        """Enqueue a metric definition for upload."""
+        self.store.enqueue(
+            run_id=self.run_id,
+            record_type=RecordType.METRIC_DEF,
+            payload=definition,
+            timestamp_ms=timestamp_ms,
+        )
+
     def enqueue_console_log(
         self,
         message: str,
@@ -620,6 +631,7 @@ def _sync_records_batch(
     system_records: List[SyncRecord] = []
     data_records: List[SyncRecord] = []
     console_records: List[SyncRecord] = []
+    metric_def_records: List[SyncRecord] = []
 
     for record in records:
         if record.record_type == RecordType.METRIC:
@@ -634,6 +646,8 @@ def _sync_records_batch(
             data_records.append(record)
         elif record.record_type == RecordType.CONSOLE:
             console_records.append(record)
+        elif record.record_type == RecordType.METRIC_DEF:
+            metric_def_records.append(record)
 
     success_ids: List[int] = []
     failed_ids: List[int] = []
@@ -697,6 +711,16 @@ def _sync_records_batch(
         except Exception as e:
             log.warning(f'Failed to upload console logs: {e}')
             failed_ids.extend(r.id for r in console_records)
+            error_msg = str(e)
+
+    # Upload metric definitions
+    if metric_def_records:
+        try:
+            uploader.upload_metric_definitions(metric_def_records)
+            success_ids.extend(r.id for r in metric_def_records)
+        except Exception as e:
+            log.warning(f'Failed to upload metric definitions: {e}')
+            failed_ids.extend(r.id for r in metric_def_records)
             error_msg = str(e)
 
     # Update status
@@ -857,6 +881,7 @@ class _SyncUploader:
         self.url_update_tags = settings_dict.get('url_update_tags', '')
         self.url_file = settings_dict.get('url_file', '')
         self.url_console = settings_dict.get('url_message', '')
+        self.url_update_metric_defs = settings_dict.get('url_update_metric_defs', '')
 
         # Retry settings (normal mode)
         self.retry_max = settings_dict.get('sync_process_retry_max', 5)
@@ -977,6 +1002,25 @@ class _SyncUploader:
         headers['Content-Type'] = 'application/json'
         self._post_with_retry(
             self.url_update_tags,
+            json.dumps(payload),
+            headers,
+        )
+
+    def upload_metric_definitions(self, records: List[SyncRecord]) -> None:
+        """Upload metric definitions."""
+        if not self.url_update_metric_defs or not self.op_id:
+            return
+
+        metrics = [record.payload for record in records]
+        payload = {
+            'runId': self.op_id,
+            'metrics': metrics,
+        }
+
+        headers = self._get_headers()
+        headers['Content-Type'] = 'application/json'
+        self._post_with_retry(
+            self.url_update_metric_defs,
             json.dumps(payload),
             headers,
         )
