@@ -213,6 +213,77 @@ class TestSummary:
         s.update({'a': 1})
         assert s.as_dict() == {'a': 1}
 
+    def test_summary_aggregation_min(self):
+        from pluto.compat.wandb.summary import Summary
+
+        s = Summary()
+        s._set_metric_definition('loss', {'name': 'loss', 'summary': 'min'})
+        s._update_from_log({'loss': 0.5})
+        s._update_from_log({'loss': 0.3})
+        s._update_from_log({'loss': 0.7})
+        assert s['loss'] == pytest.approx(0.3)
+
+    def test_summary_aggregation_max(self):
+        from pluto.compat.wandb.summary import Summary
+
+        s = Summary()
+        s._set_metric_definition('acc', {'name': 'acc', 'summary': 'max'})
+        s._update_from_log({'acc': 0.8})
+        s._update_from_log({'acc': 0.95})
+        s._update_from_log({'acc': 0.9})
+        assert s['acc'] == pytest.approx(0.95)
+
+    def test_summary_aggregation_mean(self):
+        from pluto.compat.wandb.summary import Summary
+
+        s = Summary()
+        s._set_metric_definition('loss', {'name': 'loss', 'summary': 'mean'})
+        s._update_from_log({'loss': 1.0})
+        s._update_from_log({'loss': 2.0})
+        s._update_from_log({'loss': 3.0})
+        assert s['loss'] == pytest.approx(2.0)
+
+    def test_summary_aggregation_first(self):
+        from pluto.compat.wandb.summary import Summary
+
+        s = Summary()
+        s._set_metric_definition('lr', {'name': 'lr', 'summary': 'first'})
+        s._update_from_log({'lr': 0.01})
+        s._update_from_log({'lr': 0.001})
+        s._update_from_log({'lr': 0.0001})
+        assert s['lr'] == pytest.approx(0.01)
+
+    def test_summary_aggregation_last(self):
+        from pluto.compat.wandb.summary import Summary
+
+        s = Summary()
+        s._set_metric_definition('step', {'name': 'step', 'summary': 'last'})
+        s._update_from_log({'step': 1})
+        s._update_from_log({'step': 2})
+        s._update_from_log({'step': 3})
+        assert s['step'] == 3
+
+    def test_summary_aggregation_glob(self):
+        from pluto.compat.wandb.summary import Summary
+
+        s = Summary()
+        s._set_metric_definition('val/*', {'name': 'val/*', 'summary': 'min'})
+        s._update_from_log({'val/loss': 0.5, 'val/acc': 0.8})
+        s._update_from_log({'val/loss': 0.3, 'val/acc': 0.6})
+        s._update_from_log({'val/loss': 0.7, 'val/acc': 0.9})
+        assert s['val/loss'] == pytest.approx(0.3)
+        assert s['val/acc'] == pytest.approx(0.6)
+
+    def test_summary_no_definition_keeps_last(self):
+        from pluto.compat.wandb.summary import Summary
+
+        s = Summary()
+        # No definition set — default behavior
+        s._update_from_log({'loss': 0.5})
+        s._update_from_log({'loss': 0.3})
+        s._update_from_log({'loss': 0.7})
+        assert s['loss'] == pytest.approx(0.7)
+
 
 class TestDataTypes:
     """Tests for wandb data type wrappers."""
@@ -290,7 +361,7 @@ class TestDataTypes:
         assert t.get_column('missing') == []
 
     def test_table_from_dataframe(self):
-        import pandas as pd
+        pd = pytest.importorskip('pandas')
 
         from pluto.compat.wandb.data_types import Table
 
@@ -504,6 +575,17 @@ class TestRun:
         run, op = self._make_run()
         m = run.define_metric('loss', step_metric='epoch')
         assert m.name == 'loss'
+        # Verify Op.define_metric was called
+        op.define_metric.assert_called_once_with(
+            'loss', step_metric='epoch', summary=None, goal=None, hidden=None
+        )
+
+    def test_define_metric_with_step_metric(self):
+        run, op = self._make_run()
+        run.define_metric('val/loss', step_metric='epoch')
+        op.define_metric.assert_called_once_with(
+            'val/loss', step_metric='epoch', summary=None, goal=None, hidden=None
+        )
 
     def test_unsupported_methods_no_error(self):
         run, op = self._make_run()
