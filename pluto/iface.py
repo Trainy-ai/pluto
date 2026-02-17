@@ -100,6 +100,23 @@ class ServerInterface:
             client=self.client_api,
         )
 
+    def update_metric_definitions(self, metrics: List[Dict[str, Any]]) -> None:
+        """Update metric definitions on the server via HTTP API."""
+        payload = json.dumps(
+            {
+                'runId': self.settings._op_id,
+                'metrics': metrics,
+            }
+        ).encode()
+        headers = self.headers.copy()
+        headers['Content-Type'] = 'application/json'
+        self._post_v1(
+            self.settings.url_update_metric_defs,
+            headers,
+            payload,
+            client=self.client_api,
+        )
+
     # Keep legacy underscore methods for backwards compatibility
     def _update_status(self, settings, trace: Union[Any, None] = None):
         """Legacy method - use update_status() instead."""

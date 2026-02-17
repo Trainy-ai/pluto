@@ -241,6 +241,7 @@ class Op:
         self.config = config
         self.settings = settings
         self.tags: List[str] = tags if tags else []  # Use provided tags or empty list
+        self._metric_definitions: Dict[str, Dict[str, Any]] = {}
         self._monitor = OpMonitor(op=self)
         self._resumed: bool = False  # Whether this run was resumed (multi-node)
         self._sync_manager: Optional[SyncProcessManager] = None
@@ -339,6 +340,7 @@ class Op:
             'url_update_tags': self.settings.url_update_tags,
             'url_file': self.settings.url_file,  # For file uploads
             'url_message': self.settings.url_message,  # For console logs
+            'url_update_metric_defs': self.settings.url_update_metric_defs,
             'x_log_level': self.settings.x_log_level,
             'sync_process_flush_interval': (self.settings.sync_process_flush_interval),
             'sync_process_shutdown_timeout': (
@@ -757,6 +759,58 @@ class Op:
                 self._iface._update_config(config)
             except Exception as e:
                 logger.debug(f'{tag}: failed to sync config to server: {e}')
+
+    def define_metric(
+        self,
+        name: str,
+        step_metric: Optional[str] = None,
+        summary: Optional[str] = None,
+        goal: Optional[str] = None,
+        hidden: Optional[bool] = None,
+    ) -> Dict[str, Any]:
+        """Define metric behavior (aggregation, custom x-axis).
+
+        Args:
+            name: Metric name or glob pattern (e.g. "val/*")
+            step_metric: Name of metric to use as x-axis
+            summary: Aggregation mode: "min", "max", "mean", "first", "last"
+            goal: Optimization goal: "minimize" or "maximize"
+            hidden: Whether to hide this metric in the dashboard
+        """
+        definition: Dict[str, Any] = {'name': name}
+        if step_metric is not None:
+            definition['step_metric'] = step_metric
+        if summary is not None:
+            definition['summary'] = summary
+        if goal is not None:
+            definition['goal'] = goal
+        if hidden is not None:
+            definition['hidden'] = hidden
+        self._metric_definitions[name] = definition
+
+        # Sync to server (best-effort)
+        if self._sync_manager is not None:
+            self._sync_manager.enqueue_metric_definition(
+                definition, int(time.time() * 1000)
+            )
+        elif self._iface:
+            try:
+                self._iface.update_metric_definitions([definition])
+            except Exception as e:
+                logger.debug(f'{tag}: failed to sync metric definition to server: {e}')
+
+        return definition
+
+    def get_metric_definition(self, name: str) -> Optional[Dict[str, Any]]:
+        """Get the metric definition for a name, supporting glob patterns."""
+        if name in self._metric_definitions:
+            return self._metric_definitions[name]
+        from fnmatch import fnmatch
+
+        for pattern, defn in self._metric_definitions.items():
+            if fnmatch(name, pattern):
+                return defn
+        return None
 
     @property
     def resumed(self) -> bool:

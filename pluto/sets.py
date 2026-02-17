@@ -128,6 +128,7 @@ class Settings:
         self.url_data = f'{self.url_ingest}/ingest/data'
         self.url_file = f'{self.url_ingest}/files'
         self.url_message = f'{self.url_ingest}/ingest/logs'
+        self.url_update_metric_defs = f'{self.url_api}/api/runs/metrics/define'
         self.url_alert = f'{self.url_py}/api/runs/alert'
         self.url_trigger = f'{self.url_py}/api/runs/trigger'
 
@@ -249,6 +250,8 @@ def setup(settings: Union[Settings, Dict[str, Any], None] = None) -> Settings:
     # Read PLUTO_API_TOKEN environment variable (with MLOP_API_TOKEN fallback)
     # Only apply if not already set via function parameters
     env_api_token = _get_env_with_deprecation('PLUTO_API_TOKEN', 'MLOP_API_TOKEN')
+    if env_api_token is None:
+        env_api_token = os.environ.get('WANDB_API_KEY')
     if env_api_token is not None and '_auth' not in settings_dict:
         new_settings._auth = env_api_token
 
