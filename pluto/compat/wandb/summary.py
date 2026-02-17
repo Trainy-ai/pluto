@@ -1,5 +1,6 @@
 """wandb.summary-compatible dict-like summary metrics object."""
 
+from fnmatch import fnmatch
 from typing import Any, Dict, Iterator, Optional
 
 
@@ -8,19 +9,72 @@ class Summary:
 
     Auto-populated from log() calls (last value per key for scalars).
     Supports manual overrides via dict/attribute access.
+    When metric definitions specify aggregation (min/max/mean/first/last),
+    summary values are computed accordingly instead of always keeping last.
     """
 
     def __init__(self) -> None:
         object.__setattr__(self, '_data', {})
+        object.__setattr__(self, '_metric_definitions', {})
+        # Tracks running state for mean aggregation: {key: {'sum': float, 'count': int}}
+        object.__setattr__(self, '_agg_state', {})
+
+    def _set_metric_definition(self, name: str, definition: Dict[str, Any]) -> None:
+        """Register a metric definition for summary aggregation."""
+        defs = object.__getattribute__(self, '_metric_definitions')
+        defs[name] = definition
+
+    def _find_definition(self, key: str) -> Optional[Dict[str, Any]]:
+        """Find a metric definition by exact match first, then glob pattern."""
+        defs = object.__getattribute__(self, '_metric_definitions')
+        if key in defs:
+            return defs[key]
+        for pattern, defn in defs.items():
+            if fnmatch(key, pattern):
+                return defn
+        return None
 
     def _update_from_log(self, data: Dict[str, Any]) -> None:
-        """Called internally after each log() call to update last values."""
+        """Called internally after each log() call to update summary values."""
         store = object.__getattribute__(self, '_data')
+        agg_state = object.__getattribute__(self, '_agg_state')
         for k, v in data.items():
             if isinstance(v, (int, float)):
-                store[k] = v
+                val = v
             elif hasattr(v, 'item') and callable(v.item):
-                store[k] = v.item()
+                val = v.item()
+            else:
+                continue
+
+            defn = self._find_definition(k)
+            if defn is None:
+                # Default: keep last value
+                store[k] = val
+                continue
+
+            summary_mode = defn.get('summary')
+            if summary_mode == 'min':
+                if k in store:
+                    store[k] = min(store[k], val)
+                else:
+                    store[k] = val
+            elif summary_mode == 'max':
+                if k in store:
+                    store[k] = max(store[k], val)
+                else:
+                    store[k] = val
+            elif summary_mode == 'mean':
+                if k not in agg_state:
+                    agg_state[k] = {'sum': 0.0, 'count': 0}
+                agg_state[k]['sum'] += val
+                agg_state[k]['count'] += 1
+                store[k] = agg_state[k]['sum'] / agg_state[k]['count']
+            elif summary_mode == 'first':
+                if k not in store:
+                    store[k] = val
+            else:
+                # "last" or unrecognized — keep last value
+                store[k] = val
 
     # -- Attribute access --
 

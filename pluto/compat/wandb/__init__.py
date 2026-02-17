@@ -322,7 +322,7 @@ def define_metric(
     goal: Optional[str] = None,
     overwrite: Optional[bool] = None,
 ) -> Any:
-    """Define metric behavior. No-op in pluto compat layer."""
+    """Define metric behavior (aggregation, custom x-axis)."""
     if run is not None:
         return run.define_metric(
             name,
