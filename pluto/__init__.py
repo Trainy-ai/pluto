@@ -2,6 +2,7 @@ import os
 import subprocess
 from typing import Any, Callable, List, Optional
 
+from . import query
 from .auth import login, logout
 from .data import Data, Graph, Histogram, Table
 from .file import Artifact, Audio, File, Image, Text, Video
@@ -35,6 +36,7 @@ __all__ = (
     'watch',
     'finish',
     'setup',
+    'query',
 )
 
 __version__ = '0.0.6'
