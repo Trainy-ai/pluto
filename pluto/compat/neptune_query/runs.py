@@ -17,11 +17,12 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Union
-
-import pandas as pd
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Union
 
 from pluto.query import Client
+
+if TYPE_CHECKING:
+    import pandas as pd
 
 from .filters import AttributeFilter, Filter, _resolve_attribute
 
@@ -125,6 +126,8 @@ def fetch_runs_table(
     Returns:
         DataFrame indexed by ``"run"`` with one column per attribute.
     """
+    import pandas as pd
+
     global _last_project
     project = _normalize_project(project)
     _last_project = project
@@ -167,6 +170,8 @@ def fetch_metrics(
     Returns:
         DataFrame with ``step`` as index and one column per matching metric.
     """
+    import pandas as pd
+
     global _last_project
     project = _normalize_project(project)
     _last_project = project

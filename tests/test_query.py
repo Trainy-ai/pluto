@@ -133,8 +133,9 @@ class TestResolveUrlApi:
 
 class TestClientInit:
     def test_requires_token(self):
-        with pytest.raises(QueryError, match='No API token'):
-            Client()
+        with patch('pluto.query._resolve_api_token', return_value=None):
+            with pytest.raises(QueryError, match='No API token'):
+                Client()
 
     def test_from_env(self, monkeypatch):
         monkeypatch.setenv('PLUTO_API_TOKEN', 'plt_abc')

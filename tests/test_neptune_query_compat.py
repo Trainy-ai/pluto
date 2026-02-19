@@ -2,11 +2,12 @@
 
 from unittest.mock import MagicMock, patch
 
-import pandas as pd
 import pytest
 
-from pluto.compat.neptune_query import runs as nq_runs
-from pluto.compat.neptune_query.filters import (
+pd = pytest.importorskip('pandas')
+
+from pluto.compat.neptune_query import runs as nq_runs  # noqa: E402
+from pluto.compat.neptune_query.filters import (  # noqa: E402
     AttributeFilter,
     Filter,
     _resolve_attribute,
