@@ -332,17 +332,19 @@ class NeptuneRunWrapper:
                 )
                 return
 
-            # Extract Neptune parameters for mapping
+            # Resolve run_id: prefer explicit kwarg, fall back to Neptune's
+            # auto-generated ID so training runs get an externalId that
+            # a later eval call can resume into.
             experiment_name = kwargs.get('experiment_name', 'neptune-migration')
-            run_id = kwargs.get('run_id', None)
+            run_id = kwargs.get('run_id', None) or getattr(
+                self._neptune_run, '_run_id', getattr(self._neptune_run, 'run_id', None)
+            )
 
-            # Build pluto init parameters
             pluto_init_kwargs = {
                 'project': pluto_config['project'],
-                'name': experiment_name
-                if not run_id
-                else f'{experiment_name}-{run_id}',
+                'name': f'{experiment_name}-{run_id}' if run_id else experiment_name,
                 'config': {},  # Will be populated by log_configs()
+                **(({'run_id': run_id}) if run_id else {}),
             }
 
             # Add custom URLs if provided
