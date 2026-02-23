@@ -55,8 +55,13 @@ def _resolve_attribute(run: Dict[str, Any], attr: str) -> Any:
         return node
 
     # Check logNames for file/metric existence
+    # Server may return logNames as [{"logName": "...", ...}] or ["..."]
     log_names = run.get('logNames') or []
-    if attr in log_names:
+    log_name_strs = [
+        entry['logName'] if isinstance(entry, dict) else entry
+        for entry in log_names
+    ]
+    if attr in log_name_strs:
         return True
 
     return None

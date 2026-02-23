@@ -213,7 +213,7 @@ def download_files(
     """Download file artifacts referenced in *files* DataFrame.
 
     Args:
-        files: DataFrame from :func:`fetch_runs_table` where column values
+        files: DataFrame from :func:`fetch_runs_table` where column names
             are file attribute names (the attribute must correspond to a
             file uploaded to the run).
         destination: Local directory to download files into.
@@ -232,7 +232,12 @@ def download_files(
 
         for col in files.columns:
             file_attr = col  # column name is the attribute / file name
-            run_dest = destination / display_id
+            # Sanitize display_id to prevent path traversal from malicious server data
+            safe_id = Path(display_id).name
+            if not safe_id or safe_id in ('.', '..'):
+                logger.debug('%s: skipping unsafe display_id %r', tag, display_id)
+                continue
+            run_dest = destination / safe_id
             try:
                 path = client.download_file(
                     project, numeric_id, file_attr, destination=run_dest

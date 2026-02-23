@@ -75,7 +75,7 @@ class Client:
         self._url_api = _resolve_url_api(host)
         self._client = httpx.Client(
             headers={
-                'x-api-key': self._api_token,
+                'Authorization': f'Bearer {self._api_token}',
                 'User-Agent': 'pluto-query',
             },
             timeout=httpx.Timeout(timeout),
@@ -102,7 +102,7 @@ class Client:
             List of project dicts with keys: ``id``, ``name``, ``runCount``,
             ``createdAt``, ``updatedAt``.
         """
-        return self._get('/api/runs/projects')
+        return self._get('/api/runs/projects')['projects']
 
     # ------------------------------------------------------------------
     # Runs
@@ -134,7 +134,7 @@ class Client:
             params['search'] = search
         if tags is not None:
             params['tags'] = ','.join(tags)
-        return self._get('/api/runs/list', params=params)
+        return self._get('/api/runs/list', params=params)['runs']
 
     def get_run(
         self,
@@ -192,7 +192,7 @@ class Client:
             params['runIds'] = ','.join(str(r) for r in run_ids)
         if search is not None:
             params['search'] = search
-        return self._get('/api/runs/metric-names', params=params)
+        return self._get('/api/runs/metric-names', params=params)['metricNames']
 
     def get_metrics(
         self,
@@ -232,11 +232,16 @@ class Client:
             for name in metric_names:
                 p = dict(params)
                 p['logName'] = name
-                raw.extend(self._get('/api/runs/metrics', params=p))
+                raw.extend(self._get('/api/runs/metrics', params=p)['metrics'])
         else:
             if metric_names is not None and len(metric_names) == 1:
                 params['logName'] = metric_names[0]
-            raw = self._get('/api/runs/metrics', params=params)
+            raw = self._get('/api/runs/metrics', params=params)['metrics']
+
+        # Server returns 'logName' per point; downstream expects 'metric'.
+        for row in raw:
+            if 'logName' in row and 'metric' not in row:
+                row['metric'] = row.pop('logName')
 
         return _to_dataframe(raw)
 
@@ -348,7 +353,7 @@ class Client:
         params: Dict[str, Any] = {'runId': run_id, 'projectName': project}
         if file_name is not None:
             params['logName'] = file_name
-        return self._get('/api/runs/files', params=params)
+        return self._get('/api/runs/files', params=params)['files']
 
     def download_file(
         self,
@@ -424,7 +429,7 @@ class Client:
         }
         if log_type is not None:
             params['logType'] = log_type
-        return self._get('/api/runs/logs', params=params)
+        return self._get('/api/runs/logs', params=params)['logs']
 
     # ------------------------------------------------------------------
     # Internal HTTP helpers

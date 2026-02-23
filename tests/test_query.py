@@ -171,7 +171,7 @@ class TestListProjects:
             {'id': 1, 'name': 'proj-a', 'runCount': 5},
             {'id': 2, 'name': 'proj-b', 'runCount': 3},
         ]
-        client._client.get.return_value = mock_response(200, data)
+        client._client.get.return_value = mock_response(200, {'projects': data})
         result = client.list_projects()
         assert result == data
         client._client.get.assert_called_once()
@@ -187,7 +187,7 @@ class TestListProjects:
 class TestListRuns:
     def test_basic(self, client, mock_response):
         data = [{'id': 1, 'name': 'run-1', 'displayId': 'MMP-1'}]
-        client._client.get.return_value = mock_response(200, data)
+        client._client.get.return_value = mock_response(200, {'runs': data})
         result = client.list_runs('my-project')
         assert result == data
         call_args = client._client.get.call_args
@@ -195,14 +195,14 @@ class TestListRuns:
         assert call_args[1]['params']['limit'] == 50
 
     def test_with_search_and_tags(self, client, mock_response):
-        client._client.get.return_value = mock_response(200, [])
+        client._client.get.return_value = mock_response(200, {'runs': []})
         client.list_runs('proj', search='experiment', tags=['v2', 'prod'])
         call_args = client._client.get.call_args
         assert call_args[1]['params']['search'] == 'experiment'
         assert call_args[1]['params']['tags'] == 'v2,prod'
 
     def test_limit_capped_at_200(self, client, mock_response):
-        client._client.get.return_value = mock_response(200, [])
+        client._client.get.return_value = mock_response(200, {'runs': []})
         client.list_runs('proj', limit=999)
         call_args = client._client.get.call_args
         assert call_args[1]['params']['limit'] == 200
@@ -239,12 +239,12 @@ class TestGetRun:
 class TestGetMetricNames:
     def test_basic(self, client, mock_response):
         data = ['loss', 'accuracy', 'val/loss']
-        client._client.get.return_value = mock_response(200, data)
+        client._client.get.return_value = mock_response(200, {'metricNames': data})
         result = client.get_metric_names('proj')
         assert result == data
 
     def test_with_run_ids(self, client, mock_response):
-        client._client.get.return_value = mock_response(200, [])
+        client._client.get.return_value = mock_response(200, {'metricNames': []})
         client.get_metric_names('proj', run_ids=[1, 2, 3])
         params = client._client.get.call_args[1]['params']
         assert params['runIds'] == '1,2,3'
@@ -257,11 +257,11 @@ class TestGetMetricNames:
 
 class TestGetMetrics:
     def test_single_metric(self, client, mock_response):
-        data = [
-            {'metric': 'loss', 'step': 0, 'value': 1.0, 'time': '2025-01-01'},
-            {'metric': 'loss', 'step': 1, 'value': 0.5, 'time': '2025-01-01'},
+        server_data = [
+            {'logName': 'loss', 'step': 0, 'value': 1.0, 'time': '2025-01-01'},
+            {'logName': 'loss', 'step': 1, 'value': 0.5, 'time': '2025-01-01'},
         ]
-        client._client.get.return_value = mock_response(200, data)
+        client._client.get.return_value = mock_response(200, {'metrics': server_data})
         result = client.get_metrics('proj', 42, metric_names=['loss'])
         params = client._client.get.call_args[1]['params']
         assert params['logName'] == 'loss'
@@ -271,29 +271,32 @@ class TestGetMetrics:
 
             assert isinstance(result, pd.DataFrame)
             assert len(result) == 2
+            # logName should be renamed to metric
+            assert 'metric' in result.columns
         except ImportError:
             assert isinstance(result, list)
             assert len(result) == 2
+            assert result[0]['metric'] == 'loss'
 
     def test_multiple_metrics(self, client, mock_response):
-        data_loss = [{'metric': 'loss', 'step': 0, 'value': 1.0}]
-        data_acc = [{'metric': 'acc', 'step': 0, 'value': 0.8}]
+        data_loss = [{'logName': 'loss', 'step': 0, 'value': 1.0}]
+        data_acc = [{'logName': 'acc', 'step': 0, 'value': 0.8}]
         client._client.get.side_effect = [
-            mock_response(200, data_loss),
-            mock_response(200, data_acc),
+            mock_response(200, {'metrics': data_loss}),
+            mock_response(200, {'metrics': data_acc}),
         ]
         client.get_metrics('proj', 42, metric_names=['loss', 'acc'])
         assert client._client.get.call_count == 2
 
     def test_all_metrics(self, client, mock_response):
-        data = [{'metric': 'loss', 'step': 0, 'value': 1.0}]
-        client._client.get.return_value = mock_response(200, data)
+        server_data = [{'logName': 'loss', 'step': 0, 'value': 1.0}]
+        client._client.get.return_value = mock_response(200, {'metrics': server_data})
         client.get_metrics('proj', 42)
         params = client._client.get.call_args[1]['params']
         assert 'logName' not in params
 
     def test_empty_returns_empty_dataframe(self, client, mock_response):
-        client._client.get.return_value = mock_response(200, [])
+        client._client.get.return_value = mock_response(200, {'metrics': []})
         result = client.get_metrics('proj', 42)
         try:
             import pandas as pd
@@ -363,12 +366,12 @@ class TestLeaderboard:
 class TestGetFiles:
     def test_basic(self, client, mock_response):
         data = [{'fileName': 'model.pt', 'downloadUrl': 'https://s3/model.pt'}]
-        client._client.get.return_value = mock_response(200, data)
+        client._client.get.return_value = mock_response(200, {'files': data})
         result = client.get_files('proj', 42)
         assert result == data
 
     def test_with_filter(self, client, mock_response):
-        client._client.get.return_value = mock_response(200, [])
+        client._client.get.return_value = mock_response(200, {'files': []})
         client.get_files('proj', 42, file_name='checkpoint')
         params = client._client.get.call_args[1]['params']
         assert params['logName'] == 'checkpoint'
@@ -388,7 +391,7 @@ class TestDownloadFile:
                 'fileSize': 100,
             }
         ]
-        client._client.get.return_value = mock_response(200, file_data)
+        client._client.get.return_value = mock_response(200, {'files': file_data})
 
         dl_response = MagicMock()
         dl_response.content = b'model-bytes'
@@ -401,7 +404,7 @@ class TestDownloadFile:
         assert path.read_bytes() == b'model-bytes'
 
     def test_no_matching_file(self, client, mock_response):
-        client._client.get.return_value = mock_response(200, [])
+        client._client.get.return_value = mock_response(200, {'files': []})
         with pytest.raises(QueryError, match='No file found'):
             client.download_file('proj', 42, 'missing.pt')
 
@@ -414,12 +417,12 @@ class TestDownloadFile:
 class TestGetLogs:
     def test_basic(self, client, mock_response):
         data = [{'message': 'hello', 'logType': 'info', 'lineNumber': 1}]
-        client._client.get.return_value = mock_response(200, data)
+        client._client.get.return_value = mock_response(200, {'logs': data})
         result = client.get_logs('proj', 42)
         assert result == data
 
     def test_with_type_filter(self, client, mock_response):
-        client._client.get.return_value = mock_response(200, [])
+        client._client.get.return_value = mock_response(200, {'logs': []})
         client.get_logs('proj', 42, log_type='error')
         params = client._client.get.call_args[1]['params']
         assert params['logType'] == 'error'
