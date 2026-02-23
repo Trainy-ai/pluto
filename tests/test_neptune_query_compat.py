@@ -109,10 +109,13 @@ class TestResolveAttribute:
 
     def test_log_name_exists_dict_format(self):
         """Server may return logNames as list of dicts."""
-        run = dict(SAMPLE_RUN, logNames=[
-            {'logName': 'train/loss', 'logType': 'metric'},
-            {'logName': 'hydra/config.yaml', 'logType': 'file'},
-        ])
+        run = dict(
+            SAMPLE_RUN,
+            logNames=[
+                {'logName': 'train/loss', 'logType': 'metric'},
+                {'logName': 'hydra/config.yaml', 'logType': 'file'},
+            ],
+        )
         assert _resolve_attribute(run, 'hydra/config.yaml') is True
         assert _resolve_attribute(run, 'train/loss') is True
         assert _resolve_attribute(run, 'nonexistent') is None

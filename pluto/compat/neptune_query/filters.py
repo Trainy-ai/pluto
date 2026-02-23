@@ -58,8 +58,7 @@ def _resolve_attribute(run: Dict[str, Any], attr: str) -> Any:
     # Server may return logNames as [{"logName": "...", ...}] or ["..."]
     log_names = run.get('logNames') or []
     log_name_strs = [
-        entry['logName'] if isinstance(entry, dict) else entry
-        for entry in log_names
+        entry['logName'] if isinstance(entry, dict) else entry for entry in log_names
     ]
     if attr in log_name_strs:
         return True
