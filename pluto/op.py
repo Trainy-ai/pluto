@@ -340,6 +340,8 @@ class Op:
             'url_file': self.settings.url_file,  # For file uploads
             'url_message': self.settings.url_message,  # For console logs
             'x_log_level': self.settings.x_log_level,
+            'pluto_version': self.settings.pluto_version,
+            'pluto_commit': self.settings.pluto_commit,
             'sync_process_flush_interval': (self.settings.sync_process_flush_interval),
             'sync_process_shutdown_timeout': (
                 self.settings.sync_process_shutdown_timeout
