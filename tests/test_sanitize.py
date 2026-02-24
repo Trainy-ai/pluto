@@ -182,13 +182,12 @@ class TestKeyValueAssignments:
         assert 'my-app-secret-value' not in sanitize(line)
 
 
-# === Gemini review edge cases ===
+# === Connection string edge cases ===
 
 
-class TestGeminiReviewEdgeCases:
-    """Tests based on Gemini code review comments on PR #41."""
+class TestConnectionStringEdgeCases:
+    """Edge-case tests for connection strings with special characters."""
 
-    # Comment 3: Connection string with literal @ in password
     def test_connection_string_password_with_at_sign(self):
         """Password containing @ should be fully redacted."""
         line = 'Connecting to redis://user:h@ckme123@redis.example.com:6379/0'
