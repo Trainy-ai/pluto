@@ -163,9 +163,9 @@ class AttributeFilter:
             import warnings
 
             warnings.warn(
-                f"AttributeFilter(type={self.type!r}) is accepted for compatibility "
-                "but currently ignored. All attribute types are returned regardless "
-                "of the type filter.",
+                f'AttributeFilter(type={self.type!r}) is accepted for compatibility '
+                'but currently ignored. All attribute types are returned regardless '
+                'of the type filter.',
                 UserWarning,
                 stacklevel=2,
             )
