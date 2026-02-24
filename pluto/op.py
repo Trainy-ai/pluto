@@ -342,6 +342,8 @@ class Op:
             'url_message': self.settings.url_message,  # For console logs
             'url_update_metric_defs': self.settings.url_update_metric_defs,
             'x_log_level': self.settings.x_log_level,
+            'pluto_version': self.settings.pluto_version,
+            'pluto_commit': self.settings.pluto_commit,
             'sync_process_flush_interval': (self.settings.sync_process_flush_interval),
             'sync_process_shutdown_timeout': (
                 self.settings.sync_process_shutdown_timeout
