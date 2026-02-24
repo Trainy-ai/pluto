@@ -73,6 +73,9 @@ class Settings:
     x_param_label: str = 'param'
     x_disable_signal_handlers: bool = False  # For compat layers (Neptune)
 
+    pluto_version: Optional[str] = None
+    pluto_commit: Optional[str] = None
+
     # Sync process settings (V2 architecture)
     # When True (default): Data uploaded to server via background sync process
     # When False: Offline mode - data stored locally in SQLite only (no upload)
@@ -286,6 +289,12 @@ def setup(settings: Union[Settings, Dict[str, Any], None] = None) -> Settings:
             'false',
             'no',
         )
+
+    # Set pluto package version and commit
+    from . import __version__, _get_git_commit
+
+    new_settings.pluto_version = __version__
+    new_settings.pluto_commit = _get_git_commit()
 
     # Apply all settings (user params override env vars)
     new_settings.update(settings_dict)
