@@ -188,9 +188,18 @@ def get_console() -> str:
         return 'jupyter'
 
 
+def _set_pluto_version(settings: Settings) -> None:
+    """Populate pluto_version and pluto_commit on a Settings instance."""
+    from . import __version__, _get_git_commit
+
+    settings.pluto_version = __version__
+    settings.pluto_commit = _get_git_commit()
+
+
 def setup(settings: Union[Settings, Dict[str, Any], None] = None) -> Settings:
     if isinstance(settings, Settings):
         settings.update(settings)
+        _set_pluto_version(settings)
         return settings
 
     new_settings = Settings()
@@ -290,13 +299,9 @@ def setup(settings: Union[Settings, Dict[str, Any], None] = None) -> Settings:
             'no',
         )
 
-    # Set pluto package version and commit
-    from . import __version__, _get_git_commit
-
-    new_settings.pluto_version = __version__
-    new_settings.pluto_commit = _get_git_commit()
-
     # Apply all settings (user params override env vars)
     new_settings.update(settings_dict)
+
+    _set_pluto_version(new_settings)
 
     return new_settings
