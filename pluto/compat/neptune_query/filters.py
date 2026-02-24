@@ -143,7 +143,11 @@ class AttributeFilter:
 
     Args:
         name: A regex string **or** a list of exact metric names.
-        type: Ignored (Pluto metrics are all numeric series).
+        type: Accepted for compatibility but currently ignored.  Neptune uses
+            this to distinguish ``float_series``, ``string_series``,
+            ``file_series``, ``image_series``, etc.  Pluto supports numeric
+            metrics and file/image/media artifacts, but filtering by type is
+            not yet implemented.
 
     Examples::
 
@@ -153,6 +157,18 @@ class AttributeFilter:
 
     name: Union[str, List[str]]
     type: Optional[str] = None
+
+    def __post_init__(self) -> None:
+        if self.type is not None:
+            import warnings
+
+            warnings.warn(
+                f"AttributeFilter(type={self.type!r}) is accepted for compatibility "
+                "but currently ignored. All attribute types are returned regardless "
+                "of the type filter.",
+                UserWarning,
+                stacklevel=2,
+            )
 
     def matches_name(self, candidate: str) -> bool:
         """Return ``True`` if *candidate* matches this filter."""
