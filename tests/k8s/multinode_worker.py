@@ -6,7 +6,7 @@ All nodes share the same PLUTO_RUN_ID and log metrics to the same Pluto run.
 
 Environment variables (set by konduktor):
 - PLUTO_RUN_ID: Shared run ID for all nodes
-- PLUTO_API_TOKEN: API token for authentication
+- PLUTO_API_KEY: API token for authentication
 - MASTER_ADDR: Address of the master node
 - NUM_NODES: Total number of nodes
 - RANK: Global rank of this node (0, 1, 2, ...)
@@ -47,8 +47,8 @@ def main():
         print(f'[Node {rank}] ERROR: PLUTO_RUN_ID not set!')
         sys.exit(1)
 
-    if not os.environ.get('PLUTO_API_TOKEN'):
-        print(f'[Node {rank}] ERROR: PLUTO_API_TOKEN not set!')
+    if not os.environ.get('PLUTO_API_KEY'):
+        print(f'[Node {rank}] ERROR: PLUTO_API_KEY not set!')
         sys.exit(1)
 
     # Initialize Pluto with shared run_id

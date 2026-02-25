@@ -17,7 +17,7 @@ from pluto.query import Client, QueryError, _resolve_api_token, _resolve_url_api
 def _clean_env(monkeypatch):
     """Remove query-related env vars for test isolation."""
     for key in (
-        'PLUTO_API_TOKEN',
+        'PLUTO_API_KEY',
         'MLOP_API_TOKEN',
         'PLUTO_URL_API',
         'MLOP_URL_API',
@@ -42,7 +42,7 @@ def mock_response():
 @pytest.fixture()
 def client(monkeypatch):
     """A Client with a mocked httpx.Client."""
-    monkeypatch.setenv('PLUTO_API_TOKEN', 'test-token-123')
+    monkeypatch.setenv('PLUTO_API_KEY', 'test-token-123')
     c = Client()
     c._client = MagicMock(spec=httpx.Client)
     return c
@@ -55,7 +55,7 @@ def client(monkeypatch):
 
 class TestResolveApiToken:
     def test_from_pluto_env(self, monkeypatch):
-        monkeypatch.setenv('PLUTO_API_TOKEN', 'plt_abc')
+        monkeypatch.setenv('PLUTO_API_KEY', 'plt_abc')
         assert _resolve_api_token() == 'plt_abc'
 
     def test_from_deprecated_mlop_env(self, monkeypatch):
@@ -69,7 +69,7 @@ class TestResolveApiToken:
         assert any('MLOP_API_TOKEN' in str(x.message) for x in w)
 
     def test_pluto_takes_precedence(self, monkeypatch):
-        monkeypatch.setenv('PLUTO_API_TOKEN', 'new_token')
+        monkeypatch.setenv('PLUTO_API_KEY', 'new_token')
         monkeypatch.setenv('MLOP_API_TOKEN', 'old_token')
         assert _resolve_api_token() == 'new_token'
 
@@ -138,7 +138,7 @@ class TestClientInit:
                 Client()
 
     def test_from_env(self, monkeypatch):
-        monkeypatch.setenv('PLUTO_API_TOKEN', 'plt_abc')
+        monkeypatch.setenv('PLUTO_API_KEY', 'plt_abc')
         c = Client()
         assert c._api_token == 'plt_abc'
         c.close()
@@ -149,12 +149,12 @@ class TestClientInit:
         c.close()
 
     def test_context_manager(self, monkeypatch):
-        monkeypatch.setenv('PLUTO_API_TOKEN', 'plt_abc')
+        monkeypatch.setenv('PLUTO_API_KEY', 'plt_abc')
         with Client() as c:
             assert c._api_token == 'plt_abc'
 
     def test_custom_host(self, monkeypatch):
-        monkeypatch.setenv('PLUTO_API_TOKEN', 'plt_abc')
+        monkeypatch.setenv('PLUTO_API_KEY', 'plt_abc')
         c = Client(host='10.0.0.1')
         assert c._url_api == 'http://10.0.0.1:3001'
         c.close()
@@ -463,7 +463,7 @@ class TestErrorHandling:
 
 class TestModuleFunctions:
     def test_list_runs_creates_default_client(self, monkeypatch, mock_response):
-        monkeypatch.setenv('PLUTO_API_TOKEN', 'test-token')
+        monkeypatch.setenv('PLUTO_API_KEY', 'test-token')
 
         import pluto.query as pq
 

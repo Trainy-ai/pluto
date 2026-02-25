@@ -9,7 +9,7 @@ Verifies that multiple nodes in a konduktor job can log to the same Pluto run vi
 ## Running
 
 ```bash
-export PLUTO_API_TOKEN="your-token"
+export PLUTO_API_KEY="your-token"
 ./tests/k8s/run_multinode_test.sh
 ```
 
