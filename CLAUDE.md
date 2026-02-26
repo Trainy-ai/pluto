@@ -291,7 +291,7 @@ Settings can be provided via:
 Environment variables use the `PLUTO_*` prefix. The old `MLOP_*` prefix is supported with deprecation warnings.
 
 **Authentication & Project:**
-- `PLUTO_API_TOKEN` - API token for authentication (alternative to `pluto login`)
+- `PLUTO_API_KEY` - API token for authentication (alternative to `pluto login`)
 - `PLUTO_PROJECT` - Default project name (alternative to `pluto.init(project="...")`)
 
 **Configuration:**
@@ -303,7 +303,7 @@ Environment variables use the `PLUTO_*` prefix. The old `MLOP_*` prefix is suppo
 
 ### Testing Notes
 - Tests run against production server by default
-- Requires authentication via `PLUTO_API_TOKEN` environment variable
+- Requires authentication via `PLUTO_API_KEY` environment variable
 - Tests marked with `@pytest.mark.distributed` require multi-rank torch setup
 - Use `HAS_TORCH`, `HAS_MATPLOTLIB` flags for optional dependency tests
 
