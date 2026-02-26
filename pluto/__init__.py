@@ -39,7 +39,7 @@ __all__ = (
     'query',
 )
 
-__version__ = '0.0.8'
+__version__ = '0.0.9'
 
 
 # Replaced with the current commit when building the wheels.
