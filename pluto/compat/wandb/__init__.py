@@ -150,7 +150,10 @@ def init(
     # Resolve name from env if not provided
     name = name or os.environ.get('WANDB_NAME')
 
-    # Resolve tags from env if not provided
+    # Normalize tags: wandb accepts a string, a list, or None.
+    # os.getenv("WANDB_RUN_TAGS") returns a comma-separated string.
+    if isinstance(tags, str):
+        tags = [t.strip() for t in tags.split(',') if t.strip()]
     if tags is None:
         env_tags = os.environ.get('WANDB_TAGS')
         if env_tags:

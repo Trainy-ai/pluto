@@ -1582,3 +1582,198 @@ class TestTopLevelWandbPackage:
         except ImportError:
             # Lightning not installed — that's fine, the import path itself resolved
             pytest.skip('lightning not installed')
+
+
+class TestTorchtitanPattern:
+    """Tests that reproduce the exact wandb usage pattern from torchtitan
+    and similar real-world codebases where wandb is used as a stored
+    module reference (self.wandb = wandb)."""
+
+    def _make_wandb_logger(self):
+        """Simulate torchtitan's WandBLogger pattern."""
+        import wandb
+
+        class WandBLogger:
+            def __init__(self, config_dict=None, tag=None):
+                self.wandb = wandb
+                self.tag = tag
+                self.wandb.init(
+                    entity=None,
+                    project='torchtitan',
+                    name='test-run',
+                    id=None,
+                    notes=None,
+                    tags=None,
+                    group=None,
+                    job_type=None,
+                    resume_from=None,
+                    fork_from=None,
+                    dir='/tmp',
+                    config=config_dict,
+                )
+
+            def log(self, metrics, step):
+                wandb_metrics = {
+                    (k if self.tag is None else f'{self.tag}/{k}'): v
+                    for k, v in metrics.items()
+                }
+                self.wandb.log(wandb_metrics, step=step)
+
+            def close(self):
+                if self.wandb.run is not None:
+                    self.wandb.finish()
+
+        return WandBLogger
+
+    def test_torchtitan_init_log_close(self):
+        """Full torchtitan lifecycle: init → log with tag prefix → close."""
+        with mock.patch('pluto.init') as mock_init:
+            mock_op = _make_mock_op()
+            mock_init.return_value = mock_op
+
+            WandBLogger = self._make_wandb_logger()
+            logger = WandBLogger(
+                config_dict={'lr': 0.001, 'model': 'llama'},
+                tag='train',
+            )
+
+            # Log with tag prefix
+            logger.log({'loss': 0.5, 'throughput': 1000}, step=1)
+            logged = mock_op.log.call_args[0][0]
+            assert logged == {'train/loss': 0.5, 'train/throughput': 1000}
+            assert mock_op.log.call_args[1]['step'] == 1
+
+            # Log more steps
+            logger.log({'loss': 0.3}, step=2)
+            logger.log({'loss': 0.1}, step=3)
+            assert mock_op.log.call_count == 3
+
+            # Close
+            logger.close()
+            mock_op.finish.assert_called_once()
+
+    def test_torchtitan_close_idempotent(self):
+        """close() is safe to call after finish() (run is None)."""
+        with mock.patch('pluto.init') as mock_init:
+            mock_op = _make_mock_op()
+            mock_init.return_value = mock_op
+
+            WandBLogger = self._make_wandb_logger()
+            logger = WandBLogger()
+
+            logger.close()
+            mock_op.finish.assert_called_once()
+
+            # Second close should be a no-op (wandb.run is None after finish)
+            logger.close()
+            # finish should still only have been called once on the op
+            mock_op.finish.assert_called_once()
+
+    def test_torchtitan_no_tag(self):
+        """Logging without a tag prefix (tag=None)."""
+        with mock.patch('pluto.init') as mock_init:
+            mock_op = _make_mock_op()
+            mock_init.return_value = mock_op
+
+            WandBLogger = self._make_wandb_logger()
+            logger = WandBLogger(tag=None)
+
+            logger.log({'loss': 0.5, 'acc': 0.9}, step=0)
+            logged = mock_op.log.call_args[0][0]
+            assert logged == {'loss': 0.5, 'acc': 0.9}
+
+            logger.close()
+
+    @mock.patch.dict(
+        os.environ,
+        {
+            'WANDB_TEAM': 'my-team',
+            'WANDB_PROJECT': 'my-project',
+            'WANDB_RUN_NAME': 'my-run',
+            'WANDB_RUN_TAGS': 'gpu,a100,benchmark',
+        },
+        clear=False,
+    )
+    def test_torchtitan_env_var_driven_init(self):
+        """Init driven entirely by env vars (torchtitan pattern)."""
+        import wandb
+
+        with mock.patch('pluto.init') as mock_init:
+            mock_op = _make_mock_op()
+            mock_init.return_value = mock_op
+
+            wandb.init(
+                entity=os.environ.get('WANDB_TEAM', None),
+                project=os.environ.get('WANDB_PROJECT', 'torchtitan'),
+                name=os.environ.get('WANDB_RUN_NAME', None),
+                tags=os.environ.get('WANDB_RUN_TAGS', None),
+                config={'lr': 0.001},
+            )
+
+            init_kw = mock_init.call_args[1]
+            assert init_kw['project'] == 'my-project'
+            assert init_kw['name'] == 'my-run'
+            # tags passed as string from os.getenv must be split into list
+            assert init_kw['tags'] == ['gpu', 'a100', 'benchmark']
+
+            wandb.finish()
+
+    def test_tags_as_string(self):
+        """tags='single-string' is normalized to a list."""
+        import wandb
+
+        with mock.patch('pluto.init') as mock_init:
+            mock_op = _make_mock_op()
+            mock_init.return_value = mock_op
+
+            wandb.init(project='test', tags='experiment')
+            init_kw = mock_init.call_args[1]
+            assert init_kw['tags'] == ['experiment']
+
+            wandb.finish()
+
+    def test_tags_as_csv_string(self):
+        """tags='a,b,c' from os.getenv is split correctly."""
+        import wandb
+
+        with mock.patch('pluto.init') as mock_init:
+            mock_op = _make_mock_op()
+            mock_init.return_value = mock_op
+
+            wandb.init(project='test', tags='gpu, a100, benchmark')
+            init_kw = mock_init.call_args[1]
+            assert init_kw['tags'] == ['gpu', 'a100', 'benchmark']
+
+            wandb.finish()
+
+    def test_stored_module_reference(self):
+        """self.wandb = wandb; self.wandb.log(...) pattern works."""
+        import wandb
+
+        with mock.patch('pluto.init') as mock_init:
+            mock_op = _make_mock_op()
+            mock_init.return_value = mock_op
+
+            wb = wandb  # store reference
+            wb.init(project='test')
+            wb.log({'x': 1}, step=0)
+
+            assert mock_op.log.call_count == 1
+            assert mock_op.log.call_args[0][0] == {'x': 1}
+
+            wb.finish()
+
+    def test_wandb_run_none_after_finish(self):
+        """wandb.run is None after finish() — guards like
+        `if self.wandb.run is not None` must work."""
+        import wandb
+
+        with mock.patch('pluto.init') as mock_init:
+            mock_op = _make_mock_op()
+            mock_init.return_value = mock_op
+
+            wandb.init(project='test')
+            assert wandb.run is not None
+
+            wandb.finish()
+            assert wandb.run is None
