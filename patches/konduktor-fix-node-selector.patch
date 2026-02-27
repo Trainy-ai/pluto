@@ -1,0 +1,127 @@
+--- /tmp/konduktor_orig/konduktor/templates/pod.yaml.j2	2026-02-27 22:34:54.351679669 +0000
++++ /usr/local/lib/python3.11/dist-packages/konduktor/templates/pod.yaml.j2	2026-02-27 22:32:26.116721736 +0000
+@@ -570,6 +570,9 @@
+       {% endif %}
+         
+ 
+-      # TODO(asaiacai): should we add nodeSelectors here or leave to
+-      # kueue resource flavors. leaning towards defining
+-      # in kueue and just querying for the kueue resource flavor
++      {% if node_selector %}
++      nodeSelector:
++        {% for key, value in node_selector.items() %}
++        {{ key }}: "{{ value }}"
++        {% endfor %}
++      {% endif %}
+--- /tmp/konduktor_orig/konduktor/backends/pod_utils.py	2026-02-27 22:34:54.301679683 +0000
++++ /usr/local/lib/python3.11/dist-packages/konduktor/backends/pod_utils.py	2026-02-27 22:33:16.045707567 +0000
+@@ -275,6 +275,19 @@
+     if task.run and 'vllm.entrypoints.openai.api_server' in task.run:
+         general = False
+ 
++    # Build default node_selector based on autoscaler type and accelerator.
++    # User pod_config.spec.nodeSelector will override these defaults via merge.
++    node_selector: Dict[str, str] = {}
++    autoscaler_type = kubernetes_utils.get_autoscaler_type()
++    if autoscaler_type is not None and accelerator_type:
++        label_formatter = kubernetes_utils.AUTOSCALER_TO_LABEL_FORMATTER.get(
++            autoscaler_type
++        )
++        if label_formatter is not None:
++            label_key = label_formatter.get_label_key(accelerator_type)
++            label_value = label_formatter.get_label_value(accelerator_type)
++            node_selector[label_key] = label_value
++
+     with tempfile.NamedTemporaryFile() as temp:
+         common_utils.fill_template(
+             'pod.yaml.j2',
+@@ -320,6 +333,8 @@
+                 'konduktor_debug': os.getenv('KONDUKTOR_DEBUG', 0),
+                 # User-defined env var keys for conditional template checks
+                 'env_vars': set(task.envs.keys()) if task.envs else set(),
++                # Node selector for GPU scheduling
++                'node_selector': node_selector,
+             },
+             temp.name,
+         )
+--- /tmp/konduktor_orig/konduktor/utils/kubernetes_utils.py	2026-02-27 22:34:54.359679667 +0000
++++ /usr/local/lib/python3.11/dist-packages/konduktor/utils/kubernetes_utils.py	2026-02-27 22:33:41.494700345 +0000
+@@ -469,6 +469,63 @@
+     return bytes_value / MEMORY_SIZE_UNITS[unit]
+ 
+ 
++def _fix_misplaced_pod_config_spec(pod_config: Dict[str, Any]) -> None:
++    """Fix misplaced 'spec' nested under 'metadata' in pod_config.
++
++    A common YAML indentation mistake is placing 'spec' under 'metadata':
++
++        pod_config:
++          metadata:
++            labels: ...
++            spec:              # Wrong: nested under metadata
++              nodeSelector: ...
++
++    Instead of the correct structure:
++
++        pod_config:
++          metadata:
++            labels: ...
++          spec:                # Correct: sibling of metadata
++            nodeSelector: ...
++
++    This function detects the misplacement and moves spec-level keys
++    (like nodeSelector, tolerations, etc.) to the top level of pod_config.
++    """
++    metadata = pod_config.get('metadata')
++    if not isinstance(metadata, dict):
++        return
++
++    misplaced_spec = metadata.get('spec')
++    if not isinstance(misplaced_spec, dict):
++        return
++
++    # Known pod spec-level keys that should never appear under metadata
++    spec_keys = {
++        'nodeSelector', 'tolerations', 'affinity', 'schedulerName',
++        'runtimeClassName', 'priorityClassName', 'serviceAccountName',
++        'hostNetwork', 'dnsPolicy', 'terminationGracePeriodSeconds',
++    }
++    if not any(k in misplaced_spec for k in spec_keys):
++        return
++
++    logger.warning(
++        'Detected pod_config.metadata.spec in config - this is likely a YAML '
++        'indentation error. The "spec" key should be a sibling of "metadata", '
++        'not nested under it. Automatically relocating spec fields to the '
++        'correct level.'
++    )
++
++    # Move misplaced spec to the correct location
++    existing_spec = pod_config.get('spec', {})
++    if not isinstance(existing_spec, dict):
++        existing_spec = {}
++    config.merge_k8s_configs(existing_spec, misplaced_spec)
++    pod_config['spec'] = existing_spec
++
++    # Remove the misplaced spec from metadata
++    del metadata['spec']
++
++
+ def combine_pod_config_fields(
+     cluster_yaml_path: str,
+     cluster_config_overrides: Dict[str, Any],
+@@ -519,6 +576,14 @@
+     kubernetes_config = config.get_nested(
+         ('kubernetes', 'pod_config'), default_value={}, override_configs={}
+     )
++
++    # Fix misplaced 'spec' nested under 'metadata' in user pod_config.
++    # Users sometimes indent 'spec' under 'metadata' in their YAML config
++    # (e.g., pod_config.metadata.spec.nodeSelector) when it should be a
++    # sibling of 'metadata' (pod_config.spec.nodeSelector). Detect this
++    # and relocate spec fields to the correct level.
++    _fix_misplaced_pod_config_spec(kubernetes_config)
++
+     override_pod_config = cluster_config_overrides.get('kubernetes', {}).get(
+         'pod_config', {}
+     )
