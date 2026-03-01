@@ -229,7 +229,7 @@ class OpMonitor:
                         self.op._iface.headers,
                         make_compat_trigger_v1(self.op.settings),
                         client=self.op._iface.client,
-                        max_retries=1,
+                        max_retries=0,
                         timeout=5.0,
                     )
                     if hasattr(r, 'json') and r.json()['status'] == 'CANCELLED':

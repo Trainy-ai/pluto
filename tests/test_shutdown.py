@@ -215,9 +215,9 @@ class TestConnectionErrorHandling:
             )
 
             assert result is None
-            # retry=0 (first try), then retry=1, then retry=2 hits max and returns
-            # So total calls = x_file_stream_retry_max
-            assert mock_method.call_count == settings.x_file_stream_retry_max
+            # max_retries = x_file_stream_retry_max (default 4)
+            # 1 initial attempt + 4 retries = 5 total calls
+            assert mock_method.call_count == settings.x_file_stream_retry_max + 1
 
     def test_max_retries_override_limits_attempts(self):
         """Test that max_retries parameter overrides the settings default."""
@@ -239,14 +239,17 @@ class TestConnectionErrorHandling:
         )
 
         assert result is None
-        # max_retries=1 means: try once (retry=0), then retry=1 >= 1 gives up
-        assert mock_method.call_count == 1
+        # max_retries=1 means: 1 initial attempt + 1 retry = 2 total calls
+        assert mock_method.call_count == 2
 
-    def test_max_retries_zero_skips_request(self):
-        """Test that max_retries=0 returns None without making any request."""
+    def test_max_retries_zero_tries_once(self):
+        """Test that max_retries=0 makes a single attempt with no retries."""
         iface = self._make_iface()
 
-        mock_method = MagicMock()
+        def raise_timeout(*args, **kwargs):
+            raise TimeoutError('Request timed out')
+
+        mock_method = MagicMock(side_effect=raise_timeout)
         mock_method.__name__ = 'post'
 
         result = iface._try(
@@ -259,7 +262,8 @@ class TestConnectionErrorHandling:
         )
 
         assert result is None
-        assert mock_method.call_count == 0
+        # max_retries=0 means: 1 initial attempt, 0 retries = 1 total call
+        assert mock_method.call_count == 1
 
     def test_http_502_retries_up_to_max(self):
         """Test that HTTP 502 responses trigger retries up to max_retries."""
@@ -282,11 +286,11 @@ class TestConnectionErrorHandling:
         )
 
         assert result is None
-        # max_retries=2: retry=0 (502), retry=1 (502), retry=2 >= 2 gives up
-        assert mock_method.call_count == 2
+        # max_retries=2: 1 initial attempt + 2 retries = 3 total calls
+        assert mock_method.call_count == 3
 
-    def test_http_502_with_max_retries_1_tries_once(self):
-        """Test heartbeat-like call: max_retries=1 tries once on 502."""
+    def test_http_502_with_max_retries_0_tries_once(self):
+        """Test heartbeat-like call: max_retries=0 tries once on 502."""
         iface = self._make_iface()
 
         mock_response = MagicMock()
@@ -302,10 +306,11 @@ class TestConnectionErrorHandling:
             {},
             b'content',
             name='trigger',
-            max_retries=1,
+            max_retries=0,
         )
 
         assert result is None
+        # max_retries=0: 1 initial attempt, 0 retries = 1 total call
         assert mock_method.call_count == 1
 
     def test_timeout_kwarg_passed_to_http_method(self):
@@ -373,13 +378,13 @@ class TestConnectionErrorHandling:
                 b'payload',
                 mock_client,
                 name='trigger',
-                max_retries=1,
+                max_retries=0,
                 timeout=5.0,
             )
 
             mock_try.assert_called_once()
             call_kwargs = mock_try.call_args
-            assert call_kwargs[1]['max_retries'] == 1
+            assert call_kwargs[1]['max_retries'] == 0
             assert call_kwargs[1]['timeout'] == 5.0
 
 

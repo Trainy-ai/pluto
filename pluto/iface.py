@@ -203,7 +203,7 @@ class ServerInterface:
                 f'{tag}: {name}: {method.__name__.upper()} '
                 f'{url[:80]}... ({content_info})'
             )
-        if retry >= effective_max_retries:
+        if retry > effective_max_retries:
             if retry > 0:
                 logger.critical(f'{tag}: {name}: failed after {retry} retries')
 
@@ -230,16 +230,15 @@ class ServerInterface:
             # Capture error info for potential failure logging
             error_info = f'HTTP {r.status_code}: {r.text[:100]}'
 
-            max_retry = effective_max_retries
             status_code = r.status_code if r else 'N/A'
             target = len(drained) if drained else 'request'
             response = r.text if r else 'N/A'
             logger.warning(
-                '%s: %s: retry %s/%s: response code %s for %s from %s: %s',
+                '%s: %s: attempt %s/%s: response code %s for %s from %s: %s',
                 tag,
                 name,
                 retry + 1,
-                max_retry,
+                effective_max_retries + 1,
                 status_code,
                 target,
                 url,
@@ -267,11 +266,11 @@ class ServerInterface:
             error_info = f'{type(e).__name__}: {str(e)}'
 
             logger.debug(
-                '%s: %s: retry %s/%s: no response from %s: %s: %s',
+                '%s: %s: attempt %s/%s: no response from %s: %s: %s',
                 tag,
                 name,
                 retry + 1,
-                effective_max_retries,
+                effective_max_retries + 1,
                 url,
                 type(e).__name__,
                 e,

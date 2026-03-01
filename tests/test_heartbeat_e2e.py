@@ -4,7 +4,7 @@ End-to-end test for heartbeat retry behavior.
 Uses a real HTTP server (no mocks) to verify that:
 1. The monitor thread doesn't block when trigger returns 502
 2. finish() completes promptly even when the trigger endpoint is down
-3. The heartbeat uses max_retries=1 and short timeout (fire-and-forget)
+3. The heartbeat uses max_retries=0 and short timeout (fire-and-forget)
 
 This test would have caught the production incident where 502s on the
 trigger endpoint caused _worker_monitor to block for 7-135 seconds per
@@ -185,9 +185,9 @@ class TestHeartbeatE2E:
             monitor.stop()
 
             timestamps = trigger_stats['timestamps']
-            assert len(timestamps) >= 3, (
-                f'Expected >=3 heartbeats in 5s, got {len(timestamps)}'
-            )
+            assert (
+                len(timestamps) >= 3
+            ), f'Expected >=3 heartbeats in 5s, got {len(timestamps)}'
 
             # Check spacing between consecutive heartbeats
             gaps = [
@@ -223,7 +223,7 @@ class TestHeartbeatE2E:
             iface = ServerInterface({}, settings)
 
             # Call _post_v1 WITHOUT max_retries override (like update_status does)
-            # This should retry the full 3 times
+            # This should make 1 initial attempt + 3 retries = 4 total requests
             mock_trigger = make_compat_trigger_v1(settings)
             result = iface._post_v1(
                 settings.url_trigger,
@@ -235,8 +235,8 @@ class TestHeartbeatE2E:
             )
 
             assert result is None  # All retries should fail (502)
-            # Should have retried 3 times (the settings default)
-            assert trigger_stats['count'] == 3
+            # x_file_stream_retry_max=3: 1 initial attempt + 3 retries = 4 total
+            assert trigger_stats['count'] == 4
 
             iface.close()
         finally:
