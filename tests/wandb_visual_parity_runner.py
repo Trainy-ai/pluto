@@ -6,7 +6,7 @@ Run this script in two separate environments to compare dashboards:
 
   Environment A (pluto shim):
     pip install pluto-ml
-    PLUTO_API_TOKEN=<token> python tests/wandb_visual_parity_runner.py
+    PLUTO_API_KEY=<token> python tests/wandb_visual_parity_runner.py
 
   Environment B (real wandb):
     pip install wandb

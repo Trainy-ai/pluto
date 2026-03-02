@@ -376,7 +376,7 @@ $ pluto finish my-experiment-20240115 --force
 ```python
 # Environment variables (for containerized training)
 PLUTO_PROJECT=my-project
-PLUTO_API_TOKEN=xxx
+PLUTO_API_KEY=xxx
 PLUTO_RUN_DIR=/tmp/pluto-runs       # Where to store local data
 PLUTO_SYNC_MODE=process             # process | thread | offline
 

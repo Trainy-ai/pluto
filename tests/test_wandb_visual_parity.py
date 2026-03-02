@@ -14,7 +14,7 @@ Usage:
     python -m pytest tests/test_wandb_visual_parity.py -v -s
 
 Requirements:
-    - PLUTO_API_TOKEN must be set for the pluto side
+    - PLUTO_API_KEY must be set for the pluto side
     - WANDB_API_KEY must be set for the real wandb side
     - `pip install wandb` for the real wandb tests
 
@@ -158,8 +158,8 @@ def _run_training_loop(wb, project, run_name):
 
 
 @pytest.mark.skipif(
-    not os.environ.get('PLUTO_API_TOKEN'),
-    reason='PLUTO_API_TOKEN not set — cannot run pluto side',
+    not os.environ.get('PLUTO_API_KEY'),
+    reason='PLUTO_API_KEY not set — cannot run pluto side',
 )
 class TestPlutoShimSide:
     """Runs the training loop through ``import wandb`` (the pluto shim)."""
@@ -228,8 +228,8 @@ class TestRealWandbSide:
 
 
 @pytest.mark.skipif(
-    not os.environ.get('PLUTO_API_TOKEN'),
-    reason='PLUTO_API_TOKEN not set',
+    not os.environ.get('PLUTO_API_KEY'),
+    reason='PLUTO_API_KEY not set',
 )
 @pytest.mark.skipif(
     not _has_real_wandb,

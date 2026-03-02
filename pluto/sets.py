@@ -259,9 +259,9 @@ def setup(settings: Union[Settings, Dict[str, Any], None] = None) -> Settings:
                     env_value if env_value is not None else default_value
                 )
 
-    # Read PLUTO_API_TOKEN environment variable (with MLOP_API_TOKEN fallback)
+    # Read PLUTO_API_KEY environment variable (with MLOP_API_TOKEN fallback)
     # Only apply if not already set via function parameters
-    env_api_token = _get_env_with_deprecation('PLUTO_API_TOKEN', 'MLOP_API_TOKEN')
+    env_api_token = _get_env_with_deprecation('PLUTO_API_KEY', 'MLOP_API_TOKEN')
     if env_api_token is None:
         env_api_token = os.environ.get('WANDB_API_KEY')
     if env_api_token is not None and '_auth' not in settings_dict:

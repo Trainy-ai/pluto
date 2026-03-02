@@ -8,7 +8,7 @@ Usage::
 
     import pluto.query as pq
 
-    # Uses PLUTO_API_TOKEN env var and default server
+    # Uses PLUTO_API_KEY env var and default server
     runs = pq.list_runs("my-project")
     run = pq.get_run("my-project", "MMP-42")
     metrics = pq.get_metrics("my-project", run["id"], metric_names=["val/loss"])
@@ -49,7 +49,7 @@ class Client:
     """HTTP client for reading data from the Pluto server.
 
     Args:
-        api_token: API token for authentication. Defaults to ``PLUTO_API_TOKEN``
+        api_token: API token for authentication. Defaults to ``PLUTO_API_KEY``
             environment variable.
         host: Server URL (e.g. ``https://pluto.trainy.ai`` or
             ``https://pluto-api.trainy.ai``). When a bare hostname or
@@ -68,7 +68,7 @@ class Client:
         self._api_token = api_token or _resolve_api_token()
         if not self._api_token:
             raise QueryError(
-                'No API token provided. Set PLUTO_API_TOKEN environment variable '
+                'No API token provided. Set PLUTO_API_KEY environment variable '
                 'or pass api_token to Client().'
             )
 
@@ -637,7 +637,7 @@ def get_logs(
 
 def _resolve_api_token() -> Optional[str]:
     """Resolve API token from environment or keyring."""
-    token = os.environ.get('PLUTO_API_TOKEN')
+    token = os.environ.get('PLUTO_API_KEY')
     if token:
         return token
 
@@ -645,7 +645,7 @@ def _resolve_api_token() -> Optional[str]:
     token = os.environ.get('MLOP_API_TOKEN')
     if token:
         warnings.warn(
-            'MLOP_API_TOKEN is deprecated. Use PLUTO_API_TOKEN instead.',
+            'MLOP_API_TOKEN is deprecated. Use PLUTO_API_KEY instead.',
             DeprecationWarning,
             stacklevel=3,
         )

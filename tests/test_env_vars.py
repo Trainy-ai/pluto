@@ -247,3 +247,41 @@ class TestPLUTOThreadJoinTimeout:
                 for warning in w
             )
         del os.environ['MLOP_THREAD_JOIN_TIMEOUT_SECONDS']
+
+
+class TestWANDBApiKeyFallback:
+    """Test that WANDB_API_KEY is used as fallback when PLUTO_API_KEY is not set."""
+
+    def _clean_env(self):
+        for var in ('PLUTO_API_KEY', 'MLOP_API_TOKEN', 'WANDB_API_KEY'):
+            os.environ.pop(var, None)
+
+    def test_wandb_api_key_fallback(self):
+        """WANDB_API_KEY is used when PLUTO_API_KEY is not set."""
+        self._clean_env()
+        os.environ['WANDB_API_KEY'] = 'wandb-test-key'
+        try:
+            settings = setup()
+            assert settings._auth == 'wandb-test-key'
+        finally:
+            self._clean_env()
+
+    def test_pluto_api_key_takes_precedence(self):
+        """PLUTO_API_KEY wins over WANDB_API_KEY."""
+        self._clean_env()
+        os.environ['PLUTO_API_KEY'] = 'pluto-key'
+        os.environ['WANDB_API_KEY'] = 'wandb-key'
+        try:
+            settings = setup()
+            assert settings._auth == 'pluto-key'
+        finally:
+            self._clean_env()
+
+    def test_no_auth_when_nothing_set(self):
+        """No auth when neither env var is set."""
+        self._clean_env()
+        try:
+            settings = setup()
+            assert settings._auth is None
+        finally:
+            self._clean_env()

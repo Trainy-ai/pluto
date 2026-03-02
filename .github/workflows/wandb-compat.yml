@@ -79,7 +79,7 @@ jobs:
 
       - name: Run live pluto shim parity test
         env:
-          PLUTO_API_TOKEN: ${{ secrets.MLOP_API_TOKEN }}
+          PLUTO_API_KEY: ${{ secrets.MLOP_API_TOKEN }}
         run: |
           set -euox pipefail
           poetry run pytest tests/test_wandb_visual_parity.py::TestPlutoShimSide -v -rs -s

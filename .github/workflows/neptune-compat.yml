@@ -83,10 +83,10 @@ jobs:
 
       - name: Setup pluto credentials for dual-logging tests
         env:
-          PLUTO_API_TOKEN: ${{ secrets.MLOP_API_TOKEN }}
+          PLUTO_API_KEY: ${{ secrets.MLOP_API_TOKEN }}
         run: |
           set -euox pipefail
-          poetry run pluto login "${PLUTO_API_TOKEN}"
+          poetry run pluto login "${PLUTO_API_KEY}"
 
       - name: Run Neptune dual-logging integration tests
         env:

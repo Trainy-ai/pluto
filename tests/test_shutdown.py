@@ -93,6 +93,26 @@ class TestFileStatRefresh:
 class TestConnectionErrorHandling:
     """Test that connection errors don't cause infinite retries."""
 
+    def _make_iface(self, **overrides):
+        """Helper to create a ServerInterface with test settings."""
+        from pluto.iface import ServerInterface
+        from pluto.sets import Settings
+
+        settings = Settings()
+        settings._op_id = 'test-op-id'
+        settings._run_id = 12345
+        settings.x_file_stream_retry_max = 4
+        settings.x_file_stream_retry_wait_min_seconds = 0.001
+        settings.x_file_stream_retry_wait_max_seconds = 0.001
+        for k, v in overrides.items():
+            setattr(settings, k, v)
+
+        with patch('pluto.iface.httpx.Client') as mock_client_class:
+            mock_client = MagicMock()
+            mock_client_class.return_value = mock_client
+            iface = ServerInterface({}, settings)
+        return iface
+
     def test_broken_pipe_no_retry(self):
         """Test BrokenPipeError causes immediate return, not retry."""
         from pluto.iface import ServerInterface
@@ -195,9 +215,177 @@ class TestConnectionErrorHandling:
             )
 
             assert result is None
-            # retry=0 (first try), then retry=1, then retry=2 hits max and returns
-            # So total calls = x_file_stream_retry_max
-            assert mock_method.call_count == settings.x_file_stream_retry_max
+            # max_retries = x_file_stream_retry_max (default 4)
+            # 1 initial attempt + 4 retries = 5 total calls
+            assert mock_method.call_count == settings.x_file_stream_retry_max + 1
+
+    def test_max_retries_override_limits_attempts(self):
+        """Test that max_retries parameter overrides the settings default."""
+        iface = self._make_iface()
+
+        def raise_timeout(*args, **kwargs):
+            raise TimeoutError('Request timed out')
+
+        mock_method = MagicMock(side_effect=raise_timeout)
+        mock_method.__name__ = 'post'
+
+        result = iface._try(
+            mock_method,
+            'http://example.com',
+            {},
+            b'content',
+            name='test',
+            max_retries=1,
+        )
+
+        assert result is None
+        # max_retries=1 means: 1 initial attempt + 1 retry = 2 total calls
+        assert mock_method.call_count == 2
+
+    def test_max_retries_zero_tries_once(self):
+        """Test that max_retries=0 makes a single attempt with no retries."""
+        iface = self._make_iface()
+
+        def raise_timeout(*args, **kwargs):
+            raise TimeoutError('Request timed out')
+
+        mock_method = MagicMock(side_effect=raise_timeout)
+        mock_method.__name__ = 'post'
+
+        result = iface._try(
+            mock_method,
+            'http://example.com',
+            {},
+            b'content',
+            name='test',
+            max_retries=0,
+        )
+
+        assert result is None
+        # max_retries=0 means: 1 initial attempt, 0 retries = 1 total call
+        assert mock_method.call_count == 1
+
+    def test_http_502_retries_up_to_max(self):
+        """Test that HTTP 502 responses trigger retries up to max_retries."""
+        iface = self._make_iface()
+
+        mock_response = MagicMock()
+        mock_response.status_code = 502
+        mock_response.text = '<html>502 Bad Gateway</html>'
+
+        mock_method = MagicMock(return_value=mock_response)
+        mock_method.__name__ = 'post'
+
+        result = iface._try(
+            mock_method,
+            'http://example.com',
+            {},
+            b'content',
+            name='test',
+            max_retries=2,
+        )
+
+        assert result is None
+        # max_retries=2: 1 initial attempt + 2 retries = 3 total calls
+        assert mock_method.call_count == 3
+
+    def test_http_502_with_max_retries_0_tries_once(self):
+        """Test heartbeat-like call: max_retries=0 tries once on 502."""
+        iface = self._make_iface()
+
+        mock_response = MagicMock()
+        mock_response.status_code = 502
+        mock_response.text = '<html>502 Bad Gateway</html>'
+
+        mock_method = MagicMock(return_value=mock_response)
+        mock_method.__name__ = 'post'
+
+        result = iface._try(
+            mock_method,
+            'http://example.com',
+            {},
+            b'content',
+            name='trigger',
+            max_retries=0,
+        )
+
+        assert result is None
+        # max_retries=0: 1 initial attempt, 0 retries = 1 total call
+        assert mock_method.call_count == 1
+
+    def test_timeout_kwarg_passed_to_http_method(self):
+        """Test that timeout parameter is forwarded to the HTTP method."""
+        iface = self._make_iface()
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+
+        mock_method = MagicMock(return_value=mock_response)
+        mock_method.__name__ = 'post'
+
+        result = iface._try(
+            mock_method,
+            'http://example.com',
+            {'Content-Type': 'application/json'},
+            b'content',
+            name='test',
+            timeout=5.0,
+        )
+
+        assert result is not None
+        mock_method.assert_called_once_with(
+            'http://example.com',
+            content=b'content',
+            headers={'Content-Type': 'application/json'},
+            timeout=5.0,
+        )
+
+    def test_no_timeout_kwarg_when_none(self):
+        """Test that timeout is not passed when set to None (default)."""
+        iface = self._make_iface()
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+
+        mock_method = MagicMock(return_value=mock_response)
+        mock_method.__name__ = 'post'
+
+        iface._try(
+            mock_method,
+            'http://example.com',
+            {},
+            b'content',
+            name='test',
+            timeout=None,
+        )
+
+        # When timeout is None, kwargs should be empty (no timeout key)
+        mock_method.assert_called_once_with(
+            'http://example.com',
+            content=b'content',
+            headers={},
+        )
+
+    def test_post_v1_passes_max_retries_and_timeout(self):
+        """Test that _post_v1 forwards max_retries and timeout to _try."""
+        iface = self._make_iface()
+
+        with patch.object(iface, '_try', return_value=None) as mock_try:
+            mock_client = MagicMock()
+            iface._post_v1(
+                'http://example.com',
+                {},
+                b'payload',
+                mock_client,
+                name='trigger',
+                max_retries=0,
+                timeout=5.0,
+            )
+
+            mock_try.assert_called_once()
+            call_kwargs = mock_try.call_args
+            assert call_kwargs[1]['max_retries'] == 0
+            assert call_kwargs[1]['timeout'] == 5.0
 
 
 class TestSignalHandling:

@@ -5,7 +5,7 @@
 #
 # Prerequisites:
 # - docker, kind, kubectl
-# - PLUTO_API_TOKEN environment variable
+# - PLUTO_API_KEY environment variable
 #
 # Options:
 # - KEEP_CLUSTER=true to keep cluster after test
@@ -83,7 +83,7 @@ check_prerequisites() {
     command -v docker &>/dev/null || error "docker not installed"
     command -v kind &>/dev/null || error "kind not installed"
     command -v kubectl &>/dev/null || error "kubectl not installed"
-    [[ -n "${PLUTO_API_TOKEN:-}" ]] || error "PLUTO_API_TOKEN not set"
+    [[ -n "${PLUTO_API_KEY:-}" ]] || error "PLUTO_API_KEY not set"
     log "Prerequisites OK"
 }
 
@@ -150,7 +150,7 @@ run_test() {
     log "Launching job with konduktor..."
     konduktor launch --name "${JOB_NAME}" -y "${SCRIPT_DIR}/multinode-job.yaml" \
         --env "PLUTO_RUN_ID=${run_id}" \
-        --env "PLUTO_API_TOKEN=${PLUTO_API_TOKEN}" \
+        --env "PLUTO_API_KEY=${PLUTO_API_KEY}" \
         --env "PLUTO_PROJECT=testing-ci"
 
     log "Job launched. Checking initial status..."
