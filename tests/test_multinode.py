@@ -383,6 +383,16 @@ class TestMultiNodeE2E:
             tests/test_multinode.py::TestMultiNodeE2E -m distributed -rs -v
     """
 
+    @classmethod
+    def setup_class(cls):
+        if _get_world_size() >= 2 and not dist.is_initialized():
+            dist.init_process_group(backend='gloo')
+
+    @classmethod
+    def teardown_class(cls):
+        if dist.is_initialized():
+            dist.destroy_process_group()
+
     def test_concurrent_multinode_logging(self):
         """Test multiple concurrent processes logging to the same run.
 
@@ -398,10 +408,6 @@ class TestMultiNodeE2E:
                 'Multinode E2E test requires WORLD_SIZE >= 2 (run via torchrun)'
             )
 
-        # Initialize distributed process group
-        if not dist.is_initialized():
-            dist.init_process_group(backend='gloo')
-
         rank = dist.get_rank()
         world_size = dist.get_world_size()
 
@@ -416,63 +422,58 @@ class TestMultiNodeE2E:
             dist.broadcast_object_list(run_id_list, src=0)
             run_id = run_id_list[0]
 
-        try:
-            # Each rank initializes with the shared run_id
-            run = pluto.init(
-                project=TESTING_PROJECT_NAME,
-                name=f'e2e-multinode-rank{rank}',
-                run_id=run_id,
-                config={
-                    'test': 'multinode-e2e',
-                    'world_size': world_size,
-                    'rank': rank,
-                },
+        # Each rank initializes with the shared run_id
+        run = pluto.init(
+            project=TESTING_PROJECT_NAME,
+            name=f'e2e-multinode-rank{rank}',
+            run_id=run_id,
+            config={
+                'test': 'multinode-e2e',
+                'world_size': world_size,
+                'rank': rank,
+            },
+        )
+
+        server_id = run.id
+        is_resumed = run.resumed
+
+        # Log rank-specific metrics
+        for step in range(5):
+            run.log(
+                {
+                    f'loss/rank{rank}': 1.0 - (step * 0.1) - (rank * 0.01),
+                    f'throughput/rank{rank}': 1000 + rank * 100 + step * 10,
+                    'step': step,
+                }
             )
 
-            server_id = run.id
-            is_resumed = run.resumed
+        # Barrier to ensure all ranks have logged
+        dist.barrier()
 
-            # Log rank-specific metrics
-            for step in range(5):
-                run.log(
-                    {
-                        f'loss/rank{rank}': 1.0 - (step * 0.1) - (rank * 0.01),
-                        f'throughput/rank{rank}': 1000 + rank * 100 + step * 10,
-                        'step': step,
-                    }
-                )
+        # Gather server IDs from all ranks to verify they match
+        all_server_ids = [None] * world_size
+        dist.all_gather_object(all_server_ids, server_id)
 
-            # Barrier to ensure all ranks have logged
-            dist.barrier()
+        # Gather resumed flags
+        all_resumed = [None] * world_size
+        dist.all_gather_object(all_resumed, is_resumed)
 
-            # Gather server IDs from all ranks to verify they match
-            all_server_ids = [None] * world_size
-            dist.all_gather_object(all_server_ids, server_id)
+        # Verify all ranks got the same server run ID
+        assert all(
+            sid == all_server_ids[0] for sid in all_server_ids
+        ), f'All ranks should have same server ID, got: {all_server_ids}'
 
-            # Gather resumed flags
-            all_resumed = [None] * world_size
-            dist.all_gather_object(all_resumed, is_resumed)
+        # Exactly one rank should have resumed=False (the first to create)
+        num_not_resumed = sum(1 for r in all_resumed if r is False)
+        assert num_not_resumed == 1, (
+            f'Exactly one rank should have resumed=False, '
+            f'got resumed flags: {all_resumed}'
+        )
 
-            # Verify all ranks got the same server run ID
-            assert all(
-                sid == all_server_ids[0] for sid in all_server_ids
-            ), f'All ranks should have same server ID, got: {all_server_ids}'
+        run.finish()
 
-            # Exactly one rank should have resumed=False (the first to create)
-            num_not_resumed = sum(1 for r in all_resumed if r is False)
-            assert num_not_resumed == 1, (
-                f'Exactly one rank should have resumed=False, '
-                f'got resumed flags: {all_resumed}'
-            )
-
-            run.finish()
-
-            # Final barrier before cleanup
-            dist.barrier()
-
-        finally:
-            if dist.is_initialized():
-                dist.destroy_process_group()
+        # Barrier before next test
+        dist.barrier()
 
     def test_multinode_with_system_metrics(self):
         """Test multinode logging includes system metrics from each rank.
@@ -480,15 +481,6 @@ class TestMultiNodeE2E:
         Verifies that system metrics (CPU, memory) are collected and logged
         from each distributed process.
         """
-        world_size = _get_world_size()
-        if world_size < 2:
-            pytest.skip(
-                'Multinode E2E test requires WORLD_SIZE >= 2 (run via torchrun)'
-            )
-
-        if not dist.is_initialized():
-            dist.init_process_group(backend='gloo')
-
         rank = dist.get_rank()
 
         # Generate shared run_id
@@ -500,25 +492,20 @@ class TestMultiNodeE2E:
             dist.broadcast_object_list(run_id_list, src=0)
             run_id = run_id_list[0]
 
-        try:
-            run = pluto.init(
-                project=TESTING_PROJECT_NAME,
-                name=f'e2e-sysmetrics-rank{rank}',
-                run_id=run_id,
-                config={'test': 'multinode-sysmetrics', 'rank': rank},
-            )
+        run = pluto.init(
+            project=TESTING_PROJECT_NAME,
+            name=f'e2e-sysmetrics-rank{rank}',
+            run_id=run_id,
+            config={'test': 'multinode-sysmetrics', 'rank': rank},
+        )
 
-            # Log some metrics and let system monitor collect data
-            import time
+        # Log some metrics and let system monitor collect data
+        import time
 
-            for step in range(3):
-                run.log({f'train/rank{rank}/loss': 0.5 - step * 0.1})
-                time.sleep(0.5)  # Allow system metrics to be sampled
+        for step in range(3):
+            run.log({f'train/rank{rank}/loss': 0.5 - step * 0.1})
+            time.sleep(0.5)  # Allow system metrics to be sampled
 
-            dist.barrier()
-            run.finish()
-            dist.barrier()
-
-        finally:
-            if dist.is_initialized():
-                dist.destroy_process_group()
+        dist.barrier()
+        run.finish()
+        dist.barrier()
