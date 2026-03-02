@@ -185,7 +185,15 @@ class ServerInterface:
         drained: Optional[List[Any]] = None,
         retry: int = 0,
         error_info: str = '',
+        max_retries: Optional[int] = None,
+        timeout: Optional[float] = None,
     ):
+        effective_max_retries = (
+            max_retries
+            if max_retries is not None
+            else self.settings.x_file_stream_retry_max
+        )
+
         if retry == 0:
             if isinstance(content, bytes):
                 content_info = f'{len(content)} bytes'
@@ -195,8 +203,9 @@ class ServerInterface:
                 f'{tag}: {name}: {method.__name__.upper()} '
                 f'{url[:80]}... ({content_info})'
             )
-        if retry >= self.settings.x_file_stream_retry_max:
-            logger.critical(f'{tag}: {name}: failed after {retry} retries')
+        if retry > effective_max_retries:
+            if retry > 0:
+                logger.critical(f'{tag}: {name}: failed after {retry} retries')
 
             # Log failure details to file
             payload_info = f'{len(drained)} items' if drained else 'single request'
@@ -211,23 +220,25 @@ class ServerInterface:
             return None
 
         try:
-            r = method(url, content=content, headers=headers)
+            kwargs: Dict[str, Any] = {}
+            if timeout is not None:
+                kwargs['timeout'] = timeout
+            r = method(url, content=content, headers=headers, **kwargs)
             if r.status_code in [200, 201]:
                 return r
 
             # Capture error info for potential failure logging
             error_info = f'HTTP {r.status_code}: {r.text[:100]}'
 
-            max_retry = self.settings.x_file_stream_retry_max
             status_code = r.status_code if r else 'N/A'
             target = len(drained) if drained else 'request'
             response = r.text if r else 'N/A'
             logger.warning(
-                '%s: %s: retry %s/%s: response code %s for %s from %s: %s',
+                '%s: %s: attempt %s/%s: response code %s for %s from %s: %s',
                 tag,
                 name,
                 retry + 1,
-                max_retry,
+                effective_max_retries + 1,
                 status_code,
                 target,
                 url,
@@ -255,11 +266,11 @@ class ServerInterface:
             error_info = f'{type(e).__name__}: {str(e)}'
 
             logger.debug(
-                '%s: %s: retry %s/%s: no response from %s: %s: %s',
+                '%s: %s: attempt %s/%s: no response from %s: %s: %s',
                 tag,
                 name,
                 retry + 1,
-                self.settings.x_file_stream_retry_max,
+                effective_max_retries + 1,
                 url,
                 type(e).__name__,
                 e,
@@ -280,18 +291,40 @@ class ServerInterface:
             drained=drained,
             retry=retry + 1,
             error_info=error_info,
+            max_retries=effective_max_retries,
+            timeout=timeout,
         )
 
-    def _put_v1(self, url, headers, content, client, name='put'):
+    def _put_v1(
+        self,
+        url,
+        headers,
+        content,
+        client,
+        name='put',
+        max_retries: Optional[int] = None,
+        timeout: Optional[float] = None,
+    ):
         return self._try(
             client.put,
             url,
             headers,
             content,
             name=name,
+            max_retries=max_retries,
+            timeout=timeout,
         )
 
-    def _post_v1(self, url, headers, q, client, name: Union[str, None] = 'post'):
+    def _post_v1(
+        self,
+        url,
+        headers,
+        q,
+        client,
+        name: Union[str, None] = 'post',
+        max_retries: Optional[int] = None,
+        timeout: Optional[float] = None,
+    ):
         # Support both queue and direct content
         if isinstance(q, queue.Queue):
             b: List[Any] = []
@@ -309,6 +342,8 @@ class ServerInterface:
             content,
             name=name,
             drained=drained,
+            max_retries=max_retries,
+            timeout=timeout,
         )
 
         if (
