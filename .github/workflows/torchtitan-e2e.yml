@@ -1,0 +1,127 @@
+name: Torchtitan E2E Test
+
+# This workflow tests the pluto wandb shim against torchtitan's real
+# WandBLogger component. It imports and drives torchtitan's WandBLogger
+# through its full lifecycle (init → log → close) on a CPU-only runner,
+# proving the drop-in replacement works with torchtitan's actual code.
+
+on:
+  workflow_dispatch:
+  issue_comment:
+    types: [created]
+
+jobs:
+  torchtitan-e2e:
+    # Run on manual dispatch, or when someone comments /torchtitan on a PR
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'issue_comment' &&
+       github.event.issue.pull_request &&
+       contains(github.event.comment.body, '/torchtitan'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: React to comment
+        if: github.event_name == 'issue_comment'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.reactions.createForIssueComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              comment_id: context.payload.comment.id,
+              content: 'rocket'
+            });
+
+      - name: Get PR head ref
+        if: github.event_name == 'issue_comment'
+        id: pr
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const pr = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.issue.number
+            });
+            core.setOutput('ref', pr.data.head.ref);
+            core.setOutput('sha', pr.data.head.sha);
+
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'issue_comment' && steps.pr.outputs.ref || '' }}
+
+      - name: "Setup Python, Poetry and Dependencies"
+        uses: packetcoders/action-setup-cache-python-poetry@v1.2.0
+        with:
+          python-version: "3.11"
+          poetry-version: "2.1.1"
+          install-args: "--with dev"
+
+      - name: Install pluto
+        run: |
+          set -euox pipefail
+          rm -rf .venv
+          poetry install --with dev --extras full
+
+      - name: Clone torchtitan (pinned commit)
+        run: |
+          git clone https://github.com/pytorch/torchtitan /tmp/torchtitan
+          cd /tmp/torchtitan
+          # Pin to a known-good commit to avoid breakage from upstream changes.
+          # Bump this intentionally when testing against newer torchtitan.
+          git checkout e51a77d27490af1cec3a41fc760677c5ea855679
+
+      - name: Install torchtitan
+        run: |
+          set -euox pipefail
+          cd /tmp/torchtitan
+          pip install -e .
+
+      - name: Verify wandb shim resolves to pluto
+        run: |
+          set -euox pipefail
+          poetry run python -c "
+          import wandb, inspect
+          origin = inspect.getfile(wandb)
+          print(f'wandb resolves to: {origin}')
+          assert 'pluto' in origin, f'wandb does not resolve to pluto shim: {origin}'
+          print('OK: wandb shim verified')
+          "
+
+      - name: Run torchtitan WandBLogger E2E test
+        env:
+          PLUTO_API_KEY: ${{ secrets.MLOP_API_TOKEN }}
+          PLUTO_DEBUG_LEVEL: INFO
+        run: |
+          set -euox pipefail
+          poetry run pytest tests/test_torchtitan_e2e.py -v -rs -s 2>&1 | tee /tmp/torchtitan_output.log
+
+      - name: Extract pluto dashboard URL
+        if: always()
+        run: |
+          echo "=== Test output ==="
+          cat /tmp/torchtitan_output.log || true
+          echo ""
+          echo "=== Pluto dashboard URL ==="
+          grep -oP 'https://pluto\.trainy\.ai/\S+' /tmp/torchtitan_output.log | head -1 || echo "No URL found"
+
+  torchtitan-e2e-status:
+    runs-on: ubuntu-latest
+    needs: [torchtitan-e2e]
+    if: always() && github.event_name == 'issue_comment'
+    steps:
+      - name: Comment result on PR
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const status = '${{ needs.torchtitan-e2e.result }}';
+            const icon = status === 'success' ? '✅' : '❌';
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: `${icon} Torchtitan E2E test: **${status}**`
+            });
