@@ -220,12 +220,18 @@ class OpMonitor:
                     )
 
                 # Send heartbeat/trigger to server
+                # Use short timeout and no retries: if it fails, the next
+                # cycle will try again. This prevents the monitor thread
+                # from blocking when the server is returning errors,
+                # which would cause finish() to hang.
                 if self.op._iface:
                     r = self.op._iface._post_v1(
                         self.op.settings.url_trigger,
                         self.op._iface.headers,
                         make_compat_trigger_v1(self.op.settings),
                         client=self.op._iface.client,
+                        max_retries=0,
+                        timeout=5.0,
                     )
                     if hasattr(r, 'json') and r.json()['status'] == 'CANCELLED':
                         logger.critical(f'{tag}: server finished run')
@@ -357,6 +363,8 @@ class Op:
             'url_file': self.settings.url_file,  # For file uploads
             'url_message': self.settings.url_message,  # For console logs
             'x_log_level': self.settings.x_log_level,
+            'pluto_version': self.settings.pluto_version,
+            'pluto_commit': self.settings.pluto_commit,
             'sync_process_flush_interval': (self.settings.sync_process_flush_interval),
             'sync_process_shutdown_timeout': (
                 self.settings.sync_process_shutdown_timeout

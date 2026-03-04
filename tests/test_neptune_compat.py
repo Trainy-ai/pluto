@@ -32,6 +32,7 @@ for logger_name in [
     _logger.addHandler(logging.NullHandler())
 
 import os
+import uuid
 from typing import Any, Dict
 from unittest import mock
 from unittest.mock import call
@@ -133,7 +134,8 @@ class MockNeptuneRun:
 
     def __init__(self, *args, **kwargs):
         self.experiment_name = kwargs.get('experiment_name', 'test-experiment')
-        self.run_id = kwargs.get('run_id', None)
+        self.run_id = kwargs.get('run_id') or uuid.uuid4().hex[:8]
+        self._run_id = self.run_id
         self.project = kwargs.get('project', 'test/project')
         self.logged_metrics = []
         self.logged_configs = []
