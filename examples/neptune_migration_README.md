@@ -308,6 +308,82 @@ run.close()
 - This is a kill switch for the transition period after Neptune sunset
 - Eventually, you should migrate to the mlop API directly
 
+## Neptune Wheels Unavailable
+
+If the `neptune-scale` and/or `neptune-query` packages are removed from PyPI,
+your existing code will still work with **zero or minimal changes** using the
+Pluto-provided drop-in replacements.
+
+### Option 1: Automatic (recommended)
+
+Keep the `import pluto.compat.neptune` line you already have. When the real
+`neptune-scale` package is not installed, the compat layer **automatically**
+registers a standalone shim in `sys.modules` so that `from neptune_scale import Run`
+transparently uses Pluto:
+
+```python
+import pluto.compat.neptune  # detects neptune-scale is missing, installs shim
+
+from neptune_scale import Run          # ← uses Pluto's shim automatically
+from neptune_scale.types import File   # ← same
+
+run = Run(experiment_name="my-exp")
+run.log_metrics({"loss": 0.5}, step=0)
+run.close()
+```
+
+No other code changes needed.
+
+### Option 2: Explicit imports
+
+If you prefer to be explicit (or are not using the dual-logging compat layer),
+change your imports to point at Pluto's built-in replacements:
+
+```python
+# Before (Neptune):
+from neptune_scale import Run
+from neptune_scale.types import File, Histogram
+
+# After (Pluto shim):
+from pluto.compat.neptune_scale import Run
+from pluto.compat.neptune_scale.types import File, Histogram
+```
+
+The API is identical. All methods (`log_metrics`, `log_configs`, `add_tags`,
+`assign_files`, `log_histograms`, `close`, context managers, etc.) work the
+same way — data is logged directly to Pluto.
+
+### Neptune Query replacement
+
+The `neptune_query` package already has a full Pluto-backed replacement:
+
+```python
+# Before (Neptune):
+from neptune_query import runs as nq_runs
+from neptune_query.filters import AttributeFilter, Filter
+
+# After (Pluto):
+from pluto.compat.neptune_query import runs as nq_runs
+from pluto.compat.neptune_query.filters import AttributeFilter, Filter
+```
+
+### Configuration
+
+The same environment variables apply:
+
+```bash
+export PLUTO_PROJECT="my-project"       # Required
+export PLUTO_API_KEY="your-api-key"     # Optional (falls back to keyring)
+```
+
+### Quick migration checklist
+
+- [ ] Ensure `pluto-ml` is installed (`pip install pluto-ml`)
+- [ ] Uninstall `neptune-scale` if desired (`pip uninstall neptune-scale`)
+- [ ] Verify `import pluto.compat.neptune` is at the top of each script
+- [ ] Set `PLUTO_PROJECT` environment variable
+- [ ] Run your training script — it should work unchanged
+
 ## Supported Features
 
 ### Full Compatibility Matrix
@@ -571,10 +647,14 @@ curl https://trakkur-api.trainy.ai/health
 
 #### Issue: "ImportError: No module named 'neptune_scale'"
 
-**Solution**:
+**Solution A** (if neptune-scale is still available):
 ```bash
 pip install neptune-scale
 ```
+
+**Solution B** (if neptune-scale has been removed from PyPI):
+
+Use the standalone Pluto shim — see [Neptune Wheels Unavailable](#neptune-wheels-unavailable) below.
 
 #### Issue: "TypeError: Unknown file type"
 
@@ -608,7 +688,7 @@ A: Minimal impact. mlop uses async logging and batching, similar to Neptune.
 A: Yes, unset `MLOP_PROJECT`: `unset MLOP_PROJECT`
 
 **Q: Do I need neptune-scale installed?**
-A: Yes, the compatibility layer wraps Neptune's API, so Neptune must be installed.
+A: No. If neptune-scale is installed, the compat layer dual-logs to both Neptune and Pluto. If neptune-scale is **not** installed (e.g. removed from PyPI), a standalone Pluto-backed shim is used automatically. See [Neptune Wheels Unavailable](#neptune-wheels-unavailable).
 
 ## See Also
 

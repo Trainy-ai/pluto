@@ -932,6 +932,10 @@ def _apply_monkeypatch():
     Apply the monkeypatch to neptune_scale.Run.
 
     This function is called automatically when this module is imported.
+    If the real ``neptune-scale`` package is not installed, the standalone
+    shim from :mod:`pluto.compat.neptune_scale` is registered in
+    ``sys.modules`` so that ``from neptune_scale import Run`` transparently
+    uses the Pluto-backed replacement.
     """
     global _original_neptune_run, _patch_applied
 
@@ -955,9 +959,28 @@ def _apply_monkeypatch():
         )
 
     except ImportError:
-        logger.warning(
-            'pluto.compat.neptune: neptune-scale not installed, monkeypatch not applied'
-        )
+        # neptune-scale is not installed -- register our standalone shim
+        # so that ``from neptune_scale import Run`` works transparently.
+        try:
+            import sys
+
+            import pluto.compat.neptune_scale as _shim
+            import pluto.compat.neptune_scale.types as _shim_types
+
+            sys.modules.setdefault('neptune_scale', _shim)
+            sys.modules.setdefault('neptune_scale.types', _shim_types)
+
+            _patch_applied = True
+            logger.info(
+                'pluto.compat.neptune: neptune-scale not installed. '
+                'Registered pluto.compat.neptune_scale shim so that '
+                '``from neptune_scale import Run`` uses Pluto directly.'
+            )
+        except Exception as e:
+            logger.warning(
+                'pluto.compat.neptune: neptune-scale not installed and '
+                f'failed to register shim: {e}'
+            )
     except Exception as e:
         logger.error(f'pluto.compat.neptune: Failed to apply monkeypatch: {e}')
 
@@ -966,22 +989,33 @@ def restore_neptune():
     """
     Restore the original Neptune Run class (for testing).
 
-    This reverses the monkeypatch.
+    This reverses the monkeypatch.  If the shim was installed (because the
+    real ``neptune-scale`` is not available), the ``neptune_scale`` entries
+    are removed from ``sys.modules``.
     """
     global _original_neptune_run, _patch_applied
 
     if not _patch_applied:
         return
 
-    try:
-        import neptune_scale
+    import sys
 
-        if _original_neptune_run:
+    if _original_neptune_run is not None:
+        # Real neptune-scale was installed -- restore original Run class
+        try:
+            import neptune_scale
+
             neptune_scale.Run = _original_neptune_run
             _patch_applied = False
             logger.info('pluto.compat.neptune: Monkeypatch restored')
-    except Exception as e:
-        logger.error(f'pluto.compat.neptune: Failed to restore monkeypatch: {e}')
+        except Exception as e:
+            logger.error(f'pluto.compat.neptune: Failed to restore monkeypatch: {e}')
+    else:
+        # Shim was registered -- remove it from sys.modules
+        sys.modules.pop('neptune_scale', None)
+        sys.modules.pop('neptune_scale.types', None)
+        _patch_applied = False
+        logger.info('pluto.compat.neptune: Shim removed from sys.modules')
 
 
 # Apply monkeypatch on module import
