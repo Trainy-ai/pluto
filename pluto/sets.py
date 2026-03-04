@@ -297,9 +297,10 @@ def setup(settings: Union[Settings, Dict[str, Any], None] = None) -> Settings:
             )
 
     # Read PLUTO_RUN_ID environment variable for multi-node / resume
-    # Only apply if not already set via function parameters
+    # Only apply if no run ID type was already set via function parameters
     env_run_id = _get_env_with_deprecation('PLUTO_RUN_ID', 'MLOP_RUN_ID')
-    if env_run_id is not None and '_external_id' not in settings_dict:
+    run_id_keys = {'_external_id', '_resume_run_id', '_resume_display_id'}
+    if env_run_id is not None and not any(k in settings_dict for k in run_id_keys):
         _classify_run_id(new_settings, env_run_id)
 
     # Read PLUTO_SANITIZE_LOGS environment variable
