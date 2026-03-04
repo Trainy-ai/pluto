@@ -131,52 +131,79 @@ class TestGetKonduktor:
             assert 'konduktor' not in info
 
 
-def _apply_konduktor_auto_tag(tags, konduktor_job_name=None):
-    """Simulate the auto-tag logic from init.py without server calls.
+def _init_tags(tags, konduktor_job_name=None):
+    """Call the real tag normalization logic from pluto.init without server calls.
 
-    This mirrors the exact logic in pluto/init.py lines 109-124.
+    Mocks OpInit to capture the tags argument before any network operations.
     """
-    if konduktor_job_name:
-        if tags is None:
-            tags = ['konduktor']
-        elif isinstance(tags, str):
-            tags = [tags, 'konduktor'] if tags != 'konduktor' else [tags]
-        elif 'konduktor' not in tags:
-            tags = list(tags) + ['konduktor']
+    captured = {}
 
-    # Normalize (same as init.py)
-    normalized_tags = None
-    if tags:
-        if isinstance(tags, str):
-            normalized_tags = [tags]
-        else:
-            normalized_tags = list(tags)
-    return normalized_tags
+    class MockOpInit:
+        def __init__(self, config, tags=None):
+            captured['tags'] = tags
+
+        def setup(self, settings):
+            pass
+
+        def init(self):
+            # Return a mock Op that has the minimal interface
+            mock_op = type('MockOp', (), {'settings': type('S', (), {'meta': []})()})()
+            mock_op.start = lambda: None
+            return mock_op
+
+    env_patch = {}
+    if konduktor_job_name:
+        env_patch['KONDUKTOR_JOB_NAME'] = konduktor_job_name
+
+    # Clear KONDUKTOR_JOB_NAME if not simulating Konduktor
+    clear_keys = ['KONDUKTOR_JOB_NAME'] if not konduktor_job_name else []
+    env = {k: v for k, v in os.environ.items() if k not in clear_keys}
+    env.update(env_patch)
+
+    import importlib
+    import sys
+
+    # pluto.init is shadowed by the init function in __init__.py,
+    # so access the module via sys.modules
+    importlib.import_module('pluto.init')
+    init_module = sys.modules['pluto.init']
+
+    settings = {'_auth': 'fake'}
+    with (
+        patch.dict(os.environ, env, clear=True),
+        patch.object(init_module, 'OpInit', MockOpInit),
+    ):
+        init_module.init(
+            project='test',
+            name='test',
+            tags=tags,
+            settings=settings,
+        )
+
+    return captured.get('tags')
 
 
 class TestKonduktorAutoTag:
-    """Tests for auto-adding 'konduktor' tag logic (unit tests, no server needed)."""
+    """Tests for auto-adding 'konduktor' tag logic via the real pluto.init code path."""
 
     def test_auto_tag_added_when_in_konduktor_no_user_tags(self):
         """When in Konduktor with no user tags, ['konduktor'] is produced."""
-        result = _apply_konduktor_auto_tag(tags=None, konduktor_job_name='my-job')
+        result = _init_tags(tags=None, konduktor_job_name='my-job')
         assert result == ['konduktor']
 
     def test_no_auto_tag_when_not_in_konduktor(self):
         """When not in Konduktor, tags are unchanged."""
-        result = _apply_konduktor_auto_tag(tags=None, konduktor_job_name=None)
+        result = _init_tags(tags=None, konduktor_job_name=None)
         assert result is None
 
     def test_no_auto_tag_preserves_user_tags(self):
         """When not in Konduktor, user tags pass through unchanged."""
-        result = _apply_konduktor_auto_tag(tags=['experiment'], konduktor_job_name=None)
+        result = _init_tags(tags=['experiment'], konduktor_job_name=None)
         assert result == ['experiment']
 
     def test_auto_tag_merges_with_list_tags(self):
         """Auto 'konduktor' tag merges with user-provided list tags."""
-        result = _apply_konduktor_auto_tag(
-            tags=['experiment', 'v2'], konduktor_job_name='my-job'
-        )
+        result = _init_tags(tags=['experiment', 'v2'], konduktor_job_name='my-job')
         assert 'konduktor' in result
         assert 'experiment' in result
         assert 'v2' in result
@@ -184,33 +211,25 @@ class TestKonduktorAutoTag:
 
     def test_auto_tag_merges_with_string_tag(self):
         """Auto 'konduktor' tag merges with single string tag."""
-        result = _apply_konduktor_auto_tag(
-            tags='experiment', konduktor_job_name='my-job'
-        )
+        result = _init_tags(tags='experiment', konduktor_job_name='my-job')
         assert 'konduktor' in result
         assert 'experiment' in result
         assert len(result) == 2
 
     def test_no_duplicate_konduktor_tag_in_list(self):
         """If user already provided 'konduktor' in list, no duplicate."""
-        result = _apply_konduktor_auto_tag(
-            tags=['konduktor', 'other'], konduktor_job_name='my-job'
-        )
+        result = _init_tags(tags=['konduktor', 'other'], konduktor_job_name='my-job')
         konduktor_count = sum(1 for t in result if t == 'konduktor')
         assert konduktor_count == 1
         assert 'other' in result
 
     def test_no_duplicate_when_string_is_konduktor(self):
         """If user passes tags='konduktor', no duplicate."""
-        result = _apply_konduktor_auto_tag(
-            tags='konduktor', konduktor_job_name='my-job'
-        )
+        result = _init_tags(tags='konduktor', konduktor_job_name='my-job')
         konduktor_count = sum(1 for t in result if t == 'konduktor')
         assert konduktor_count == 1
 
     def test_auto_tag_with_empty_list(self):
         """Empty list tags + Konduktor → only 'konduktor'."""
-        result = _apply_konduktor_auto_tag(tags=[], konduktor_job_name='my-job')
-        # Empty list is falsy, so no normalization; but konduktor check
-        # sees it's not None and isinstance list, so adds 'konduktor'
+        result = _init_tags(tags=[], konduktor_job_name='my-job')
         assert 'konduktor' in result

@@ -51,6 +51,18 @@ def make_compat_start_v1(config, settings, info, tags=None):
     ).encode()
 
 
+def make_compat_resume_v1(settings):
+    payload = {}
+    if settings._resume_run_id is not None:
+        payload['runId'] = settings._resume_run_id
+    elif settings._resume_display_id is not None:
+        payload['displayId'] = settings._resume_display_id
+    elif settings._external_id is not None:
+        payload['externalId'] = settings._external_id
+        payload['projectName'] = settings.project
+    return json.dumps(payload).encode()
+
+
 def make_compat_status_v1(settings, trace=None):
     return json.dumps(
         {

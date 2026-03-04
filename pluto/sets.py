@@ -2,6 +2,7 @@ import importlib
 import logging
 import os
 import queue
+import re
 import sys
 import warnings
 from typing import Any, Dict, List, Optional, Union
@@ -46,6 +47,8 @@ class Settings:
     _op_id: Optional[int] = None
     _op_status: int = -1
     _external_id: Optional[str] = None  # User-provided run ID for multi-node
+    _resume_run_id: Optional[int] = None  # Numeric run ID for resuming
+    _resume_display_id: Optional[str] = None  # Display ID (e.g. "T0-123") for resuming
 
     store_db: str = 'store.db'
     store_table_num: str = 'num'
@@ -122,6 +125,7 @@ class Settings:
         self.url_token = f'{self.url_app}/api-keys'
         self.url_login = f'{self.url_api}/api/slug'
         self.url_start = f'{self.url_api}/api/runs/create'
+        self.url_resume = f'{self.url_api}/api/runs/resume'
         self.url_stop = f'{self.url_api}/api/runs/status/update'
         self.url_meta = f'{self.url_api}/api/runs/logName/add'
         self.url_graph = f'{self.url_api}/api/runs/modelGraph/create'
@@ -162,6 +166,26 @@ class Settings:
             or 'kaggle_environments' in sys.modules
             or 'kaggle' in sys.modules
         )
+
+
+def _is_display_id(value: str) -> bool:
+    """Check if value matches display ID pattern like 'T0-123', 'MMP-1'."""
+    return bool(re.match(r'^[^-]+-\d+$', value))
+
+
+def _classify_run_id(settings: Settings, run_id) -> None:
+    """Route run_id to the appropriate settings field.
+
+    - Numeric int or digit string: resume by server run ID
+    - Display ID (e.g. 'T0-123'): resume by display ID
+    - Other string: treat as externalId (existing multi-node behavior)
+    """
+    if isinstance(run_id, int) or (isinstance(run_id, str) and run_id.isdigit()):
+        settings._resume_run_id = int(run_id) if isinstance(run_id, str) else run_id
+    elif isinstance(run_id, str) and _is_display_id(run_id):
+        settings._resume_display_id = run_id
+    elif isinstance(run_id, str):
+        settings._external_id = run_id
 
 
 def get_console() -> str:
@@ -284,11 +308,12 @@ def setup(settings: Union[Settings, Dict[str, Any], None] = None) -> Settings:
                 f'using default. Value must be a positive integer.'
             )
 
-    # Read PLUTO_RUN_ID environment variable for multi-node distributed training
-    # Only apply if not already set via function parameters
+    # Read PLUTO_RUN_ID environment variable for multi-node / resume
+    # Only apply if no run ID type was already set via function parameters
     env_run_id = _get_env_with_deprecation('PLUTO_RUN_ID', 'MLOP_RUN_ID')
-    if env_run_id is not None and '_external_id' not in settings_dict:
-        new_settings._external_id = env_run_id
+    run_id_keys = {'_external_id', '_resume_run_id', '_resume_display_id'}
+    if env_run_id is not None and not any(k in settings_dict for k in run_id_keys):
+        _classify_run_id(new_settings, env_run_id)
 
     # Read PLUTO_SANITIZE_LOGS environment variable
     env_sanitize_logs = os.environ.get('PLUTO_SANITIZE_LOGS')
