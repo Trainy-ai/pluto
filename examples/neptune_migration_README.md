@@ -204,7 +204,7 @@ with Run(experiment_name="context-test") as run:
 | `MLOP_URL_APP` | No | `trakkur.trainy.ai` | Custom mlop app URL for self-hosted instances. Passed as `settings['url_app']`. | `neptune.py:60` |
 | `MLOP_URL_API` | No | `trakkur-api.trainy.ai` | Custom mlop API URL for self-hosted instances. Passed as `settings['url_api']`. | `neptune.py:62` |
 | `MLOP_URL_INGEST` | No | `trakkur-ingest.trainy.ai` | Custom mlop ingest URL for self-hosted instances. Passed as `settings['url_ingest']`. | `neptune.py:64` |
-| `DISABLE_NEPTUNE_LOGGING` | No | `false` | **Post-sunset kill switch**. Set to `true`, `1`, or `yes` to disable all Neptune API calls. Only logs to mlop. | `neptune.py:198` |
+| `DISABLE_NEPTUNE_LOGGING` | No | `true` | **Neptune logging is disabled by default**. Set to `false`, `0`, or `no` to re-enable Neptune API calls for dual-logging. | `neptune.py:198` |
 
 #### How Environment Variables Work
 
@@ -227,11 +227,11 @@ with Run(experiment_name="context-test") as run:
 - Default to production Trakkur URLs if not set
 - **Verified**: All three work correctly (see `mlop/sets.py`)
 
-**DISABLE_NEPTUNE_LOGGING** (Optional):
+**DISABLE_NEPTUNE_LOGGING** (Default: `true`):
 - Read at `mlop/compat/neptune.py:198-200`
-- Accepts: `"true"`, `"1"`, `"yes"` (case-insensitive)
-- When enabled: All Neptune API calls become no-ops
-- **Use case**: Post-Neptune-sunset to avoid errors from dead Neptune API
+- Neptune logging is disabled by default since Pluto's sunset
+- Set to `"false"`, `"0"`, or `"no"` (case-insensitive) to re-enable
+- When disabled (default): All Neptune API calls become no-ops
 
 ### Configuration Methods
 
@@ -265,19 +265,15 @@ python train.py  # Works with Neptune only, no dual-logging
 
 ## Disabling Neptune (Post-Sunset)
 
-After Neptune's sunset, you can disable all Neptune API calls while keeping mlop logging active. This prevents errors from failed Neptune requests.
-
-### Usage
-
-Set the `DISABLE_NEPTUNE_LOGGING` environment variable:
+Neptune logging is now disabled by default. All Neptune API calls are no-ops, and only pluto logging is active. To re-enable Neptune logging (e.g., during a migration period), set:
 
 ```bash
-export DISABLE_NEPTUNE_LOGGING=true  # or "1" or "yes"
+export DISABLE_NEPTUNE_LOGGING=false  # or "0" or "no"
 ```
 
-### What Happens
+### What Happens (Default Behavior)
 
-- ✅ **mlop logging continues normally** - All metrics, configs, and files go to mlop
+- ✅ **pluto logging continues normally** - All metrics, configs, and files go to pluto
 - ✅ **Neptune calls are no-ops** - No API requests to Neptune servers
 - ✅ **No code changes needed** - Your existing Neptune code still works
 - ✅ **No errors** - Silent fallback, one INFO log at startup
@@ -288,7 +284,7 @@ export DISABLE_NEPTUNE_LOGGING=true  # or "1" or "yes"
 import mlop.compat.neptune
 from neptune_scale import Run
 
-# With DISABLE_NEPTUNE_LOGGING=true, this only logs to mlop
+# Neptune logging is disabled by default, this only logs to pluto
 run = Run(experiment_name='post-sunset-training')
 run.log_metrics({'loss': 0.5}, step=0)  # → mlop only
 run.close()
@@ -298,9 +294,9 @@ run.close()
 
 | Scenario | Recommendation |
 |----------|---------------|
-| **Neptune sunset completed** | Set `DISABLE_NEPTUNE_LOGGING=true` |
-| **During migration** | Keep it disabled (dual-logging) |
-| **Testing mlop-only mode** | Temporarily enable to test post-sunset behavior |
+| **Default (post-sunset)** | No action needed, Neptune is disabled by default |
+| **During migration** | Set `DISABLE_NEPTUNE_LOGGING=false` for dual-logging |
+| **Testing dual-logging** | Set `DISABLE_NEPTUNE_LOGGING=false` temporarily |
 
 ### Notes
 
