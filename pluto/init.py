@@ -5,7 +5,7 @@ from typing import Any, Dict, Optional, Union
 import pluto
 
 from .op import Op
-from .sets import Settings, setup
+from .sets import Settings, _classify_run_id, setup
 from .util import gen_id, get_char
 
 logger = logging.getLogger(f'{__name__.split(".")[0]}')
@@ -113,10 +113,14 @@ def init(
     )  # datetime.now().strftime("%Y%m%d"), str(int(time.time()))
     # settings._op_id = id if id else gen_id(seed=settings.project)
 
-    # Set external_id for multi-node distributed training
+    # Classify run_id: display ID → resume, numeric → resume, other → externalId
     # Parameter takes precedence over environment variable (already handled in setup())
     if run_id is not None:
-        settings._external_id = run_id
+        # Clear any env-var-based classification (explicit param wins)
+        settings._resume_run_id = None
+        settings._resume_display_id = None
+        settings._external_id = None
+        _classify_run_id(settings, run_id)
 
     # Normalize tags before passing to Op
     normalized_tags = [tags] if isinstance(tags, str) else list(tags or [])

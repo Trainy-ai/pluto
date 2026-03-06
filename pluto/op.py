@@ -16,6 +16,7 @@ import pluto
 from .api import (
     make_compat_alert_v1,
     make_compat_monitor_v1,
+    make_compat_resume_v1,
     make_compat_start_v1,
     make_compat_trigger_v1,
     make_compat_webhook_v1,
@@ -265,14 +266,30 @@ class Op:
             if self.settings._sys == {}:
                 self.settings._sys = System(self.settings)
             tmp_iface = ServerInterface(config=config, settings=settings)
-            r = tmp_iface._post_v1(
-                self.settings.url_start,  # create-run
-                tmp_iface.headers,
-                make_compat_start_v1(
-                    self.config, self.settings, self.settings._sys.get_info(), self.tags
-                ),
-                client=tmp_iface.client_api,
-            )
+            if (
+                settings._resume_run_id is not None
+                or settings._resume_display_id is not None
+            ):
+                # Resume existing run via /api/runs/resume
+                r = tmp_iface._post_v1(
+                    self.settings.url_resume,
+                    tmp_iface.headers,
+                    make_compat_resume_v1(self.settings),
+                    client=tmp_iface.client_api,
+                )
+            else:
+                # Create new run (or resume via externalId)
+                r = tmp_iface._post_v1(
+                    self.settings.url_start,  # create-run
+                    tmp_iface.headers,
+                    make_compat_start_v1(
+                        self.config,
+                        self.settings,
+                        self.settings._sys.get_info(),
+                        self.tags,
+                    ),
+                    client=tmp_iface.client_api,
+                )
             if not r:
                 raise ConnectionError(
                     'Failed to create or resume run. Check connection to Pluto server.'
@@ -285,6 +302,11 @@ class Op:
                 # Collision detection: prevent accidental data interleaving
                 if self._resume:
                     pass  # User explicitly opted in to resume
+                elif (
+                    self.settings._resume_run_id is not None
+                    or self.settings._resume_display_id is not None
+                ):
+                    pass  # Explicit resume via numeric/display ID
                 elif self.settings._external_id_from_env:
                     logger.info(
                         f'{tag}: Run ID from PLUTO_RUN_ID env var matched '
