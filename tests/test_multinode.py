@@ -5,8 +5,11 @@ processes can log to the same run by sharing a common run_id.
 """
 
 import os
+import random
 import uuid
 import warnings
+
+import pytest
 
 import pluto
 from pluto.sets import setup
@@ -170,6 +173,7 @@ class TestMultiNodeResume:
             project=TESTING_PROJECT_NAME,
             name=get_task_name(),
             run_id=shared_run_id,
+            resume=True,
         )
         server_id_2 = run2.id
         resumed_2 = run2.resumed
@@ -228,6 +232,7 @@ class TestMultiNodeResume:
             project=TESTING_PROJECT_NAME,
             name=get_task_name(),
             run_id=shared_run_id,
+            resume=True,
         )
         run2.log({'loss/rank1': 0.6, 'throughput/rank1': 950})
 
@@ -255,6 +260,7 @@ class TestMultiNodeResume:
             project=TESTING_PROJECT_NAME,
             name=get_task_name(),
             run_id=shared_run_id,
+            resume=True,
         )
         assert run2.resumed is True
         run2.finish()
@@ -277,6 +283,7 @@ class TestMultiNodeResume:
             project=TESTING_PROJECT_NAME,
             name=get_task_name(),
             run_id=shared_run_id,
+            resume=True,
         )
         assert run2.resumed is True
         run2.finish()
@@ -354,8 +361,6 @@ except ImportError:
     HAS_TORCH_DISTRIBUTED = False
     dist = None  # type: ignore[assignment]
 
-import pytest  # noqa: E402
-
 
 def _get_world_size() -> int:
     """Get world size from environment."""
@@ -427,6 +432,7 @@ class TestMultiNodeE2E:
             project=TESTING_PROJECT_NAME,
             name=f'e2e-multinode-rank{rank}',
             run_id=run_id,
+            resume=True,
             config={
                 'test': 'multinode-e2e',
                 'world_size': world_size,
@@ -496,6 +502,7 @@ class TestMultiNodeE2E:
             project=TESTING_PROJECT_NAME,
             name=f'e2e-sysmetrics-rank{rank}',
             run_id=run_id,
+            resume=True,
             config={'test': 'multinode-sysmetrics', 'rank': rank},
         )
 
@@ -509,3 +516,122 @@ class TestMultiNodeE2E:
         dist.barrier()
         run.finish()
         dist.barrier()
+
+
+class TestSeededRandomCollision:
+    """Seeded random must not cause externalId collisions."""
+
+    def test_gen_id_unique_despite_seeded_random(self):
+        from pluto.util import gen_id
+
+        random.seed(42)
+        id1 = gen_id()
+        random.seed(42)
+        id2 = gen_id()
+        assert id1 != id2
+
+    def test_gen_id_does_not_corrupt_global_random(self):
+        from pluto.util import gen_id
+
+        random.seed(42)
+        expected = random.random()
+        random.seed(42)
+        gen_id()
+        assert random.random() == expected
+
+    def test_generate_run_id_unique_despite_seeded_random(self):
+        from pluto.util import generate_run_id
+
+        random.seed(0)
+        id1 = generate_run_id()
+        random.seed(0)
+        id2 = generate_run_id()
+        assert id1 != id2
+
+    def test_generate_run_id_format(self):
+        from pluto.util import generate_run_id
+
+        rid = generate_run_id()
+        parts = rid.split('-')
+        # Format: adjective-noun-suffix
+        assert len(parts) == 3
+        assert len(parts[2]) == 5  # suffix is 5 chars
+
+    def test_seeded_runs_without_name_get_unique_names(self):
+        """Auto-generated names must be unique even when random is seeded."""
+        random.seed(0)
+        run1 = pluto.init(project=TESTING_PROJECT_NAME)
+        name1 = run1.settings._op_name
+        run1.finish()
+        random.seed(0)
+        run2 = pluto.init(project=TESTING_PROJECT_NAME)
+        name2 = run2.settings._op_name
+        run2.finish()
+        assert name1 != name2
+
+
+class TestResumeFlag:
+    """Integration tests for the resume flag on pluto.init()."""
+
+    def test_default_raises_on_collision(self):
+        """resume=False (default) raises on externalId collision."""
+        shared_run_id = f'collision-{uuid.uuid4().hex}'
+        run1 = pluto.init(
+            project=TESTING_PROJECT_NAME,
+            name=get_task_name(),
+            run_id=shared_run_id,
+        )
+        run1.finish()
+        with pytest.raises(RuntimeError, match='resume'):
+            pluto.init(
+                project=TESTING_PROJECT_NAME,
+                name=get_task_name(),
+                run_id=shared_run_id,
+            )
+
+    def test_resume_true_allows_reattach(self):
+        shared_run_id = f'resume-true-{uuid.uuid4().hex}'
+        run1 = pluto.init(
+            project=TESTING_PROJECT_NAME,
+            name=get_task_name(),
+            run_id=shared_run_id,
+        )
+        server_id_1 = run1.id
+        run1.finish()
+        run2 = pluto.init(
+            project=TESTING_PROJECT_NAME,
+            name=get_task_name(),
+            run_id=shared_run_id,
+            resume=True,
+        )
+        assert run2.id == server_id_1
+        assert run2.resumed is True
+        run2.finish()
+
+    def test_resume_true_new_run_works(self):
+        run = pluto.init(
+            project=TESTING_PROJECT_NAME,
+            name=get_task_name(),
+            run_id=f'fresh-{uuid.uuid4().hex}',
+            resume=True,
+        )
+        assert run.resumed is False
+        run.finish()
+
+    def test_env_run_id_allows_resume_without_flag(self):
+        """PLUTO_RUN_ID env var implies intentional sharing — no error on collision."""
+        shared_run_id = f'env-{uuid.uuid4().hex}'
+        os.environ['PLUTO_RUN_ID'] = shared_run_id
+        try:
+            run1 = pluto.init(
+                project=TESTING_PROJECT_NAME,
+                name=get_task_name(),
+            )
+            run1.finish()
+            run2 = pluto.init(
+                project=TESTING_PROJECT_NAME,
+                name=get_task_name(),
+            )
+            run2.finish()  # should NOT raise
+        finally:
+            del os.environ['PLUTO_RUN_ID']

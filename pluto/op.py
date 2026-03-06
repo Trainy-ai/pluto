@@ -243,13 +243,14 @@ class OpMonitor:
 
 
 class Op:
-    def __init__(self, config, settings, tags=None) -> None:
+    def __init__(self, config, settings, tags=None, resume=False) -> None:
         self.config = config
         self.settings = settings
         self.tags: List[str] = tags if tags else []  # Use provided tags or empty list
         self._metric_definitions: Dict[str, Dict[str, Any]] = {}
         self._monitor = OpMonitor(op=self)
         self._resumed: bool = False  # Whether this run was resumed (multi-node)
+        self._resume: bool = resume  # Whether resume was explicitly requested
         self._sync_manager: Optional[SyncProcessManager] = None
 
         # Determine if sync process should be used
@@ -281,6 +282,23 @@ class Op:
             self.settings._op_id = response_data['runId']
             self._resumed = response_data.get('resumed', False)
             if self._resumed:
+                # Collision detection: prevent accidental data interleaving
+                if self._resume:
+                    pass  # User explicitly opted in to resume
+                elif self.settings._external_id_from_env:
+                    logger.info(
+                        f'{tag}: Run ID from PLUTO_RUN_ID env var matched '
+                        f'existing run, allowing resume.'
+                    )
+                else:
+                    external_id = self.settings._external_id
+                    raise RuntimeError(
+                        f"Run with externalId '{external_id}' already exists. "
+                        f'This often happens when random.seed() or '
+                        f'L.seed_everything() makes run IDs deterministic. '
+                        f'Pass resume=True to pluto.init() to intentionally '
+                        f'reattach, or use a unique run_id.'
+                    )
                 logger.info(f'{tag}: resumed run {str(self.settings._op_id)}')
                 logger.warning(
                     f'{tag}: Run was resumed via run_id. The `name` parameter '

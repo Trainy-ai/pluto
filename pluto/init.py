@@ -13,13 +13,19 @@ tag = 'Init'
 
 
 class OpInit:
-    def __init__(self, config, tags=None) -> None:
+    def __init__(self, config, tags=None, resume=False) -> None:
         self.kwargs = None
         self.config: Dict[str, Any] = config
         self.tags = tags
+        self.resume = resume
 
     def init(self) -> Op:
-        op = Op(config=self.config, settings=self.settings, tags=self.tags)
+        op = Op(
+            config=self.config,
+            settings=self.settings,
+            tags=self.tags,
+            resume=self.resume,
+        )
         op.settings.meta = []  # TODO: check
         op.start()
         return op
@@ -36,6 +42,7 @@ def init(
     settings: Union[Settings, Dict[str, Any], None] = None,
     tags: Union[str, list[str], None] = None,
     run_id: Optional[str] = None,
+    resume: bool = False,
     **kwargs,
 ) -> Op:
     """
@@ -54,6 +61,11 @@ def init(
                 When multiple processes use the same run_id, they will all
                 log to the same run (Neptune-style resume). Can also be set
                 via PLUTO_RUN_ID environment variable.
+        resume: If True, allow resuming an existing run with the same run_id.
+                If False (default), raises RuntimeError when a run with the
+                same externalId already exists (prevents accidental data
+                collision). Runs created via PLUTO_RUN_ID env var are always
+                allowed to resume regardless of this flag.
 
     Returns:
         Op: The initialized run operation
@@ -97,7 +109,7 @@ def init(
     settings.dir = dir if dir else settings.dir
     settings.project = get_char(project) if project else settings.project
     settings._op_name = (
-        get_char(name) if name else gen_id(seed=settings.project)
+        get_char(name) if name else gen_id()
     )  # datetime.now().strftime("%Y%m%d"), str(int(time.time()))
     # settings._op_id = id if id else gen_id(seed=settings.project)
 
@@ -114,7 +126,7 @@ def init(
         normalized_tags.append('konduktor')
 
     try:
-        op_init = OpInit(config=config, tags=normalized_tags or None)
+        op_init = OpInit(config=config, tags=normalized_tags or None, resume=resume)
         op_init.setup(settings=settings)
         op = op_init.init()
 

@@ -9,6 +9,7 @@ from .file import Artifact, Audio, File, Image, Text, Video
 from .init import finish, init
 from .sets import Settings, setup
 from .sys import System
+from .util import generate_run_id
 
 _hooks: List[Any] = []
 ops: Optional[List[Any]] = None
@@ -37,6 +38,7 @@ __all__ = (
     'finish',
     'setup',
     'query',
+    'generate_run_id',
 )
 
 __version__ = '0.0.9'

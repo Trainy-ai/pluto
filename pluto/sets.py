@@ -46,6 +46,7 @@ class Settings:
     _op_id: Optional[int] = None
     _op_status: int = -1
     _external_id: Optional[str] = None  # User-provided run ID for multi-node
+    _external_id_from_env: bool = False  # Whether _external_id was set from env var
 
     store_db: str = 'store.db'
     store_table_num: str = 'num'
@@ -292,6 +293,7 @@ def setup(settings: Union[Settings, Dict[str, Any], None] = None) -> Settings:
     env_run_id = _get_env_with_deprecation('PLUTO_RUN_ID', 'MLOP_RUN_ID')
     if env_run_id is not None and '_external_id' not in settings_dict:
         new_settings._external_id = env_run_id
+        new_settings._external_id_from_env = True
 
     # Read PLUTO_SANITIZE_LOGS environment variable
     env_sanitize_logs = os.environ.get('PLUTO_SANITIZE_LOGS')
