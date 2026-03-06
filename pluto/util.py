@@ -127,7 +127,7 @@ def gen_id(length=8) -> str:
 
 
 # Word lists for generate_run_id()
-_RUN_ID_ADJECTIVES = [
+_RUN_ID_ADJECTIVES = (
     'agile',
     'bold',
     'brave',
@@ -223,9 +223,9 @@ _RUN_ID_ADJECTIVES = [
     'wild',
     'woven',
     'zen',
-]
+)
 
-_RUN_ID_NOUNS = [
+_RUN_ID_NOUNS = (
     'arch',
     'atlas',
     'beam',
@@ -320,7 +320,7 @@ _RUN_ID_NOUNS = [
     'wind',
     'wolf',
     'wren',
-]
+)
 
 
 def generate_run_id() -> str:
