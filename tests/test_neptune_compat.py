@@ -1460,3 +1460,32 @@ class TestNeptuneCompatSignalHandlingTransparency:
             assert (
                 finish_call_count == 1
             ), f'Pluto finish called {finish_call_count} times, should be 1'
+
+
+class TestNeptuneSeededRandom:
+    """Test that Neptune compat layer isolates random state from user seeding."""
+
+    def test_neptune_compat_preserves_random_state(
+        self, mock_neptune_backend, clean_env
+    ):
+        """Random state should be preserved across Neptune Run init."""
+        import random
+
+        os.environ['PLUTO_PROJECT'] = 'test-project'
+
+        mock_pluto_run = mock.MagicMock()
+        mock_pluto_run.config = {}
+        mock_pluto_run.finish = mock.MagicMock()
+
+        with mock.patch('pluto.init', return_value=mock_pluto_run):
+            from neptune_scale import Run
+
+            random.seed(42)
+            state_before = random.getstate()
+            run = Run(experiment_name='state-test')
+            state_after = random.getstate()
+            run.close()
+
+            assert (
+                state_before == state_after
+            ), 'Neptune compat layer should preserve global random state'

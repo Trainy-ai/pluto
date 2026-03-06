@@ -47,6 +47,7 @@ class Settings:
     _op_id: Optional[int] = None
     _op_status: int = -1
     _external_id: Optional[str] = None  # User-provided run ID for multi-node
+    _external_id_from_env: bool = False  # Whether _external_id was set from env var
     _resume_run_id: Optional[int] = None  # Numeric run ID for resuming
     _resume_display_id: Optional[str] = None  # Display ID (e.g. "T0-123") for resuming
 
@@ -314,6 +315,7 @@ def setup(settings: Union[Settings, Dict[str, Any], None] = None) -> Settings:
     run_id_keys = {'_external_id', '_resume_run_id', '_resume_display_id'}
     if env_run_id is not None and not any(k in settings_dict for k in run_id_keys):
         _classify_run_id(new_settings, env_run_id)
+        new_settings._external_id_from_env = True
 
     # Read PLUTO_SANITIZE_LOGS environment variable
     env_sanitize_logs = os.environ.get('PLUTO_SANITIZE_LOGS')
