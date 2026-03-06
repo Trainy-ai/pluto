@@ -139,7 +139,7 @@ def _init_tags(tags, konduktor_job_name=None):
     captured = {}
 
     class MockOpInit:
-        def __init__(self, config, tags=None):
+        def __init__(self, config, tags=None, resume=False):
             captured['tags'] = tags
 
         def setup(self, settings):
