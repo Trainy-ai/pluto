@@ -362,13 +362,8 @@ class NeptuneRunWrapper:
             # Determine if this is an intentional resume (explicit run_id kwarg)
             pluto_resume = bool(explicit_kwarg_run_id)
 
-            # Apply precedence rules
-            if pluto_resume and explicit_kwarg_run_id:
-                run_id = explicit_kwarg_run_id  # intentional resume
-            elif env_run_id:
-                run_id = env_run_id  # infrastructure coordination
-            else:
-                run_id = explicit_kwarg_run_id or neptune_run_id
+            # Apply precedence: PLUTO_RUN_ID > explicit kwarg > Neptune auto
+            run_id = env_run_id or explicit_kwarg_run_id or neptune_run_id
 
             pluto_init_kwargs = {
                 'project': pluto_config['project'],
