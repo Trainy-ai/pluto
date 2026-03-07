@@ -481,9 +481,17 @@ class TestRun:
         run, op = self._make_run()
         assert run.tags == ('tag1',)
 
-        # Setting tags
+        # Setting tags — tag1 kept, tag2 added
         run.tags = ('tag1', 'tag2')
+        op.remove_tags.assert_not_called()
         op.add_tags.assert_called_with(['tag2'])
+
+        # Replace tags — tag1 removed, tag3 added
+        op.reset_mock()
+        op.tags = ['tag1', 'tag2']
+        run.tags = ('tag2', 'tag3')
+        op.remove_tags.assert_called_once_with(['tag1'])
+        op.add_tags.assert_called_once_with(['tag3'])
 
     def test_name_setter(self):
         run, op = self._make_run(name='original')

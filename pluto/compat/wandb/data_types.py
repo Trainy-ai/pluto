@@ -24,12 +24,6 @@ class Image:
         data_or_path: Any = None,
         mode: Optional[str] = None,
         caption: Optional[str] = None,
-        grouping: Optional[int] = None,
-        classes: Any = None,
-        boxes: Any = None,
-        masks: Any = None,
-        file_type: Optional[str] = None,
-        normalize: bool = True,
     ) -> None:
         self.data_or_path = data_or_path
         self.caption = caption
@@ -102,9 +96,6 @@ class Table:
         data: Optional[List[List[Any]]] = None,
         rows: Optional[List[List[Any]]] = None,
         dataframe: Any = None,
-        dtype: Any = None,
-        optional: Any = True,
-        allow_mixed_types: bool = False,
     ) -> None:
         self.columns = columns or []
         self._data: List[List[Any]] = data or rows or []
@@ -223,8 +214,6 @@ class Artifact:
         type: str,
         description: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
-        incremental: bool = False,
-        use_as: Optional[str] = None,
     ) -> None:
         self.name = name
         self.type = type
@@ -268,8 +257,6 @@ class Artifact:
         self,
         uri: str,
         name: Optional[str] = None,
-        checksum: bool = True,
-        max_objects: Optional[int] = None,
     ) -> 'Artifact':
         logger.debug('%s: add_reference is not supported, ignoring', tag)
         return self
