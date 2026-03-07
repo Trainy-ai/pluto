@@ -98,7 +98,6 @@ class Config:
     def update(
         self,
         d: Any = None,
-        allow_val_change: Optional[bool] = None,
         **kwargs: Any,
     ) -> None:
         """Update config with a dict, namespace, or keyword arguments."""

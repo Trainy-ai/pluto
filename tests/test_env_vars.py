@@ -202,6 +202,45 @@ class TestDeprecatedMLOPEnvVars:
         del os.environ['PLUTO_DEBUG_LEVEL']
 
 
+class TestWANDBApiKeyFallback:
+    """Test WANDB_API_KEY as fallback for PLUTO_API_TOKEN."""
+
+    def _cleanup_env(self):
+        for var in ('PLUTO_API_KEY', 'MLOP_API_TOKEN', 'WANDB_API_KEY'):
+            os.environ.pop(var, None)
+
+    def test_wandb_api_key_sets_auth(self):
+        """Test WANDB_API_KEY is picked up when no PLUTO_API_KEY is set."""
+        self._cleanup_env()
+        os.environ['WANDB_API_KEY'] = 'wandb-test-token'
+        try:
+            settings = setup()
+            assert settings._auth == 'wandb-test-token'
+        finally:
+            self._cleanup_env()
+
+    def test_pluto_api_key_takes_precedence(self):
+        """Test PLUTO_API_KEY wins over WANDB_API_KEY."""
+        self._cleanup_env()
+        os.environ['PLUTO_API_KEY'] = 'pluto-token'
+        os.environ['WANDB_API_KEY'] = 'wandb-token'
+        try:
+            settings = setup()
+            assert settings._auth == 'pluto-token'
+        finally:
+            self._cleanup_env()
+
+    def test_function_params_take_precedence(self):
+        """Test explicit _auth in settings dict wins over all env vars."""
+        self._cleanup_env()
+        os.environ['WANDB_API_KEY'] = 'wandb-token'
+        try:
+            settings = setup({'_auth': 'param-token'})
+            assert settings._auth == 'param-token'
+        finally:
+            self._cleanup_env()
+
+
 class TestPLUTOThreadJoinTimeout:
     """Test PLUTO_THREAD_JOIN_TIMEOUT_SECONDS environment variable."""
 
