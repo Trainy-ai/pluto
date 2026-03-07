@@ -367,7 +367,7 @@ class NeptuneRunWrapper:
 
             pluto_init_kwargs = {
                 'project': pluto_config['project'],
-                'name': f'{experiment_name}-{run_id}' if run_id else experiment_name,
+                'name': experiment_name,
                 'config': {},  # Will be populated by log_configs()
                 **(({'run_id': run_id}) if run_id else {}),
                 'resume': pluto_resume,
