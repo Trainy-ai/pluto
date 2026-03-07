@@ -163,6 +163,8 @@ def neptune_compat_env(tmp_path):
 
     # Set up test environment
     os.environ['PLUTO_PROJECT'] = os.environ.get('PLUTO_PROJECT', 'test-project')
+    # Neptune logging is disabled by default; explicitly enable for compat tests
+    os.environ['DISABLE_NEPTUNE_LOGGING'] = 'false'
 
     yield tmp_path
 

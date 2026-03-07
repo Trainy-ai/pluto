@@ -274,6 +274,10 @@ else:
 
 ### Neptune Compatibility Layer Notes
 
+**Neptune is sunset as of March 2025.** `DISABLE_NEPTUNE_LOGGING` now defaults to `true`,
+meaning all Neptune API calls are no-ops by default. Set `DISABLE_NEPTUNE_LOGGING=false`
+to re-enable Neptune logging if needed during a transition period.
+
 The Neptune compat layer (pluto/compat/neptune.py) has special requirements:
 - Uses 5-second cleanup timeout (Neptune API contract)
 - Uses sync process with a short shutdown timeout (3s) to fit within Neptune's cleanup window
@@ -306,6 +310,11 @@ Environment variables use the `PLUTO_*` prefix. The old `MLOP_*` prefix is suppo
 - Requires authentication via `PLUTO_API_KEY` environment variable
 - Tests marked with `@pytest.mark.distributed` require multi-rank torch setup
 - Use `HAS_TORCH`, `HAS_MATPLOTLIB` flags for optional dependency tests
+- **Neptune tests**: `TestNeptuneRealBackend` and `TestNeptuneCompatIntegration` are
+  unconditionally skipped since Neptune's sunset. The unit tests in `test_neptune_compat.py`
+  (mock-based) still run and validate the compat layer logic. The `clean_env` fixture
+  explicitly sets `DISABLE_NEPTUNE_LOGGING=false` so mock-based tests can exercise
+  Neptune-enabled code paths.
 
 ### File Streaming
 - Files are uploaded to pre-signed URLs obtained from server

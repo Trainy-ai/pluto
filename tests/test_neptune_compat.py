@@ -245,6 +245,9 @@ def clean_env():
         if var in os.environ:
             del os.environ[var]
 
+    # Neptune logging is disabled by default; explicitly enable for tests
+    os.environ['DISABLE_NEPTUNE_LOGGING'] = 'false'
+
     yield
 
     # Restore
@@ -668,11 +671,15 @@ class TestNeptuneCompatFileConversion:
             assert mock_mlop_run.log.called
 
 
+@pytest.mark.skip(reason='Neptune is sunset - integration tests disabled')
 class TestNeptuneCompatIntegration:
     """
     Integration tests with real mlop backend (requires auth).
 
     These tests should be run in CI with proper mlop credentials set.
+
+    NOTE: These tests are skipped since Neptune's sunset. They are kept
+    for reference in case a similar compat layer is needed in the future.
     """
 
     @pytest.mark.skipif(
@@ -836,6 +843,7 @@ class TestNeptuneCompatAPIForwarding:
         run.close()
 
 
+@pytest.mark.skip(reason='Neptune is sunset - integration tests no longer runnable')
 class TestNeptuneRealBackend:
     """
     Integration tests with REAL Neptune backend.
@@ -844,6 +852,9 @@ class TestNeptuneRealBackend:
     actual Neptune client and API. Requires Neptune credentials.
 
     Set NEPTUNE_API_TOKEN and NEPTUNE_PROJECT to run these tests.
+
+    NOTE: These tests are skipped since Neptune's sunset. They are kept
+    for reference in case a similar compat layer is needed in the future.
     """
 
     @pytest.mark.skipif(

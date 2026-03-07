@@ -290,8 +290,8 @@ class NeptuneRunWrapper:
 
         # Check if Neptune logging is disabled
         self._neptune_disabled = os.environ.get(
-            'DISABLE_NEPTUNE_LOGGING', ''
-        ).lower() in ('true', '1', 'yes')
+            'DISABLE_NEPTUNE_LOGGING', 'true'
+        ).lower() not in ('false', '0', 'no')
 
         if self._neptune_disabled:
             logger.info(
