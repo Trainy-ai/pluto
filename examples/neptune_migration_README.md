@@ -228,8 +228,8 @@ with Run(experiment_name="context-test") as run:
 - **Verified**: All three work correctly (see `mlop/sets.py`)
 
 **DISABLE_NEPTUNE_LOGGING** (Default: `true`):
-- Read at `mlop/compat/neptune.py:198-200`
-- Neptune logging is disabled by default since Pluto's sunset
+- Read at `pluto/compat/neptune.py:292-294`
+- Neptune logging is disabled by default since Neptune's sunset
 - Set to `"false"`, `"0"`, or `"no"` (case-insensitive) to re-enable
 - When disabled (default): All Neptune API calls become no-ops
 

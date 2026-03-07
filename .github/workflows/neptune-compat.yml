@@ -1,25 +1,10 @@
 name: Neptune Compatibility Tests
 
-# This workflow tests the Neptune-to-pluto compatibility layer during the migration period
-# It ensures that:
-# 1. Neptune API calls continue to work unchanged
-# 2. Dual-logging to pluto works when configured
-# 3. Fallback behavior is correct when pluto fails
-# 4. No breaking changes are introduced during the 2-month transition
+# Neptune has been sunset. This workflow is kept for manual testing only.
+# The Neptune compat layer remains for users migrating to Pluto.
 
 on:
-  push:
-    branches:
-      - main
-      - 'releases/**'
-  pull_request:
-    branches:
-      - main
-      - 'releases/**'
   workflow_dispatch:
-  # Run daily during the 2-month transition period
-  schedule:
-    - cron: '0 8 * * *'  # Run at 8 AM UTC daily
 
 jobs:
   neptune-compatibility:
