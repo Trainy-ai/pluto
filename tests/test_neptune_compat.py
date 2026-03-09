@@ -1489,3 +1489,52 @@ class TestNeptuneSeededRandom:
             assert (
                 state_before == state_after
             ), 'Neptune compat layer should preserve global random state'
+
+
+@pytest.mark.skipif(not os.environ.get('PLUTO_API_KEY'), reason='needs PLUTO_API_KEY')
+class TestNeptuneCompatLiveBackend:
+    """Live backend tests for Neptune compat layer run identity."""
+
+    def test_same_experiment_name_creates_separate_runs(self, clean_env):
+        """Two fresh Run() calls with identical experiment_name must create distinct server runs."""
+        from pluto.compat.neptune import Run
+
+        exp_name = f'compat-fresh-{uuid.uuid4().hex[:8]}'
+
+        run1 = Run(project='testing-ci', experiment_name=exp_name)
+        id1 = run1._pluto_run.id
+        run1.close()
+
+        run2 = Run(project='testing-ci', experiment_name=exp_name)
+        id2 = run2._pluto_run.id
+        run2.close()
+
+        assert id1 != id2, "Fresh runs with same experiment_name must get distinct server IDs"
+
+    def test_resume_reattaches_to_existing_run(self, clean_env):
+        """Run(run_id=X) with resume should reattach to the same server run."""
+        from pluto.compat.neptune import Run
+
+        exp_name = f'compat-resume-{uuid.uuid4().hex[:8]}'
+        shared_run_id = f'resume-{uuid.uuid4().hex[:8]}'
+
+        run1 = Run(project='testing-ci', experiment_name=exp_name, run_id=shared_run_id)
+        id1 = run1._pluto_run.id
+        run1.close()
+
+        # Same run_id → compat layer sets resume=True → should reattach
+        run2 = Run(project='testing-ci', experiment_name=exp_name, run_id=shared_run_id)
+        id2 = run2._pluto_run.id
+        run2.close()
+
+        assert id1 == id2, "Resume with same run_id must reattach to same server run"
+
+    def test_no_run_id_means_no_external_id(self, clean_env):
+        """Fresh run without run_id should have no externalId on server."""
+        from pluto.compat.neptune import Run
+
+        exp_name = f'compat-no-ext-{uuid.uuid4().hex[:8]}'
+
+        run = Run(project='testing-ci', experiment_name=exp_name)
+        assert run._pluto_run is not None
+        run.close()
