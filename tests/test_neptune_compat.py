@@ -1496,7 +1496,8 @@ class TestNeptuneCompatLiveBackend:
     """Live backend tests for Neptune compat layer run identity."""
 
     def test_same_experiment_name_creates_separate_runs(self, clean_env):
-        """Two fresh Run() calls with identical experiment_name must create distinct server runs."""
+        """Two fresh Run() calls with identical experiment_name
+        must create distinct server runs."""
         from pluto.compat.neptune import Run
 
         exp_name = f'compat-fresh-{uuid.uuid4().hex[:8]}'
@@ -1509,7 +1510,9 @@ class TestNeptuneCompatLiveBackend:
         id2 = run2._pluto_run.id
         run2.close()
 
-        assert id1 != id2, "Fresh runs with same experiment_name must get distinct server IDs"
+        assert id1 != id2, (
+            'Fresh runs with same experiment_name ' 'must get distinct server IDs'
+        )
 
     def test_resume_reattaches_to_existing_run(self, clean_env):
         """Run(run_id=X) with resume should reattach to the same server run."""
@@ -1527,7 +1530,7 @@ class TestNeptuneCompatLiveBackend:
         id2 = run2._pluto_run.id
         run2.close()
 
-        assert id1 == id2, "Resume with same run_id must reattach to same server run"
+        assert id1 == id2, 'Resume with same run_id must reattach to same server run'
 
     def test_no_run_id_means_no_external_id(self, clean_env):
         """Fresh run without run_id should have no externalId on server."""
