@@ -1491,11 +1491,31 @@ class TestNeptuneSeededRandom:
             ), 'Neptune compat layer should preserve global random state'
 
 
+@pytest.fixture()
+def live_pluto_env():
+    """Set up env for live Pluto-only tests (Neptune disabled)."""
+    overrides = {
+        'DISABLE_NEPTUNE_LOGGING': 'true',
+        'PLUTO_PROJECT': 'testing-ci',
+    }
+    originals = {k: os.environ.get(k) for k in overrides}
+    for k, v in overrides.items():
+        os.environ[k] = v
+
+    yield
+
+    for k, v in originals.items():
+        if v is None:
+            os.environ.pop(k, None)
+        else:
+            os.environ[k] = v
+
+
 @pytest.mark.skipif(not os.environ.get('PLUTO_API_KEY'), reason='needs PLUTO_API_KEY')
 class TestNeptuneCompatLiveBackend:
     """Live backend tests for Neptune compat layer run identity."""
 
-    def test_same_experiment_name_creates_separate_runs(self, clean_env):
+    def test_same_experiment_name_creates_separate_runs(self, live_pluto_env):
         """Two fresh Run() calls with identical experiment_name
         must create distinct server runs."""
         from pluto.compat.neptune import NeptuneRunWrapper
@@ -1517,7 +1537,7 @@ class TestNeptuneCompatLiveBackend:
             'Fresh runs with same experiment_name ' 'must get distinct server IDs'
         )
 
-    def test_resume_reattaches_to_existing_run(self, clean_env):
+    def test_resume_reattaches_to_existing_run(self, live_pluto_env):
         """Run(run_id=X) with resume should reattach to the same server run."""
         from pluto.compat.neptune import NeptuneRunWrapper
 
@@ -1542,7 +1562,7 @@ class TestNeptuneCompatLiveBackend:
 
         assert id1 == id2, 'Resume with same run_id must reattach to same server run'
 
-    def test_no_run_id_means_no_external_id(self, clean_env):
+    def test_no_run_id_means_no_external_id(self, live_pluto_env):
         """Fresh run without run_id should have no externalId on server."""
         from pluto.compat.neptune import NeptuneRunWrapper
 
