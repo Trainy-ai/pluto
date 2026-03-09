@@ -32,6 +32,7 @@ for logger_name in [
     _logger.addHandler(logging.NullHandler())
 
 import os
+import sys
 import uuid
 from typing import Any, Dict
 from unittest import mock
@@ -1518,9 +1519,10 @@ class TestNeptuneCompatLiveBackend:
     # Shared CI run tag so all runs from one execution can be correlated.
     # Uses GITHUB_RUN_ID in CI, falls back to a UUID for local runs.
     _ci_tag = 'ci:' + os.environ.get('GITHUB_RUN_ID', uuid.uuid4().hex[:8])
+    _py_tag = f'py:{sys.version_info.major}.{sys.version_info.minor}'
 
     def _tag_run(self, run, test_tag):
-        run._pluto_run.add_tags([test_tag, self._ci_tag])
+        run._pluto_run.add_tags([test_tag, self._ci_tag, self._py_tag])
 
     def test_same_experiment_name_creates_separate_runs(self, live_pluto_env):
         """Two fresh Run() calls with identical experiment_name
