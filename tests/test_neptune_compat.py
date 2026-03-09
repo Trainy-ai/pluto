@@ -1498,15 +1498,18 @@ class TestNeptuneCompatLiveBackend:
     def test_same_experiment_name_creates_separate_runs(self, clean_env):
         """Two fresh Run() calls with identical experiment_name
         must create distinct server runs."""
-        from pluto.compat.neptune import Run
+        from pluto.compat.neptune import NeptuneRunWrapper
 
+        tag = 'test:same_experiment_name_creates_separate_runs'
         exp_name = f'compat-fresh-{uuid.uuid4().hex[:8]}'
 
-        run1 = Run(project='testing-ci', experiment_name=exp_name)
+        run1 = NeptuneRunWrapper(project='testing-ci', experiment_name=exp_name)
+        run1._pluto_run.add_tags(tag)
         id1 = run1._pluto_run.id
         run1.close()
 
-        run2 = Run(project='testing-ci', experiment_name=exp_name)
+        run2 = NeptuneRunWrapper(project='testing-ci', experiment_name=exp_name)
+        run2._pluto_run.add_tags(tag)
         id2 = run2._pluto_run.id
         run2.close()
 
@@ -1516,17 +1519,24 @@ class TestNeptuneCompatLiveBackend:
 
     def test_resume_reattaches_to_existing_run(self, clean_env):
         """Run(run_id=X) with resume should reattach to the same server run."""
-        from pluto.compat.neptune import Run
+        from pluto.compat.neptune import NeptuneRunWrapper
 
+        tag = 'test:resume_reattaches_to_existing_run'
         exp_name = f'compat-resume-{uuid.uuid4().hex[:8]}'
         shared_run_id = f'resume-{uuid.uuid4().hex[:8]}'
 
-        run1 = Run(project='testing-ci', experiment_name=exp_name, run_id=shared_run_id)
+        run1 = NeptuneRunWrapper(
+            project='testing-ci', experiment_name=exp_name, run_id=shared_run_id
+        )
+        run1._pluto_run.add_tags(tag)
         id1 = run1._pluto_run.id
         run1.close()
 
         # Same run_id → compat layer sets resume=True → should reattach
-        run2 = Run(project='testing-ci', experiment_name=exp_name, run_id=shared_run_id)
+        run2 = NeptuneRunWrapper(
+            project='testing-ci', experiment_name=exp_name, run_id=shared_run_id
+        )
+        run2._pluto_run.add_tags(tag)
         id2 = run2._pluto_run.id
         run2.close()
 
@@ -1534,10 +1544,12 @@ class TestNeptuneCompatLiveBackend:
 
     def test_no_run_id_means_no_external_id(self, clean_env):
         """Fresh run without run_id should have no externalId on server."""
-        from pluto.compat.neptune import Run
+        from pluto.compat.neptune import NeptuneRunWrapper
 
+        tag = 'test:no_run_id_means_no_external_id'
         exp_name = f'compat-no-ext-{uuid.uuid4().hex[:8]}'
 
-        run = Run(project='testing-ci', experiment_name=exp_name)
+        run = NeptuneRunWrapper(project='testing-ci', experiment_name=exp_name)
+        run._pluto_run.add_tags(tag)
         assert run._pluto_run is not None
         run.close()
