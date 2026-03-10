@@ -40,6 +40,8 @@ jobs:
           pluto login ${{ secrets.MLOP_API_TOKEN }}
 
       - name: Run pytest smoke tests
+        env:
+          PLUTO_API_KEY: ${{ secrets.MLOP_API_TOKEN }}
         run: |
           set -euox pipefail
           poetry run pytest -n auto -rs -m "not distributed" tests \

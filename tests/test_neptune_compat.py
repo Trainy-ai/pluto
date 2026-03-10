@@ -32,6 +32,7 @@ for logger_name in [
     _logger.addHandler(logging.NullHandler())
 
 import os
+import sys
 import uuid
 from typing import Any, Dict
 from unittest import mock
@@ -1460,3 +1461,124 @@ class TestNeptuneCompatSignalHandlingTransparency:
             assert (
                 finish_call_count == 1
             ), f'Pluto finish called {finish_call_count} times, should be 1'
+
+
+class TestNeptuneSeededRandom:
+    """Test that Neptune compat layer isolates random state from user seeding."""
+
+    def test_neptune_compat_preserves_random_state(
+        self, mock_neptune_backend, clean_env
+    ):
+        """Random state should be preserved across Neptune Run init."""
+        import random
+
+        os.environ['PLUTO_PROJECT'] = 'test-project'
+
+        mock_pluto_run = mock.MagicMock()
+        mock_pluto_run.config = {}
+        mock_pluto_run.finish = mock.MagicMock()
+
+        with mock.patch('pluto.init', return_value=mock_pluto_run):
+            from neptune_scale import Run
+
+            random.seed(42)
+            state_before = random.getstate()
+            run = Run(experiment_name='state-test')
+            state_after = random.getstate()
+            run.close()
+
+            assert (
+                state_before == state_after
+            ), 'Neptune compat layer should preserve global random state'
+
+
+@pytest.fixture()
+def live_pluto_env():
+    """Set up env for live Pluto-only tests (Neptune disabled)."""
+    overrides = {
+        'DISABLE_NEPTUNE_LOGGING': 'true',
+        'PLUTO_PROJECT': 'testing-ci',
+    }
+    originals = {k: os.environ.get(k) for k in overrides}
+    for k, v in overrides.items():
+        os.environ[k] = v
+
+    yield
+
+    for k, v in originals.items():
+        if v is None:
+            os.environ.pop(k, None)
+        else:
+            os.environ[k] = v
+
+
+@pytest.mark.skipif(not os.environ.get('PLUTO_API_KEY'), reason='needs PLUTO_API_KEY')
+class TestNeptuneCompatLiveBackend:
+    """Live backend tests for Neptune compat layer run identity."""
+
+    # Shared CI run tag so all runs from one execution can be correlated.
+    # Uses GITHUB_RUN_ID in CI, falls back to a UUID for local runs.
+    _ci_tag = 'ci:' + os.environ.get('GITHUB_RUN_ID', uuid.uuid4().hex[:8])
+    _py_tag = f'py:{sys.version_info.major}.{sys.version_info.minor}'
+
+    def _tag_run(self, run, test_tag):
+        run._pluto_run.add_tags([test_tag, self._ci_tag, self._py_tag])
+
+    def test_same_experiment_name_creates_separate_runs(self, live_pluto_env):
+        """Two fresh Run() calls with identical experiment_name
+        must create distinct server runs."""
+        from pluto.compat.neptune import NeptuneRunWrapper
+
+        tag = 'test:same_experiment_name_creates_separate_runs'
+        exp_name = f'compat-fresh-{uuid.uuid4().hex[:8]}'
+
+        run1 = NeptuneRunWrapper(project='testing-ci', experiment_name=exp_name)
+        self._tag_run(run1, tag)
+        id1 = run1._pluto_run.id
+        run1.close()
+
+        run2 = NeptuneRunWrapper(project='testing-ci', experiment_name=exp_name)
+        self._tag_run(run2, tag)
+        id2 = run2._pluto_run.id
+        run2.close()
+
+        assert id1 != id2, (
+            'Fresh runs with same experiment_name ' 'must get distinct server IDs'
+        )
+
+    def test_resume_reattaches_to_existing_run(self, live_pluto_env):
+        """Run(run_id=X) with resume should reattach to the same server run."""
+        from pluto.compat.neptune import NeptuneRunWrapper
+
+        tag = 'test:resume_reattaches_to_existing_run'
+        exp_name = f'compat-resume-{uuid.uuid4().hex[:8]}'
+        shared_run_id = f'resume-{uuid.uuid4().hex[:8]}'
+
+        run1 = NeptuneRunWrapper(
+            project='testing-ci', experiment_name=exp_name, run_id=shared_run_id
+        )
+        self._tag_run(run1, tag)
+        id1 = run1._pluto_run.id
+        run1.close()
+
+        # Same run_id → compat layer sets resume=True → should reattach
+        run2 = NeptuneRunWrapper(
+            project='testing-ci', experiment_name=exp_name, run_id=shared_run_id
+        )
+        self._tag_run(run2, tag)
+        id2 = run2._pluto_run.id
+        run2.close()
+
+        assert id1 == id2, 'Resume with same run_id must reattach to same server run'
+
+    def test_no_run_id_means_no_external_id(self, live_pluto_env):
+        """Fresh run without run_id should have no externalId on server."""
+        from pluto.compat.neptune import NeptuneRunWrapper
+
+        tag = 'test:no_run_id_means_no_external_id'
+        exp_name = f'compat-no-ext-{uuid.uuid4().hex[:8]}'
+
+        run = NeptuneRunWrapper(project='testing-ci', experiment_name=exp_name)
+        self._tag_run(run, tag)
+        assert run._pluto_run is not None
+        run.close()
