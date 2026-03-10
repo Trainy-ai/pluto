@@ -208,6 +208,24 @@ class OpMonitor:
     def _worker_monitor(self, stop):
         while not stop():
             try:
+                # Check for idle timeout: if no log() calls have been made
+                # for a long time, the process is likely stuck. Force-exit
+                # to avoid wasting resources (e.g., GPU hours) on a hung job.
+                idle_timeout = self.op.settings.x_monitor_idle_timeout
+                if idle_timeout > 0:
+                    idle_seconds = time.time() - self.op._last_activity_time
+                    if idle_seconds > idle_timeout:
+                        logger.critical(
+                            '%s: No log() calls for %.0f seconds '
+                            '(idle timeout: %.0fs). '
+                            'Process appears stuck — force exiting to '
+                            'avoid wasting resources.',
+                            tag,
+                            idle_seconds,
+                            idle_timeout,
+                        )
+                        os._exit(1)
+
                 # Collect system metrics
                 sys_metrics = make_compat_monitor_v1(self.op.settings._sys.monitor())
                 timestamp_ms = int(time.time() * 1000)
@@ -363,6 +381,7 @@ class Op:
         self._queue: queue.Queue[QueueItem] = queue.Queue()
         self._finished = False
         self._finish_lock = threading.Lock()
+        self._last_activity_time = time.time()  # Updated on each log() call
         atexit.register(self.finish)
 
     def _init_sync_manager(self) -> None:
@@ -447,6 +466,7 @@ class Op:
         commit: Union[bool, None] = None,
     ) -> None:
         """Log run data"""
+        self._last_activity_time = time.time()
         # Use sync process if enabled (default: uploads data to server)
         if self._sync_manager is not None:
             try:

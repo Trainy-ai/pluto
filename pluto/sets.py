@@ -76,6 +76,7 @@ class Settings:
     x_grad_label: str = 'grad'
     x_param_label: str = 'param'
     x_disable_signal_handlers: bool = False  # For compat layers (Neptune)
+    x_monitor_idle_timeout: float = 1800.0  # Force-exit if no log() calls for 30 min
 
     pluto_version: Optional[str] = None
     pluto_commit: Optional[str] = None
