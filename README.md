@@ -58,6 +58,6 @@ Run these locally before sending a PR to match the automation that checks on eve
 
 ## 🫡 Vision
 
-**Pluto** is a platform built for and by ML engineers, supported by [our community](https://discord.com/invite/HQUBJSVgAP)! We were tired of the current state of the art in ML observability tools, and this tool was born to help mitigate the inefficiencies - specifically, we hope to better inform you about your model performance and training runs; and actually **save you**, instead of charging you, for your precious compute time!
+**Pluto** is a platform built for and by ML engineers, supported by [our community](https://discord.gg/d67CMuKY5V)! We were tired of the current state of the art in ML observability tools, and this tool was born to help mitigate the inefficiencies - specifically, we hope to better inform you about your model performance and training runs; and actually **save you**, instead of charging you, for your precious compute time!
 
 🌟 Be sure to star our repos if they help you ~
