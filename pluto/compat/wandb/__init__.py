@@ -134,8 +134,8 @@ def init(
             logger.debug('%s: init called with existing run, finishing previous', tag)
         try:
             run.finish()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug('%s: failed to finish previous run: %s', tag, e, exc_info=True)
 
     # Resolve project from env if not provided
     project = (

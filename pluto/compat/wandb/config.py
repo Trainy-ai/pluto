@@ -50,6 +50,7 @@ class Config:
         data = object.__getattribute__(self, '_data')
         if key in data:
             del data[key]
+            logger.debug('%s: config key %r deleted locally (not synced)', tag, key)
         else:
             raise AttributeError(f"'Config' object has no attribute '{key}'")
 
@@ -65,6 +66,7 @@ class Config:
 
     def __delitem__(self, key: str) -> None:
         del object.__getattribute__(self, '_data')[key]
+        logger.debug('%s: config key %r deleted locally (not synced)', tag, key)
 
     def __contains__(self, key: object) -> bool:
         return key in object.__getattribute__(self, '_data')

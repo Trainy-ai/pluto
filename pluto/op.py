@@ -9,6 +9,7 @@ import threading
 import time
 import traceback
 from collections import defaultdict
+from fnmatch import fnmatch
 from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple, Union
 
 import pluto
@@ -853,8 +854,6 @@ class Op:
         """Get the metric definition for a name, supporting glob patterns."""
         if name in self._metric_definitions:
             return self._metric_definitions[name]
-        from fnmatch import fnmatch
-
         for pattern, defn in self._metric_definitions.items():
             if fnmatch(name, pattern):
                 return defn

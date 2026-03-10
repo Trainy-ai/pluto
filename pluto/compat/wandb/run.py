@@ -365,8 +365,10 @@ class Run:
         elif isinstance(artifact_or_path, str):
             import os
 
+            from pluto.compat.wandb.data_types import _validate_path
             from pluto.file import Artifact as PlutoArtifact
 
+            _validate_path(artifact_or_path)
             art = PlutoArtifact(data=artifact_or_path, caption=name)
             log_name = name or os.path.basename(artifact_or_path)
             try:

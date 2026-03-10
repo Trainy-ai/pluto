@@ -6,10 +6,27 @@ _to_pluto() method that returns the corresponding pluto type.
 
 import logging
 import os
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(f'{__name__.split(".")[0]}')
 tag = 'WandbCompat.DataTypes'
+
+
+def _validate_path(path: str, base_dir: Optional[str] = None) -> str:
+    """Resolve *path* and reject path-traversal attempts.
+
+    If *base_dir* is given the resolved path must be inside it.
+    Raises ``ValueError`` on ``..`` components or escapes.
+    """
+    resolved = Path(path).resolve()
+    if '..' in Path(path).parts:
+        raise ValueError(f'path traversal not allowed: {path}')
+    if base_dir is not None:
+        base = Path(base_dir).resolve()
+        if not str(resolved).startswith(str(base) + os.sep) and resolved != base:
+            raise ValueError(f'path {path} escapes base directory {base_dir}')
+    return str(resolved)
 
 
 class Image:
@@ -168,6 +185,7 @@ class Html:
         if hasattr(data, 'read'):
             self._html = data.read()
         elif isinstance(data, str) and os.path.isfile(data):
+            _validate_path(data)
             with open(data) as f:
                 self._html = f.read()
         else:
@@ -229,6 +247,7 @@ class Artifact:
         skip_cache: bool = False,
         policy: str = 'mutable',
     ) -> 'Artifact':
+        _validate_path(local_path)
         self._files.append(
             {
                 'path': local_path,
@@ -244,10 +263,12 @@ class Artifact:
         skip_cache: bool = False,
         policy: str = 'mutable',
     ) -> 'Artifact':
-        for root, _dirs, files in os.walk(local_path):
+        validated = _validate_path(local_path)
+        for root, _dirs, files in os.walk(validated):
             for f in files:
                 fpath = os.path.join(root, f)
-                rel = os.path.relpath(fpath, local_path)
+                _validate_path(fpath, base_dir=validated)
+                rel = os.path.relpath(fpath, validated)
                 if name:
                     rel = os.path.join(name, rel)
                 self._files.append({'path': fpath, 'name': rel})
