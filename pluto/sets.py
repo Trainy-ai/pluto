@@ -170,8 +170,13 @@ class Settings:
 
 
 def _is_display_id(value: str) -> bool:
-    """Check if value matches display ID pattern like 'T0-123', 'MMP-1'."""
-    return bool(re.match(r'^[^-]+-\d+$', value))
+    """Check if value matches display ID pattern like 'T0-123', 'MMP-1'.
+
+    Display IDs are generated server-side as {PREFIX}-{NUMBER} where the
+    prefix is 1-4 uppercase alphanumeric characters derived from the project
+    name (see pluto-server run-prefix.ts).
+    """
+    return bool(re.match(r'^[A-Z0-9]{1,4}-\d+$', value))
 
 
 def _classify_run_id(settings: Settings, run_id) -> None:
