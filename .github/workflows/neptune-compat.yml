@@ -1,10 +1,10 @@
-name: Neptune Compatibility Tests
+name: Neptune Compatibility Tests (disabled - Neptune sunset March 2025)
 
-# Neptune has been sunset. This workflow is kept for manual testing only.
-# The Neptune compat layer remains for users migrating to Pluto.
+# Neptune has been sunset as of March 2025. These tests are disabled.
+# The compatibility layer code remains for users still migrating.
 
 on:
-  workflow_dispatch:
+  workflow_dispatch:  # manual trigger only, if ever needed
 
 jobs:
   neptune-compatibility:
