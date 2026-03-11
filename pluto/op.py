@@ -68,6 +68,10 @@ _original_sigint_handler = None
 _original_sigterm_handler = None
 _signal_handler_registered = False
 
+# Exception hook state for detecting unhandled exceptions (FAILED status)
+_original_excepthook = None
+_excepthook_registered = False
+
 # Map signal numbers to names for logging
 _SIGNAL_NAMES = {
     signal.SIGINT: 'SIGINT',
@@ -159,6 +163,55 @@ def _unregister_signal_handler():
         logger.debug(f'{tag}: Could not restore signal handler: {e}')
 
 
+def _excepthook(exc_type, exc_value, exc_traceback):
+    """
+    Custom sys.excepthook to mark active runs as FAILED on unhandled exceptions.
+
+    When user training code raises an unhandled exception, Python calls sys.excepthook
+    before interpreter shutdown. We mark all active runs as FAILED (status=1) so the
+    atexit-registered finish() sends the correct status to the server.
+    """
+    # Mark all active ops as FAILED
+    if pluto.ops:
+        for op in pluto.ops:
+            if op.settings._op_status == -1:  # Only if still RUNNING
+                op.settings._op_status = 1
+                logger.debug(
+                    f'{tag}: Marked run {op.settings._op_id} as FAILED '
+                    f'due to unhandled {exc_type.__name__}'
+                )
+
+    # Call the original excepthook to preserve default behavior (print traceback)
+    if _original_excepthook is not None:
+        _original_excepthook(exc_type, exc_value, exc_traceback)
+
+
+def _register_excepthook():
+    """Register custom excepthook if not already registered."""
+    global _excepthook_registered, _original_excepthook
+
+    if _excepthook_registered:
+        return
+
+    _original_excepthook = sys.excepthook
+    sys.excepthook = _excepthook
+    _excepthook_registered = True
+    logger.debug(f'{tag}: Registered sys.excepthook for FAILED status detection')
+
+
+def _unregister_excepthook():
+    """Restore original excepthook when no more Ops are active."""
+    global _excepthook_registered, _original_excepthook
+
+    if not _excepthook_registered:
+        return
+
+    if _original_excepthook is not None:
+        sys.excepthook = _original_excepthook
+    _excepthook_registered = False
+    logger.debug(f'{tag}: Restored original sys.excepthook')
+
+
 MetaNames = List[str]
 MetaFiles = Dict[str, List[str]]
 LoggedNumbers = Dict[str, Any]
@@ -203,6 +256,8 @@ class OpMonitor:
         if isinstance(code, int):
             self.op.settings._op_status = code
         elif self.op.settings._op_status == -1:
+            # Only set COMPLETED if still RUNNING; preserve FAILED (1) if
+            # set by sys.excepthook due to an unhandled exception.
             self.op.settings._op_status = 0
 
     def _worker_monitor(self, stop):
@@ -433,6 +488,9 @@ class Op:
         # (unless disabled, e.g., when running under a compat layer like Neptune)
         if not self.settings.x_disable_signal_handlers:
             _register_signal_handler()
+
+        # Register excepthook to detect unhandled exceptions and mark runs as FAILED
+        _register_excepthook()
 
         # set globals
         if pluto.ops is None:
@@ -697,6 +755,7 @@ class Op:
             # Restore original signal handlers when last op finishes
             if not pluto.ops:
                 _unregister_signal_handler()
+                _unregister_excepthook()
 
     def watch(self, module, **kwargs):
         from .compat.torch import _watch_torch
