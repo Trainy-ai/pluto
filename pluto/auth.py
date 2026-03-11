@@ -33,6 +33,9 @@ def login(settings=None, retry=False):
             '%s: authentication failed: the provided token cannot be empty', tag
         )
         settings._auth = '_key'
+    # Remember whether auth was pre-provided (env var, keyring) so we never
+    # fall through to an interactive prompt when it was.
+    auth_was_provided = settings._auth is not None and settings._auth != '_key'
     client = httpx.Client(
         verify=True if not settings.insecure_disable_ssl else False,
         proxy=settings.http_proxy or settings.https_proxy or None,
@@ -53,8 +56,10 @@ def login(settings=None, retry=False):
         teardown_logger(tlogger)
     except Exception as e:
         # If _auth was already provided (e.g. via env var or keyring), don't
-        # prompt for interactive input — just warn and continue.
-        if settings._auth is not None and settings._auth != '_key':
+        # prompt for interactive input — just warn and continue.  This also
+        # covers the NameError case where `r` is undefined because the
+        # network request itself failed.
+        if auth_was_provided:
             tlogger.warning(
                 '%s: server validation failed (token may still be valid); reason: %s',
                 tag,
