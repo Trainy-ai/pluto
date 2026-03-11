@@ -45,7 +45,6 @@ matplotlib = "^3.10"
 torchvision = "*"
 imageio = "^2.37.0"
 moviepy = "^1.0.3"
-neptune-scale = ">=0.30.0"  # for testing Neptune compatibility layer (tested with 0.30.0)
 
 
 [tool.poetry.extras]
@@ -81,5 +80,4 @@ ignore_missing_imports = true
 [tool.pytest.ini_options]
 markers = [
     "distributed: tests that require multi-rank torch.distributed setup",
-    "neptune: tests that require real Neptune API credentials",
 ]
