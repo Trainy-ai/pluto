@@ -173,7 +173,7 @@ def _excepthook(exc_type, exc_value, exc_traceback):
     """
     # Mark all active ops as FAILED
     if pluto.ops:
-        for op in pluto.ops:
+        for op in list(pluto.ops):
             if op.settings._op_status == -1:  # Only if still RUNNING
                 op.settings._op_status = 1
                 logger.debug(
