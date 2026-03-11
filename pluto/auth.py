@@ -40,6 +40,7 @@ def login(settings=None, retry=False):
         verify=True if not settings.insecure_disable_ssl else False,
         proxy=settings.http_proxy or settings.https_proxy or None,
     )
+    r = None
     try:
         r = client.post(
             url=settings.url_login,
@@ -51,6 +52,8 @@ def login(settings=None, retry=False):
         tlogger.warning(f'{tag}: server not reachable; reason: {e}')
         settings._auth = '_key'
     try:
+        if r is None:
+            raise RuntimeError('no response from server')
         tlogger.info(f'{tag}: logged in as {r.json()["organization"]["slug"]}')
         keyring.set_password(f'{settings.tag}', f'{settings.tag}', f'{settings._auth}')
         teardown_logger(tlogger)
