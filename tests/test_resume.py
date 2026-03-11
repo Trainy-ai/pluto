@@ -48,6 +48,15 @@ class TestIsDisplayId:
     def test_just_dash(self):
         assert _is_display_id('-123') is False
 
+    def test_lowercase_prefix(self):
+        assert _is_display_id('t0-123') is False
+
+    def test_prefix_too_long(self):
+        assert _is_display_id('ABCDE-1') is False
+
+    def test_external_id_with_digit_suffix(self):
+        assert _is_display_id('resume-12345678') is False
+
 
 class TestClassifyRunId:
     """Test _classify_run_id routing logic."""

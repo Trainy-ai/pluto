@@ -37,6 +37,7 @@ Hard Requirements:
 import atexit
 import logging
 import os
+import random
 import threading
 from dataclasses import asdict, is_dataclass
 from datetime import datetime
@@ -290,8 +291,8 @@ class NeptuneRunWrapper:
 
         # Check if Neptune logging is disabled
         self._neptune_disabled = os.environ.get(
-            'DISABLE_NEPTUNE_LOGGING', ''
-        ).lower() in ('true', '1', 'yes')
+            'DISABLE_NEPTUNE_LOGGING', 'true'
+        ).lower() not in ('false', '0', 'no')
 
         if self._neptune_disabled:
             logger.info(
@@ -308,7 +309,15 @@ class NeptuneRunWrapper:
             try:
                 if _original_neptune_run is None:
                     raise RuntimeError('Neptune monkeypatch not applied correctly')
-                self._neptune_run = _original_neptune_run(*args, **kwargs)
+                # Save and restore random state to prevent Neptune's
+                # generate_run_id() from being affected by user seeding
+                # (e.g., L.seed_everything(0))
+                _random_state = random.getstate()
+                random.seed(os.urandom(16))
+                try:
+                    self._neptune_run = _original_neptune_run(*args, **kwargs)
+                finally:
+                    random.setstate(_random_state)
             except Exception as e:
                 # If Neptune itself fails, we can't do anything
                 logger.error(
@@ -332,19 +341,36 @@ class NeptuneRunWrapper:
                 )
                 return
 
-            # Resolve run_id: prefer explicit kwarg, fall back to Neptune's
-            # auto-generated ID so training runs get an externalId that
-            # a later eval call can resume into.
+            # Resolve run_id with proper precedence:
+            # 1. PLUTO_RUN_ID env var (infrastructure coordination, e.g. Konduktor)
+            # 2. Explicit kwarg run_id (caller-provided, may be seeded)
+            # 3. Neptune auto-generated run_id (internal, may be seeded)
+            # Exception: resume=True + explicit kwarg → kwarg wins (intentional resume)
             experiment_name = kwargs.get('experiment_name', 'neptune-migration')
-            run_id = kwargs.get('run_id', None) or getattr(
-                self._neptune_run, '_run_id', getattr(self._neptune_run, 'run_id', None)
+            explicit_kwarg_run_id = kwargs.get('run_id', None)
+            env_run_id = os.environ.get('PLUTO_RUN_ID')
+            neptune_run_id = (
+                getattr(
+                    self._neptune_run,
+                    '_run_id',
+                    getattr(self._neptune_run, 'run_id', None),
+                )
+                if self._neptune_run
+                else None
             )
+
+            # Determine if this is an intentional resume (explicit run_id kwarg)
+            pluto_resume = bool(explicit_kwarg_run_id)
+
+            # Apply precedence: PLUTO_RUN_ID > explicit kwarg > Neptune auto
+            run_id = env_run_id or explicit_kwarg_run_id or neptune_run_id
 
             pluto_init_kwargs = {
                 'project': pluto_config['project'],
-                'name': f'{experiment_name}-{run_id}' if run_id else experiment_name,
+                'name': experiment_name,
                 'config': {},  # Will be populated by log_configs()
                 **(({'run_id': run_id}) if run_id else {}),
+                'resume': pluto_resume,
             }
 
             # Add custom URLs if provided

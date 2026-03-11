@@ -164,7 +164,7 @@ const config = {
               },
               {
                 label: 'Discord',
-                href: 'https://discordapp.com/invite/mlop',
+                href: 'https://discord.gg/d67CMuKY5V',
               },
               {
                 label: 'X',
