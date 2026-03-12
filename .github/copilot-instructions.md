@@ -1,0 +1,88 @@
+# Pluto Experiment Tracking — Copilot Instructions
+
+This repository is the Python client for **Pluto**, an MLOps experiment tracking framework. When generating or modifying ML training code, use the Pluto API patterns below.
+
+## Core Workflow
+
+```python
+import pluto
+
+config = {"learning_rate": 0.001, "epochs": 10, "batch_size": 32}
+
+run = pluto.init(
+    project="<project-name>",
+    name="<run-name>",        # optional
+    config=config,
+    tags=["experiment", "v1"],  # optional
+)
+
+try:
+    for epoch in range(config["epochs"]):
+        # ... training ...
+        run.log({
+            "train/loss": train_loss,
+            "val/loss": val_loss,
+            "epoch": epoch,
+        })
+finally:
+    run.finish()
+```
+
+## Key Rules
+
+- `pluto.init()` returns an `Op` object — assign to `run` or `op`
+- `run.log()` takes a dict: keys are metric names, values are numeric or Pluto data types
+- Use `/`-separated metric names for dashboard grouping: `"train/loss"`, `"val/loss"`
+- Always call `run.finish()` — use `try/finally` for safety
+- Import is `import pluto`, NOT `import mlop` (deprecated)
+
+## Framework Integrations
+
+**PyTorch** — use `run.watch(model)` to track gradients/parameters:
+```python
+run = pluto.init(project="p", config=config)
+run.watch(model)
+```
+
+**PyTorch Lightning** — use the built-in logger:
+```python
+from pluto.compat.lightning import MLOPLogger
+logger = MLOPLogger(project="p", config=config)
+trainer = pl.Trainer(logger=logger)
+```
+
+**HuggingFace Transformers** — use the callback:
+```python
+from pluto.compat.transformers import PlutoCallback
+run = pluto.init(project="p", config=config)
+trainer = Trainer(model=model, args=args, callbacks=[PlutoCallback()])
+```
+
+## Media & Data Types
+
+All imported from `pluto` directly: `pluto.Image`, `pluto.Audio`, `pluto.Video`, `pluto.Text`, `pluto.Artifact`, `pluto.Histogram`, `pluto.Table`, `pluto.Graph`.
+
+Each accepts `data=` (in-memory) or `path=` (file path), plus optional `caption=`.
+
+## Tags & Config
+
+```python
+run = pluto.init(project="p", tags=["sweep", "v2"])
+run.add_tags("high-accuracy")
+run.remove_tags("old-tag")
+run.update_config({"best_val_loss": best_loss})
+```
+
+## DDP / Distributed
+
+- Set shared `run_id` across ranks
+- `run.finish()` auto-detects DDP (non-blocking shutdown)
+- No `if __name__ == "__main__":` guard required
+
+## Development
+
+```bash
+pip install -e ".[dev,full]"           # install
+poetry run pytest -n auto -rs -m "not distributed" tests  # test
+bash format.sh                          # lint + format
+```
