@@ -1,3 +1,10 @@
+---
+name: experiment-setup
+description: Scaffold a new ML training script with Pluto experiment tracking (init, log, finish)
+user-invocable: true
+argument-hint: "[project-name]"
+---
+
 # Skill: experiment-setup
 
 Generate boilerplate code for a new Pluto experiment tracking setup.

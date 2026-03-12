@@ -1,3 +1,9 @@
+---
+name: lightning-tracking
+description: Integrate Pluto with PyTorch Lightning using the MLOPLogger
+user-invocable: true
+---
+
 # Skill: lightning-tracking
 
 Generate code to integrate Pluto experiment tracking with PyTorch Lightning.

@@ -1,3 +1,9 @@
+---
+name: transformers-tracking
+description: Add Pluto experiment tracking to HuggingFace Transformers fine-tuning with PlutoCallback
+user-invocable: true
+---
+
 # Skill: transformers-tracking
 
 Generate code to integrate Pluto experiment tracking with HuggingFace Transformers.

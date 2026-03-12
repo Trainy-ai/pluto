@@ -1,3 +1,9 @@
+---
+name: distributed-tracking
+description: Set up Pluto experiment tracking for DDP, multi-node, or SLURM distributed training
+user-invocable: true
+---
+
 # Skill: distributed-tracking
 
 Generate code for experiment tracking in distributed (DDP/multi-node) training setups.

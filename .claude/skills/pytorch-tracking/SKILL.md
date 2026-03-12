@@ -1,3 +1,9 @@
+---
+name: pytorch-tracking
+description: Add Pluto experiment tracking to a PyTorch training script (model watching, metrics, images, checkpoints)
+user-invocable: true
+---
+
 # Skill: pytorch-tracking
 
 Generate code to integrate Pluto experiment tracking into a PyTorch training script.

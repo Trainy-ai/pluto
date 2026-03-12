@@ -1,3 +1,9 @@
+---
+name: metrics-and-media
+description: Log images, audio, video, tables, histograms, artifacts, and custom data with Pluto
+user-invocable: true
+---
+
 # Skill: metrics-and-media
 
 Generate code for logging custom metrics, media files, and structured data with Pluto.

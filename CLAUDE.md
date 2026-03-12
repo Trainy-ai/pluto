@@ -359,13 +359,13 @@ Claude Code skills are defined in `.claude/skills/` and provide guided code gene
 
 | Skill | File | Use Case |
 |-------|------|----------|
-| **experiment-setup** | `.claude/skills/experiment-setup.md` | Scaffold a new training script with Pluto tracking from scratch |
-| **pytorch-tracking** | `.claude/skills/pytorch-tracking.md` | Integrate Pluto into PyTorch training (model watching, metrics, images, checkpoints) |
-| **lightning-tracking** | `.claude/skills/lightning-tracking.md` | Use `MLOPLogger` with PyTorch Lightning Trainer |
-| **transformers-tracking** | `.claude/skills/transformers-tracking.md` | Add `PlutoCallback` to HuggingFace Transformers Trainer |
-| **distributed-tracking** | `.claude/skills/distributed-tracking.md` | Track experiments in DDP/multi-node/SLURM environments |
-| **hyperparam-sweep** | `.claude/skills/hyperparam-sweep.md` | Run grid/random hyperparameter searches with tracked runs |
-| **metrics-and-media** | `.claude/skills/metrics-and-media.md` | Log images, audio, video, tables, histograms, artifacts, and custom data |
+| **experiment-setup** | `.claude/skills/experiment-setup/SKILL.md` | Scaffold a new training script with Pluto tracking from scratch |
+| **pytorch-tracking** | `.claude/skills/pytorch-tracking/SKILL.md` | Integrate Pluto into PyTorch training (model watching, metrics, images, checkpoints) |
+| **lightning-tracking** | `.claude/skills/lightning-tracking/SKILL.md` | Use `MLOPLogger` with PyTorch Lightning Trainer |
+| **transformers-tracking** | `.claude/skills/transformers-tracking/SKILL.md` | Add `PlutoCallback` to HuggingFace Transformers Trainer |
+| **distributed-tracking** | `.claude/skills/distributed-tracking/SKILL.md` | Track experiments in DDP/multi-node/SLURM environments |
+| **hyperparam-sweep** | `.claude/skills/hyperparam-sweep/SKILL.md` | Run grid/random hyperparameter searches with tracked runs |
+| **metrics-and-media** | `.claude/skills/metrics-and-media/SKILL.md` | Log images, audio, video, tables, histograms, artifacts, and custom data |
 
 ### When to Use Skills
 

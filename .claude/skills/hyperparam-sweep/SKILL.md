@@ -1,3 +1,9 @@
+---
+name: hyperparam-sweep
+description: Generate code for hyperparameter grid/random search with Pluto-tracked runs and tag organization
+user-invocable: true
+---
+
 # Skill: hyperparam-sweep
 
 Generate code for running hyperparameter sweeps with Pluto experiment tracking.
