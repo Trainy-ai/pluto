@@ -350,3 +350,30 @@ Environment variables use the `PLUTO_*` prefix. The old `MLOP_*` prefix is suppo
 3. **CI tests hanging?** Often caused by sync process shutdown blocking. Check timeout values and distributed detection.
 
 4. **Sync process not starting?** Check if `python -m pluto.sync` can be invoked manually. Check subprocess stderr for errors.
+
+## AI Skills for Experiment Tracking
+
+Claude Code skills are defined in `.claude/skills/` and provide guided code generation for common Pluto experiment tracking patterns. Each skill contains API patterns, code templates, and guidelines that Claude uses when helping users draft experiment tracking code.
+
+### Available Skills
+
+| Skill | File | Use Case |
+|-------|------|----------|
+| **experiment-setup** | `.claude/skills/experiment-setup.md` | Scaffold a new training script with Pluto tracking from scratch |
+| **pytorch-tracking** | `.claude/skills/pytorch-tracking.md` | Integrate Pluto into PyTorch training (model watching, metrics, images, checkpoints) |
+| **lightning-tracking** | `.claude/skills/lightning-tracking.md` | Use `MLOPLogger` with PyTorch Lightning Trainer |
+| **transformers-tracking** | `.claude/skills/transformers-tracking.md` | Add `PlutoCallback` to HuggingFace Transformers Trainer |
+| **distributed-tracking** | `.claude/skills/distributed-tracking.md` | Track experiments in DDP/multi-node/SLURM environments |
+| **hyperparam-sweep** | `.claude/skills/hyperparam-sweep.md` | Run grid/random hyperparameter searches with tracked runs |
+| **metrics-and-media** | `.claude/skills/metrics-and-media.md` | Log images, audio, video, tables, histograms, artifacts, and custom data |
+
+### When to Use Skills
+
+Claude should consult the relevant skill file when a user asks to:
+- "Set up experiment tracking for my project" → `experiment-setup`
+- "Add Pluto to my PyTorch script" → `pytorch-tracking`
+- "Track my Lightning training" → `lightning-tracking`
+- "Log metrics from HuggingFace fine-tuning" → `transformers-tracking`
+- "Track my distributed/DDP training" → `distributed-tracking`
+- "Run a hyperparameter sweep" → `hyperparam-sweep`
+- "Log images/audio/tables/checkpoints" → `metrics-and-media`
