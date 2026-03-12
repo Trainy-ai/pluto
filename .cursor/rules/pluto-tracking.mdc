@@ -1,0 +1,109 @@
+---
+description: Pluto experiment tracking API patterns for ML training scripts
+globs: "**/*.py"
+---
+
+# Pluto Experiment Tracking
+
+Pluto is the experiment tracking library used in this project. When generating or modifying ML training code, follow these API patterns.
+
+## Core Workflow
+
+```python
+import pluto
+
+config = {"learning_rate": 0.001, "epochs": 10, "batch_size": 32}
+
+run = pluto.init(
+    project="<project-name>",
+    name="<run-name>",        # optional
+    config=config,
+    tags=["experiment", "v1"],  # optional
+)
+
+try:
+    for epoch in range(config["epochs"]):
+        # ... training ...
+        run.log({
+            "train/loss": train_loss,
+            "val/loss": val_loss,
+            "epoch": epoch,
+        })
+finally:
+    run.finish()
+```
+
+## Key Rules
+
+- `pluto.init()` returns an `Op` object — assign to `run` or `op`
+- `run.log()` takes a dict: keys are metric names, values are numeric or Pluto data types
+- Use `/`-separated metric names for dashboard grouping: `"train/loss"`, `"val/loss"`
+- Always call `run.finish()` — use `try/finally` for safety
+- Import is `import pluto`, NOT `import mlop` (deprecated)
+
+## PyTorch Integration
+
+```python
+run = pluto.init(project="my-project", config=config)
+model = MyModel()
+run.watch(model)  # tracks gradients, parameters, architecture
+# ... training loop with run.log() ...
+run.finish()
+```
+
+## PyTorch Lightning
+
+```python
+from pluto.compat.lightning import MLOPLogger
+
+logger = MLOPLogger(project="my-project", config=config, tags=["lightning"])
+trainer = pl.Trainer(logger=logger)
+trainer.fit(model, train_dl, val_dl)
+# finish() is automatic
+```
+
+## HuggingFace Transformers
+
+```python
+import pluto
+from pluto.compat.transformers import PlutoCallback
+
+run = pluto.init(project="my-project", config=config)
+trainer = Trainer(model=model, args=args, callbacks=[PlutoCallback()])
+trainer.train()
+run.finish()
+```
+
+## Media & Data Types
+
+```python
+run.log({"image": pluto.Image(data=array, caption="sample")})
+run.log({"audio": pluto.Audio(data=waveform, sample_rate=22050)})
+run.log({"video": pluto.Video(path="./episode.mp4")})
+run.log({"text": pluto.Text(data="model output text")})
+run.log({"checkpoint": pluto.Artifact(path="model.pt", name="best")})
+run.log({"weights": pluto.Histogram(data=param.detach().cpu().numpy())})
+run.log({"results": pluto.Table(columns=["pred", "actual"], data=[...])})
+```
+
+All media types accept `data=` (in-memory) or `path=` (file). Use `caption=` for labels.
+
+## DDP / Distributed
+
+- Set a shared `run_id` across ranks so all log to the same run
+- `run.finish()` auto-detects DDP and uses non-blocking shutdown
+- No `if __name__ == "__main__":` guard needed
+
+## Tags
+
+```python
+run = pluto.init(project="p", tags=["sweep", "v2"])
+run.add_tags("high-accuracy")
+run.remove_tags("old-tag")
+```
+
+## Config Updates
+
+```python
+run.update_config({"early_stop_epoch": epoch, "best_val_loss": best_loss})
+```
