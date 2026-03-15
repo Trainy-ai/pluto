@@ -655,7 +655,8 @@ class TestSyncUploaderPayloadFormat:
             payload = json.loads(body)
 
             assert payload['runId'] == 12345
-            assert payload['config'] == {'learning_rate': 0.001, 'batch_size': 32}
+            # Server expects config as a JSON-encoded string (double-encoded)
+            assert payload['config'] == json.dumps({'learning_rate': 0.001, 'batch_size': 32})
 
     def test_tags_payload_format(self, uploader):
         """Test tags update payload format."""
