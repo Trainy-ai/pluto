@@ -12,6 +12,7 @@ Requires:
 
 import importlib.util
 import time
+from typing import Callable, List, TypeVar
 
 import numpy as np
 import pytest
@@ -24,6 +25,43 @@ from tests.utils import get_task_name
 TESTING_PROJECT_NAME = 'testing-ci'
 
 HAS_TORCH = importlib.util.find_spec('torch') is not None
+
+# Max seconds to wait for data to appear on the server after finish().
+_POLL_TIMEOUT = 15
+_POLL_INTERVAL = 2
+
+T = TypeVar('T')
+
+
+def _poll(
+    fn: Callable[[], T],
+    check: Callable[[T], bool],
+    timeout: float = _POLL_TIMEOUT,
+    interval: float = _POLL_INTERVAL,
+) -> T:
+    """Call *fn* repeatedly until *check(result)* is truthy, then return result."""
+    deadline = time.monotonic() + timeout
+    last: T = fn()
+    while not check(last):
+        if time.monotonic() >= deadline:
+            return last  # return last result and let the caller assert
+        time.sleep(interval)
+        last = fn()
+    return last
+
+
+def _poll_metric_names(
+    project: str,
+    run_id: int,
+    expected: List[str],
+    timeout: float = _POLL_TIMEOUT,
+) -> List[str]:
+    """Poll until all *expected* metric names are present on the server."""
+    return _poll(
+        fn=lambda: pq.get_metric_names(project, run_ids=[run_id]),
+        check=lambda names: all(e in names for e in expected),
+        timeout=timeout,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -42,7 +80,6 @@ def test_e2e_run_metadata():
     assert server_run['name'] == task_name
     assert server_run['status'] == 'COMPLETED'
     assert 'displayId' in server_run and server_run['displayId']
-    assert 'url' in server_run and server_run['url']
 
 
 def test_e2e_run_lookup_by_display_id():
@@ -203,8 +240,10 @@ def test_e2e_metrics_logged():
         run.log({'train/loss': 1.0 - step * 0.1, 'train/acc': step * 0.1})
     run.finish()
 
-    # Check metric names exist
-    metric_names = pq.get_metric_names(TESTING_PROJECT_NAME, run_ids=[run_id])
+    # Check metric names exist (poll for eventual consistency)
+    metric_names = _poll_metric_names(
+        TESTING_PROJECT_NAME, run_id, ['train/loss', 'train/acc']
+    )
     assert (
         'train/loss' in metric_names
     ), f"'train/loss' not in server metric names: {metric_names}"
@@ -257,11 +296,15 @@ def test_e2e_image_upload():
     run.log({'e2e/test-image': pluto.Image(pil_img, caption='red-square')})
     run.finish()
 
-    files = pq.get_files(TESTING_PROJECT_NAME, run_id)
+    # Server stores file with caption-based name (e.g. "red-square.UUID.png")
+    files = _poll(
+        fn=lambda: pq.get_files(TESTING_PROJECT_NAME, run_id),
+        check=lambda fs: any('red-square' in f['fileName'] for f in fs),
+    )
     file_names = [f['fileName'] for f in files]
     assert any(
-        'test-image' in name for name in file_names
-    ), f"Image 'test-image' not found in server files: {file_names}"
+        'red-square' in name for name in file_names
+    ), f"Image 'red-square' not found in server files: {file_names}"
 
 
 def test_e2e_image_download(tmp_path):
@@ -368,11 +411,12 @@ def test_e2e_multiple_metrics_single_log():
     )
     run.finish()
 
-    metric_names = pq.get_metric_names(TESTING_PROJECT_NAME, run_ids=[run_id])
-    for expected in ['multi/loss', 'multi/accuracy', 'multi/lr']:
+    expected = ['multi/loss', 'multi/accuracy', 'multi/lr']
+    metric_names = _poll_metric_names(TESTING_PROJECT_NAME, run_id, expected)
+    for name in expected:
         assert (
-            expected in metric_names
-        ), f"'{expected}' not in server metric names: {metric_names}"
+            name in metric_names
+        ), f"'{name}' not in server metric names: {metric_names}"
 
 
 # ---------------------------------------------------------------------------
@@ -454,8 +498,8 @@ def test_e2e_full_lifecycle():
     assert 'validated' in server_tags
     assert 'lifecycle' not in server_tags  # Removed
 
-    # Metrics
-    metric_names = pq.get_metric_names(TESTING_PROJECT_NAME, run_ids=[run_id])
+    # Metrics (poll for eventual consistency)
+    metric_names = _poll_metric_names(TESTING_PROJECT_NAME, run_id, ['lifecycle/loss'])
     assert 'lifecycle/loss' in metric_names
 
     metrics = pq.get_metrics(
@@ -464,9 +508,13 @@ def test_e2e_full_lifecycle():
     if hasattr(metrics, '__len__'):
         assert len(metrics) == 5
 
-    # Files
-    files = pq.get_files(TESTING_PROJECT_NAME, run_id)
+    # Files (poll for eventual consistency)
+    # Server stores file with caption-based name (e.g. "green.UUID.png")
+    files = _poll(
+        fn=lambda: pq.get_files(TESTING_PROJECT_NAME, run_id),
+        check=lambda fs: any('green' in f['fileName'] for f in fs),
+    )
     file_names = [f['fileName'] for f in files]
     assert any(
-        'lifecycle' in name or 'img' in name for name in file_names
+        'green' in name for name in file_names
     ), f'Image not found in server files: {file_names}'

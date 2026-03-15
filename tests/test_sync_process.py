@@ -656,7 +656,9 @@ class TestSyncUploaderPayloadFormat:
 
             assert payload['runId'] == 12345
             # Server expects config as a JSON-encoded string (double-encoded)
-            assert payload['config'] == json.dumps({'learning_rate': 0.001, 'batch_size': 32})
+            assert payload['config'] == json.dumps(
+                {'learning_rate': 0.001, 'batch_size': 32}
+            )
 
     def test_tags_payload_format(self, uploader):
         """Test tags update payload format."""
@@ -694,7 +696,7 @@ class TestSyncUploaderPayloadFormat:
             assert payload['tags'] == ['experiment', 'v2', 'baseline']
 
     def test_config_payload_matches_legacy_format(self, uploader):
-        """Ensure sync process config payload matches legacy make_compat_update_config_v1.
+        """Ensure sync process config payload matches legacy format.
 
         This is a regression test: the sync process and legacy code path must
         produce identical payload shapes for /api/runs/config/update, otherwise
@@ -741,15 +743,17 @@ class TestSyncUploaderPayloadFormat:
             sync_payload = json.loads(body)
 
         # Both paths must encode config as a JSON string, not a raw dict
-        assert type(sync_payload['config']) == type(legacy_payload['config']), (
+        assert isinstance(sync_payload['config'], type(legacy_payload['config'])), (
             f"Sync process sends config as {type(sync_payload['config']).__name__}, "
             f"but legacy sends {type(legacy_payload['config']).__name__}. "
             f"Server expects a JSON-encoded string."
         )
-        assert json.loads(sync_payload['config']) == json.loads(legacy_payload['config'])
+        assert json.loads(sync_payload['config']) == json.loads(
+            legacy_payload['config']
+        )
 
     def test_tags_payload_matches_legacy_format(self, uploader):
-        """Ensure sync process tags payload matches legacy make_compat_update_tags_v1."""
+        """Ensure sync process tags payload matches legacy format."""
         from pluto.api import make_compat_update_tags_v1
 
         tags = ['experiment', 'v2', 'baseline']
@@ -790,7 +794,7 @@ class TestSyncUploaderPayloadFormat:
             ) or mock_client.post.call_args[1].get('content')
             sync_payload = json.loads(body)
 
-        assert type(sync_payload['tags']) == type(legacy_payload['tags'])
+        assert isinstance(sync_payload['tags'], type(legacy_payload['tags']))
         assert sync_payload['tags'] == legacy_payload['tags']
 
     def test_metrics_batch_multiple_records(self, uploader):
