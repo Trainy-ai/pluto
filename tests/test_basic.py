@@ -318,3 +318,32 @@ def test_update_config_multiple_calls():
     assert run.config['model'] == 'resnet50'
 
     run.finish()
+
+
+def test_update_config_e2e_server_roundtrip():
+    """E2E: verify update_config actually persists to the server.
+
+    This catches serialization mismatches (e.g. sending config as a dict
+    instead of a JSON string) that client-only assertions would miss.
+    """
+    import pluto.query as pq
+
+    initial_config = {'lr': 0.001, 'arch': 'resnet50'}
+    run = pluto.init(
+        project=TESTING_PROJECT_NAME, name=get_task_name(), config=initial_config
+    )
+    run_id = run.settings._op_id
+
+    run.update_config({'epochs': 100, 'lr': 0.01})
+    run.finish()
+
+    # Query the server and verify config was actually persisted
+    server_run = pq.get_run(TESTING_PROJECT_NAME, run_id)
+    server_config = server_run.get('config', {})
+
+    assert server_config['lr'] == 0.01, (
+        f"Server has lr={server_config.get('lr')}, expected 0.01. "
+        f"update_config may not be reaching the server."
+    )
+    assert server_config['arch'] == 'resnet50'
+    assert server_config['epochs'] == 100
