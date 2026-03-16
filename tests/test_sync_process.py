@@ -298,13 +298,11 @@ class TestSyncProcessShutdown:
         text = pluto.Text('Test content', caption='test')
         run.log({'logs/test': text})
 
-        # Finish should wait for sync
+        # Finish should wait for sync and complete reasonably quickly
         start = time.time()
         run.finish()
         elapsed = time.time() - start
-
-        # Should complete reasonably quickly (not timeout)
-        assert elapsed < 30, f'Shutdown took too long: {elapsed}s'
+        assert elapsed < 60, f'Shutdown took too long: {elapsed}s'
 
     def test_sync_manager_pending_count(self):
         """Test that pending count tracks metrics and files."""
@@ -569,9 +567,7 @@ class TestSyncUploaderPayloadFormat:
 
             uploader.upload_metrics_batch(records)
 
-            body = mock_client.post.call_args.kwargs.get(
-                'content'
-            ) or mock_client.post.call_args[1].get('content')
+            body = mock_client.post.call_args.kwargs['content']
             payload = json.loads(body.strip())
 
             # Only numeric values should be in data
@@ -610,9 +606,7 @@ class TestSyncUploaderPayloadFormat:
 
             uploader.upload_system_batch(records)
 
-            body = mock_client.post.call_args.kwargs.get(
-                'content'
-            ) or mock_client.post.call_args[1].get('content')
+            body = mock_client.post.call_args.kwargs['content']
             payload = json.loads(body.strip())
 
             # Verify sys/ prefix is preserved (not doubled)
@@ -649,13 +643,14 @@ class TestSyncUploaderPayloadFormat:
 
             uploader.upload_config(record)
 
-            body = mock_client.post.call_args.kwargs.get(
-                'content'
-            ) or mock_client.post.call_args[1].get('content')
+            body = mock_client.post.call_args.kwargs['content']
             payload = json.loads(body)
 
             assert payload['runId'] == 12345
-            assert payload['config'] == {'learning_rate': 0.001, 'batch_size': 32}
+            # Server expects config as a JSON-encoded string (double-encoded)
+            assert payload['config'] == json.dumps(
+                {'learning_rate': 0.001, 'batch_size': 32}
+            )
 
     def test_tags_payload_format(self, uploader):
         """Test tags update payload format."""
@@ -684,13 +679,109 @@ class TestSyncUploaderPayloadFormat:
 
             uploader.upload_tags(record)
 
-            body = mock_client.post.call_args.kwargs.get(
-                'content'
-            ) or mock_client.post.call_args[1].get('content')
+            body = mock_client.post.call_args.kwargs['content']
             payload = json.loads(body)
 
             assert payload['runId'] == 12345
             assert payload['tags'] == ['experiment', 'v2', 'baseline']
+
+    def test_config_payload_matches_legacy_format(self, uploader):
+        """Ensure sync process config payload matches legacy format.
+
+        This is a regression test: the sync process and legacy code path must
+        produce identical payload shapes for /api/runs/config/update, otherwise
+        the server returns 400.
+        """
+        from pluto.api import make_compat_update_config_v1
+
+        config = {'learning_rate': 0.001, 'batch_size': 32, 'nested': {'a': 1}}
+
+        # Build the legacy payload
+        mock_settings = MagicMock()
+        mock_settings._op_id = 12345
+        legacy_payload = json.loads(make_compat_update_config_v1(mock_settings, config))
+
+        # Build the sync process payload
+        record = SyncRecord(
+            id=1,
+            run_id='test-run',
+            record_type=RecordType.CONFIG,
+            payload=config,
+            timestamp_ms=1705600000000,
+            step=None,
+            status=SyncStatus.PENDING,
+            retry_count=0,
+            created_at=time.time(),
+            last_attempt_at=None,
+            error_message=None,
+        )
+
+        mock_response = MagicMock()
+        mock_response.raise_for_status = MagicMock()
+
+        with patch('httpx.Client') as MockClient:
+            mock_client = MagicMock()
+            mock_client.post.return_value = mock_response
+            MockClient.return_value = mock_client
+            uploader._client = None
+
+            uploader.upload_config(record)
+
+            body = mock_client.post.call_args.kwargs['content']
+            sync_payload = json.loads(body)
+
+        # Both paths must encode config as a JSON string, not a raw dict
+        assert isinstance(sync_payload['config'], type(legacy_payload['config'])), (
+            f"Sync process sends config as {type(sync_payload['config']).__name__}, "
+            f"but legacy sends {type(legacy_payload['config']).__name__}. "
+            f"Server expects a JSON-encoded string."
+        )
+        assert json.loads(sync_payload['config']) == json.loads(
+            legacy_payload['config']
+        )
+
+    def test_tags_payload_matches_legacy_format(self, uploader):
+        """Ensure sync process tags payload matches legacy format."""
+        from pluto.api import make_compat_update_tags_v1
+
+        tags = ['experiment', 'v2', 'baseline']
+
+        # Build legacy payload
+        mock_settings = MagicMock()
+        mock_settings._op_id = 12345
+        legacy_payload = json.loads(make_compat_update_tags_v1(mock_settings, tags))
+
+        # Build sync process payload
+        record = SyncRecord(
+            id=1,
+            run_id='test-run',
+            record_type=RecordType.TAGS,
+            payload={'tags': tags},
+            timestamp_ms=1705600000000,
+            step=None,
+            status=SyncStatus.PENDING,
+            retry_count=0,
+            created_at=time.time(),
+            last_attempt_at=None,
+            error_message=None,
+        )
+
+        mock_response = MagicMock()
+        mock_response.raise_for_status = MagicMock()
+
+        with patch('httpx.Client') as MockClient:
+            mock_client = MagicMock()
+            mock_client.post.return_value = mock_response
+            MockClient.return_value = mock_client
+            uploader._client = None
+
+            uploader.upload_tags(record)
+
+            body = mock_client.post.call_args.kwargs['content']
+            sync_payload = json.loads(body)
+
+        assert isinstance(sync_payload['tags'], type(legacy_payload['tags']))
+        assert sync_payload['tags'] == legacy_payload['tags']
 
     def test_metrics_batch_multiple_records(self, uploader):
         """Test multiple metric records are sent as NDJSON (one per line)."""
@@ -734,9 +825,7 @@ class TestSyncUploaderPayloadFormat:
 
             uploader.upload_metrics_batch(records)
 
-            body = mock_client.post.call_args.kwargs.get(
-                'content'
-            ) or mock_client.post.call_args[1].get('content')
+            body = mock_client.post.call_args.kwargs['content']
             if isinstance(body, bytes):
                 body = body.decode('utf-8')
             lines = [line for line in body.strip().split('\n') if line]

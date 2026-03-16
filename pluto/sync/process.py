@@ -952,7 +952,7 @@ class _SyncUploader:
 
         payload = {
             'runId': self.op_id,
-            'config': record.payload,
+            'config': json.dumps(record.payload) if record.payload else None,
         }
 
         headers = self._get_headers()
