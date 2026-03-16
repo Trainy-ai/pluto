@@ -298,9 +298,11 @@ class TestSyncProcessShutdown:
         text = pluto.Text('Test content', caption='test')
         run.log({'logs/test': text})
 
-        # Finish should complete without hanging (no timing assertion —
-        # wall-clock duration is too CI-dependent to be reliable).
+        # Finish should wait for sync and complete reasonably quickly
+        start = time.time()
         run.finish()
+        elapsed = time.time() - start
+        assert elapsed < 60, f'Shutdown took too long: {elapsed}s'
 
     def test_sync_manager_pending_count(self):
         """Test that pending count tracks metrics and files."""
