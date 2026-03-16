@@ -5,6 +5,11 @@ name: Wandb Compatibility Tests
 
 on:
   workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'pluto/compat/wandb/**'
+      - 'wandb/**'
   issue_comment:
     types: [created]
 
@@ -83,6 +88,34 @@ jobs:
         run: |
           set -euox pipefail
           poetry run pytest tests/test_wandb_visual_parity.py::TestPlutoShimSide -v -rs -s
+
+      - name: Install real wandb for coverage introspection
+        run: pip install wandb
+
+      - name: Run wandb coverage report (summary)
+        run: |
+          set -euox pipefail
+          poetry run python scripts/wandb_coverage.py --format summary
+
+      - name: Generate coverage reports
+        run: |
+          set -euox pipefail
+          poetry run python scripts/wandb_coverage.py --format markdown --output coverage-report.md
+          poetry run python scripts/wandb_coverage.py --format json --output coverage-report.json
+
+      - name: Upload coverage reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: wandb-coverage-py${{ matrix.python-version }}
+          path: |
+            coverage-report.md
+            coverage-report.json
+
+      - name: Run wandb coverage tests
+        run: |
+          set -euox pipefail
+          poetry run pytest tests/test_wandb_coverage.py -v
 
       - name: Report test results
         if: always()

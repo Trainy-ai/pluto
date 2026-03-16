@@ -6,6 +6,8 @@ supported by pluto, so we provide a stub that raises informative errors.
 
 import logging
 
+from pluto.compat.wandb._coverage import warn_unsupported
+
 logger = logging.getLogger(f'{__name__.split(".")[0]}')
 tag = 'WandbCompat.Api'
 
@@ -21,6 +23,7 @@ class Api:
         logger.debug('%s: Api instantiated (queries not supported)', tag)
 
     def _unsupported(self, method):
+        warn_unsupported(f"wandb.Api.{method}")
         raise NotImplementedError(
             f'wandb.Api().{method}() is not supported by the pluto '
             'compatibility layer. Use the pluto API directly.'

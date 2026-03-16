@@ -344,6 +344,9 @@ def save(
     policy: str = 'live',
 ) -> None:
     """Sync files. Not supported — no-op."""
+    from ._coverage import warn_unsupported
+
+    warn_unsupported("wandb.save")
     logger.debug('%s: save is not supported', tag)
 
 
@@ -354,6 +357,9 @@ def restore(
     root: Optional[str] = None,
 ) -> None:
     """Restore a file. Not supported — no-op."""
+    from ._coverage import warn_unsupported
+
+    warn_unsupported("wandb.restore")
     logger.debug('%s: restore is not supported', tag)
 
 
@@ -375,6 +381,9 @@ def use_artifact(
     type: Optional[str] = None,
 ) -> Any:
     """Declare artifact as input. Not supported — no-op."""
+    from ._coverage import warn_unsupported
+
+    warn_unsupported("wandb.use_artifact")
     logger.debug('%s: use_artifact is not supported', tag)
     return artifact_or_name
 
@@ -386,11 +395,17 @@ def log_code(
     exclude_fn: Any = None,
 ) -> None:
     """Save source code. Not supported — no-op."""
+    from ._coverage import warn_unsupported
+
+    warn_unsupported("wandb.log_code")
     logger.debug('%s: log_code is not supported', tag)
 
 
 def mark_preempting() -> None:
     """Mark run as preempted. No-op."""
+    from ._coverage import warn_unsupported
+
+    warn_unsupported("wandb.mark_preempting")
     logger.debug('%s: mark_preempting is a no-op', tag)
 
 
@@ -407,6 +422,9 @@ def login(
 
     Returns True to indicate "logged in" so callers don't block.
     """
+    from ._coverage import warn_unsupported
+
+    warn_unsupported("wandb.login")
     logger.debug('%s: login is a no-op (use pluto login)', tag)
     return True
 

@@ -261,6 +261,9 @@ class Run:
 
     def unwatch(self, models: Any = None) -> None:
         """Remove model watching hooks (best-effort)."""
+        from ._coverage import warn_unsupported
+
+        warn_unsupported("wandb.Run.unwatch")
         logger.debug('%s: unwatch is a no-op in pluto compat layer', tag)
 
     def alert(
@@ -330,6 +333,9 @@ class Run:
         policy: str = 'live',
     ) -> None:
         """Sync files to the run. No-op in pluto compat layer."""
+        from ._coverage import warn_unsupported
+
+        warn_unsupported("wandb.Run.save")
         logger.debug('%s: save is not supported', tag)
 
     def restore(
@@ -340,6 +346,9 @@ class Run:
         root: Optional[str] = None,
     ) -> None:
         """Download a file from a run. Not supported."""
+        from ._coverage import warn_unsupported
+
+        warn_unsupported("wandb.Run.restore")
         logger.debug('%s: restore is not supported', tag)
 
     def log_artifact(
@@ -383,6 +392,9 @@ class Run:
         type: Optional[str] = None,
     ) -> Any:
         """Declare an artifact as input. Not supported."""
+        from ._coverage import warn_unsupported
+
+        warn_unsupported("wandb.Run.use_artifact")
         logger.debug('%s: use_artifact is not supported', tag)
         return artifact_or_name
 
@@ -394,10 +406,16 @@ class Run:
         exclude_fn: Any = None,
     ) -> None:
         """Save source code. Not supported."""
+        from ._coverage import warn_unsupported
+
+        warn_unsupported("wandb.Run.log_code")
         logger.debug('%s: log_code is not supported', tag)
 
     def mark_preempting(self) -> None:
         """Mark run as preempted. No-op (pluto handles this via signals)."""
+        from ._coverage import warn_unsupported
+
+        warn_unsupported("wandb.Run.mark_preempting")
         logger.debug('%s: mark_preempting is a no-op', tag)
 
     def status(self) -> Dict[str, Any]:
