@@ -2,7 +2,7 @@ import json
 import logging
 import re
 import signal
-from datetime import datetime
+from datetime import datetime, timezone
 
 from .util import clean_dict, find_node
 
@@ -45,7 +45,10 @@ def make_compat_start_v1(config, settings, info, tags=None):
             'loggerSettings': json.dumps(clean_dict(settings.to_dict())),
             'systemMetadata': json.dumps(info) if info is not None else None,
             'tags': tags if tags else None,
-            'createdAt': settings.compat.get('createdAt'),
+            'createdAt': settings.compat.get(
+                'createdAt',
+                datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.%f')[:-3] + 'Z',
+            ),
             'updatedAt': settings.compat.get('updatedAt'),
         }
     ).encode()
