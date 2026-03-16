@@ -569,9 +569,7 @@ class TestSyncUploaderPayloadFormat:
 
             uploader.upload_metrics_batch(records)
 
-            body = mock_client.post.call_args.kwargs.get(
-                'content'
-            ) or mock_client.post.call_args[1].get('content')
+            body = mock_client.post.call_args.kwargs['content']
             payload = json.loads(body.strip())
 
             # Only numeric values should be in data
@@ -610,9 +608,7 @@ class TestSyncUploaderPayloadFormat:
 
             uploader.upload_system_batch(records)
 
-            body = mock_client.post.call_args.kwargs.get(
-                'content'
-            ) or mock_client.post.call_args[1].get('content')
+            body = mock_client.post.call_args.kwargs['content']
             payload = json.loads(body.strip())
 
             # Verify sys/ prefix is preserved (not doubled)
@@ -649,9 +645,7 @@ class TestSyncUploaderPayloadFormat:
 
             uploader.upload_config(record)
 
-            body = mock_client.post.call_args.kwargs.get(
-                'content'
-            ) or mock_client.post.call_args[1].get('content')
+            body = mock_client.post.call_args.kwargs['content']
             payload = json.loads(body)
 
             assert payload['runId'] == 12345
@@ -687,9 +681,7 @@ class TestSyncUploaderPayloadFormat:
 
             uploader.upload_tags(record)
 
-            body = mock_client.post.call_args.kwargs.get(
-                'content'
-            ) or mock_client.post.call_args[1].get('content')
+            body = mock_client.post.call_args.kwargs['content']
             payload = json.loads(body)
 
             assert payload['runId'] == 12345
@@ -737,9 +729,7 @@ class TestSyncUploaderPayloadFormat:
 
             uploader.upload_config(record)
 
-            body = mock_client.post.call_args.kwargs.get(
-                'content'
-            ) or mock_client.post.call_args[1].get('content')
+            body = mock_client.post.call_args.kwargs['content']
             sync_payload = json.loads(body)
 
         # Both paths must encode config as a JSON string, not a raw dict
@@ -789,9 +779,7 @@ class TestSyncUploaderPayloadFormat:
 
             uploader.upload_tags(record)
 
-            body = mock_client.post.call_args.kwargs.get(
-                'content'
-            ) or mock_client.post.call_args[1].get('content')
+            body = mock_client.post.call_args.kwargs['content']
             sync_payload = json.loads(body)
 
         assert isinstance(sync_payload['tags'], type(legacy_payload['tags']))
@@ -839,9 +827,7 @@ class TestSyncUploaderPayloadFormat:
 
             uploader.upload_metrics_batch(records)
 
-            body = mock_client.post.call_args.kwargs.get(
-                'content'
-            ) or mock_client.post.call_args[1].get('content')
+            body = mock_client.post.call_args.kwargs['content']
             if isinstance(body, bytes):
                 body = body.decode('utf-8')
             lines = [line for line in body.strip().split('\n') if line]
