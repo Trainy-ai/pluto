@@ -11,9 +11,11 @@ Requires:
 """
 
 import importlib.util
+import io
 import time
 from typing import Callable, List, TypeVar
 
+import httpx
 import numpy as np
 import pytest
 from PIL import Image as PILImage
@@ -287,12 +289,12 @@ def test_e2e_metric_statistics():
 # ---------------------------------------------------------------------------
 
 
-def test_e2e_image_upload():
-    """Verify an uploaded image appears in the server's file listing."""
+def test_e2e_image_upload(tmp_path):
+    """Verify an uploaded image survives the round-trip to the server."""
     run = pluto.init(project=TESTING_PROJECT_NAME, name=get_task_name(), config={})
     run_id = run.settings._op_id
 
-    pil_img = PILImage.new('RGB', (4, 4), color='red')
+    pil_img = PILImage.new('RGB', (4, 4), color=(255, 0, 0))
     run.log({'e2e/test-image': pluto.Image(pil_img, caption='red-square')})
     run.finish()
 
@@ -306,13 +308,25 @@ def test_e2e_image_upload():
         'red-square' in name for name in file_names
     ), f"Image 'red-square' not found in server files: {file_names}"
 
+    # Download and verify actual image content
+    try:
+        path = pq.download_file(
+            TESTING_PROJECT_NAME, run_id, 'e2e/test-image', destination=tmp_path
+        )
+    except pq.QueryError:
+        pytest.skip('File not yet available for download (eventual consistency)')
+    downloaded = PILImage.open(path)
+    assert downloaded.size == (4, 4), f'Expected 4x4, got {downloaded.size}'
+    r, g, b = downloaded.convert('RGB').getpixel((0, 0))
+    assert r > 200 and g < 50 and b < 50, f'Expected red pixel, got ({r},{g},{b})'
+
 
 def test_e2e_image_download(tmp_path):
-    """Verify an uploaded image can be downloaded back."""
+    """Verify an uploaded image can be downloaded and content matches."""
     run = pluto.init(project=TESTING_PROJECT_NAME, name=get_task_name(), config={})
     run_id = run.settings._op_id
 
-    pil_img = PILImage.new('RGB', (8, 8), color='blue')
+    pil_img = PILImage.new('RGB', (8, 8), color=(0, 0, 255))
     run.log({'e2e/download-img': pluto.Image(pil_img, caption='blue')})
     run.finish()
 
@@ -320,10 +334,15 @@ def test_e2e_image_download(tmp_path):
         path = pq.download_file(
             TESTING_PROJECT_NAME, run_id, 'e2e/download-img', destination=tmp_path
         )
-        assert path.exists()
-        assert path.stat().st_size > 0
     except pq.QueryError:
         pytest.skip('File not yet available for download (eventual consistency)')
+    assert path.exists()
+    assert path.stat().st_size > 0
+
+    downloaded = PILImage.open(path)
+    assert downloaded.size == (8, 8), f'Expected 8x8, got {downloaded.size}'
+    r, g, b = downloaded.convert('RGB').getpixel((0, 0))
+    assert b > 200 and r < 50 and g < 50, f'Expected blue pixel, got ({r},{g},{b})'
 
 
 # ---------------------------------------------------------------------------
@@ -518,3 +537,16 @@ def test_e2e_full_lifecycle():
     assert any(
         'green' in name for name in file_names
     ), f'Image not found in server files: {file_names}'
+
+    # Verify the image content survived the round-trip
+    matched = [f for f in files if 'green' in f['fileName']][0]
+    url = matched.get('downloadUrl') or matched.get('url')
+    if url:
+        resp = httpx.get(url, follow_redirects=True, timeout=30)
+        if resp.status_code == 200:
+            downloaded = PILImage.open(io.BytesIO(resp.content))
+            assert downloaded.size == (4, 4), f'Expected 4x4, got {downloaded.size}'
+            r, g, b = downloaded.convert('RGB').getpixel((0, 0))
+            assert (
+                g > 100 and r < 50 and b < 50
+            ), f'Expected green pixel, got ({r},{g},{b})'
