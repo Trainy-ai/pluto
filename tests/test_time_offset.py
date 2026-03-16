@@ -5,6 +5,7 @@ close to zero, not offset by hours due to timezone bugs.
 """
 
 import time
+from datetime import datetime
 
 import pluto
 import pluto.query as pq
@@ -34,8 +35,6 @@ def test_time_offset():
     )
 
     # Parse createdAt (ISO 8601 string) and first metric time (epoch ms)
-    from datetime import datetime
-
     created_at_str = run_info['createdAt']
     # Handle both 'Z' suffix and '+00:00' formats
     created_at_str = created_at_str.replace('Z', '+00:00')

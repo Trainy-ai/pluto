@@ -47,7 +47,7 @@ def make_compat_start_v1(config, settings, info, tags=None):
             'tags': tags if tags else None,
             'createdAt': settings.compat.get(
                 'createdAt',
-                datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.%f')[:-3] + 'Z',
+                int(datetime.now(timezone.utc).timestamp() * 1000),
             ),
             'updatedAt': settings.compat.get('updatedAt'),
         }
