@@ -43,9 +43,17 @@ def test_time_offset():
 
     # Get first metric timestamp
     if hasattr(metrics, 'iloc'):
-        first_metric_time_ms = float(metrics.iloc[0]['time'])
+        raw_time = metrics.iloc[0]['time']
     else:
-        first_metric_time_ms = float(metrics[0]['time'])
+        raw_time = metrics[0]['time']
+
+    # The server may return time as epoch ms (number) or a datetime string
+    try:
+        first_metric_time_ms = float(raw_time)
+    except (ValueError, TypeError):
+        # Parse datetime string (e.g. '2026-03-16 02:21:32.278')
+        metric_dt = datetime.fromisoformat(str(raw_time).replace('Z', '+00:00'))
+        first_metric_time_ms = metric_dt.timestamp() * 1000
 
     offset_seconds = abs(first_metric_time_ms - created_at_ms) / 1000
 
