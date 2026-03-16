@@ -873,6 +873,44 @@ class SyncStore:
 
         return stats
 
+    @_retry_on_locked
+    def reset_failed_to_pending(self) -> int:
+        """Reset all FAILED records back to PENDING so they can be retried.
+
+        Also resets IN_PROGRESS records (stale from a dead sync process).
+        Returns the number of records reset.
+        """
+        with self._lock:
+            cursor = self.conn.execute(
+                """
+                UPDATE sync_queue
+                SET status = ?, retry_count = 0, error_message = NULL
+                WHERE status IN (?, ?)
+                """,
+                (
+                    int(SyncStatus.PENDING),
+                    int(SyncStatus.FAILED),
+                    int(SyncStatus.IN_PROGRESS),
+                ),
+            )
+            records_reset = cursor.rowcount
+
+            cursor = self.conn.execute(
+                """
+                UPDATE file_uploads
+                SET status = ?, retry_count = 0, error_message = NULL
+                WHERE status IN (?, ?)
+                """,
+                (
+                    int(SyncStatus.PENDING),
+                    int(SyncStatus.FAILED),
+                    int(SyncStatus.IN_PROGRESS),
+                ),
+            )
+            files_reset = cursor.rowcount
+
+            return records_reset + files_reset
+
     def close(self) -> None:
         """Close database connection."""
         with self._lock:

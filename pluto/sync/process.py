@@ -815,6 +815,107 @@ def _flush_remaining(
     )
 
 
+def retry_sync(
+    db_path: str,
+    settings_dict: Dict[str, Any],
+    timeout: float = 60.0,
+    verbose: bool = False,
+) -> bool:
+    """
+    Retry syncing all pending/failed records from a sync database.
+
+    Opens the SQLite database, resets failed records to pending,
+    and flushes everything to the server.
+
+    Args:
+        db_path: Path to the sync.db file.
+        settings_dict: Settings dict with auth, URLs, etc.
+        timeout: Max seconds to spend syncing.
+        verbose: If True, print progress to stdout.
+
+    Returns:
+        True if all records synced, False if some remain.
+    """
+    log_level = logging.DEBUG if verbose else logging.INFO
+    logging.basicConfig(
+        level=log_level,
+        format='%(asctime)s [pluto-sync-retry] %(levelname)s: %(message)s',
+    )
+    log = logging.getLogger('pluto-sync-retry')
+    logging.getLogger('httpx').setLevel(logging.WARNING)
+    logging.getLogger('httpcore').setLevel(logging.WARNING)
+
+    store = SyncStore(db_path)
+    uploader = _SyncUploader(settings_dict, log)
+
+    max_retries = settings_dict.get('sync_process_retry_max', 5)
+    batch_size = settings_dict.get('sync_process_batch_size', 100)
+    file_batch_size = settings_dict.get('sync_process_file_batch_size', 10)
+
+    try:
+        # Reset failed/in_progress records so they can be retried
+        reset_count = store.reset_failed_to_pending()
+        pending_records = store.get_pending_count()
+        pending_files = store.get_pending_file_count()
+        total = pending_records + pending_files
+
+        if total == 0:
+            if verbose:
+                print('No pending records to sync.')
+            return True
+
+        if verbose:
+            if reset_count:
+                print(f'Reset {reset_count} failed/stale records.')
+            print(
+                f'Syncing {total} pending records '
+                f'({pending_records} records, '
+                f'{pending_files} files)...'
+            )
+
+        start = time.time()
+        total_synced = 0
+
+        while True:
+            elapsed = time.time() - start
+            if elapsed >= timeout:
+                remaining = store.get_pending_count() + store.get_pending_file_count()
+                if verbose:
+                    print(
+                        f'Timeout after {timeout:.0f}s. '
+                        f'Synced {total_synced}, '
+                        f'{remaining} remain in SQLite.'
+                    )
+                return remaining == 0
+
+            synced = _sync_batch(
+                store, uploader, log, max_retries, batch_size, file_batch_size
+            )
+            if synced == 0:
+                remaining = store.get_pending_count() + store.get_pending_file_count()
+                if remaining == 0:
+                    if verbose:
+                        print(f'All {total_synced} records synced successfully.')
+                    return True
+                else:
+                    if verbose:
+                        print(
+                            f'Synced {total_synced}, but '
+                            f'{remaining} records failed. '
+                            f'Data preserved in SQLite.'
+                        )
+                    return False
+
+            total_synced += synced
+            if verbose:
+                remaining = store.get_pending_count() + store.get_pending_file_count()
+                print(f'  synced {total_synced}/{total} ({remaining} remaining)')
+
+    finally:
+        uploader.close()
+        store.close()
+
+
 # ============================================================================
 # Uploader (HTTP Client for Sync Process)
 # ============================================================================
