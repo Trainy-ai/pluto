@@ -318,3 +318,69 @@ def test_update_config_multiple_calls():
     assert run.config['model'] == 'resnet50'
 
     run.finish()
+
+
+def test_fork_validation_missing_fork_step():
+    """Test that fork_run_id without fork_step raises ValueError."""
+    with pytest.raises(ValueError, match='fork_step is required'):
+        pluto.init(
+            project=TESTING_PROJECT_NAME,
+            name=get_task_name(),
+            fork_run_id=12345,
+        )
+
+
+def test_fork_validation_missing_fork_run_id():
+    """Test that fork_step without fork_run_id raises ValueError."""
+    with pytest.raises(ValueError, match='fork_run_id is required'):
+        pluto.init(
+            project=TESTING_PROJECT_NAME,
+            name=get_task_name(),
+            fork_step=500,
+        )
+
+
+def test_fork_parameters_in_start_payload():
+    """Test that fork parameters are included in the start payload."""
+    import json
+
+    from pluto.api import make_compat_start_v1
+    from pluto.sets import Settings
+
+    settings = Settings()
+    settings._fork_run_id = 12345
+    settings._fork_step = 500
+    settings._inherit_config = True
+    settings._inherit_tags = False
+
+    payload = json.loads(make_compat_start_v1({}, settings, None))
+
+    assert payload['forkRunId'] == 12345
+    assert payload['forkStep'] == 500
+    assert payload['inheritConfig'] is True
+    assert payload['inheritTags'] is False
+
+
+def test_fork_parameters_omitted_when_none():
+    """Test that fork parameters are omitted from payload when not set."""
+    import json
+
+    from pluto.api import make_compat_start_v1
+    from pluto.sets import Settings
+
+    settings = Settings()
+
+    payload = json.loads(make_compat_start_v1({}, settings, None))
+
+    assert 'forkRunId' not in payload
+    assert 'forkStep' not in payload
+    assert 'inheritConfig' not in payload
+    assert 'inheritTags' not in payload
+
+
+def test_fork_metadata_properties_default_none():
+    """Test that fork properties are None on a normal (non-forked) run."""
+    run = pluto.init(project=TESTING_PROJECT_NAME, name=get_task_name(), config={})
+    assert run.fork_run_id is None
+    assert run.fork_step is None
+    run.finish()

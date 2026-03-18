@@ -43,6 +43,10 @@ def init(
     tags: Union[str, list[str], None] = None,
     run_id: Optional[str] = None,
     resume: bool = False,
+    fork_run_id: Optional[int] = None,
+    fork_step: Optional[int] = None,
+    inherit_config: Optional[bool] = None,
+    inherit_tags: Optional[bool] = None,
     **kwargs,
 ) -> Op:
     """
@@ -66,6 +70,14 @@ def init(
                 same externalId already exists (prevents accidental data
                 collision). Runs created via PLUTO_RUN_ID env var are always
                 allowed to resume regardless of this flag.
+        fork_run_id: Numeric run ID of the parent run to fork from.
+            Must be used together with fork_step.
+        fork_step: Step number to fork at.
+            Must be used together with fork_run_id.
+        inherit_config: Whether to inherit config from the parent run
+            (default: True on server).
+        inherit_tags: Whether to inherit tags from the parent run
+            (default: False on server).
 
     Returns:
         Op: The initialized run operation
@@ -76,6 +88,17 @@ def init(
             run = pluto.init(project="my-project", name="experiment-1")
             run.log({"loss": 0.5})
             run.finish()
+
+        Fork from an existing run::
+
+            run = pluto.init(
+                project="my-project",
+                name="lr-tuned",
+                fork_run_id=12345,
+                fork_step=500,
+                inherit_config=True,
+                config={"lr": 0.01},  # overrides inherited config keys
+            )
 
         Multi-node distributed training::
 
@@ -102,6 +125,12 @@ def init(
         processes that resume the run will use the original name. For clarity,
         use the same ``name`` value across all ranks.
     """
+    # Validate fork parameters
+    if fork_run_id is not None and fork_step is None:
+        raise ValueError('fork_step is required when fork_run_id is provided')
+    if fork_step is not None and fork_run_id is None:
+        raise ValueError('fork_run_id is required when fork_step is provided')
+
     # TODO: remove legacy compat
     dir = kwargs.get('save_dir', dir)
 
@@ -128,6 +157,15 @@ def init(
     # Auto-add 'konduktor' tag when running inside a Konduktor job
     if os.environ.get('KONDUKTOR_JOB_NAME') and 'konduktor' not in normalized_tags:
         normalized_tags.append('konduktor')
+
+    # Set fork parameters on settings
+    if fork_run_id is not None:
+        settings._fork_run_id = fork_run_id
+        settings._fork_step = fork_step
+    if inherit_config is not None:
+        settings._inherit_config = inherit_config
+    if inherit_tags is not None:
+        settings._inherit_tags = inherit_tags
 
     try:
         op_init = OpInit(config=config, tags=normalized_tags or None, resume=resume)
