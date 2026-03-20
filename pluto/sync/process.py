@@ -79,6 +79,9 @@ class SyncProcessManager:
             run_dir.mkdir(parents=True, exist_ok=True)
             self.db_path = str(run_dir / 'sync.db')
 
+        # Step counter for system metrics (increments each sample)
+        self._sys_step = 0
+
         # Initialize store
         self.store = SyncStore(self.db_path, parent_pid=os.getpid())
         self.store.register_run(
@@ -275,15 +278,15 @@ class SyncProcessManager:
         self,
         metrics: Dict[str, Any],
         timestamp_ms: int,
-        step: int = 0,
     ) -> None:
         """Enqueue system metrics for upload."""
+        self._sys_step += 1
         self.store.enqueue(
             run_id=self.run_id,
             record_type=RecordType.SYSTEM,
             payload=metrics,
             timestamp_ms=timestamp_ms,
-            step=step,
+            step=self._sys_step,
         )
 
     def enqueue_console_log(

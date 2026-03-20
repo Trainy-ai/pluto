@@ -272,7 +272,6 @@ class OpMonitor:
                     self.op._sync_manager.enqueue_system_metrics(
                         metrics=sys_metrics,
                         timestamp_ms=timestamp_ms,
-                        step=self.op._step,
                     )
 
                 # Send heartbeat/trigger to server
