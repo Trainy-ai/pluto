@@ -23,6 +23,37 @@ from pluto.op import OpMonitor
 from pluto.sets import Settings
 
 
+def _make_status_server(status_value):
+    """Start a local HTTP server that returns a given run status on trigger."""
+    trigger_requests = {'count': 0, 'timestamps': []}
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            if '/api/runs/trigger' in self.path:
+                trigger_requests['count'] += 1
+                trigger_requests['timestamps'].append(time.time())
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json')
+                self.end_headers()
+                self.wfile.write(
+                    json.dumps({'status': status_value, 'triggers': None}).encode()
+                )
+            else:
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json')
+                self.end_headers()
+                self.wfile.write(json.dumps({}).encode())
+
+        def log_message(self, format, *args):
+            pass
+
+    server = HTTPServer(('127.0.0.1', 0), Handler)
+    port = server.server_address[1]
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    return server, port, trigger_requests
+
+
 def _make_502_server():
     """Start a local HTTP server that returns 502 on trigger, 200 elsewhere."""
     trigger_requests = {'count': 0, 'timestamps': []}
@@ -238,6 +269,132 @@ class TestHeartbeatE2E:
             # x_file_stream_retry_max=3: 1 initial attempt + 3 retries = 4 total
             assert trigger_stats['count'] == 4
 
+            iface.close()
+        finally:
+            server.shutdown()
+
+    def test_monitor_stops_on_completed_status(self):
+        """
+        Monitor should stop itself when server reports COMPLETED.
+        This prevents orphaned monitors from heartbeating forever
+        after Op.finish() has already marked the run as completed.
+        """
+        server, port, trigger_stats = _make_status_server('COMPLETED')
+
+        try:
+            settings = _make_settings(port)
+            settings.x_sys_sampling_interval = 0.5
+            iface = ServerInterface({}, settings)
+
+            mock_op = MagicMock()
+            mock_op.settings = settings
+            mock_op._iface = iface
+            mock_op._sync_manager = None
+
+            monitor = OpMonitor(mock_op)
+            monitor.start()
+
+            # Monitor should self-stop after first trigger returns COMPLETED
+            time.sleep(3)
+
+            # The monitor thread should have exited on its own
+            assert (
+                not monitor._thread_monitor.is_alive()
+            ), 'Monitor thread should have stopped after receiving COMPLETED status'
+            # Should have sent only 1 trigger before stopping
+            assert (
+                trigger_stats['count'] == 1
+            ), f'Expected 1 trigger request before stop, got {trigger_stats["count"]}'
+
+            iface.close()
+        finally:
+            server.shutdown()
+
+    def test_monitor_stops_on_failed_status(self):
+        """Monitor should stop itself when server reports FAILED."""
+        server, port, trigger_stats = _make_status_server('FAILED')
+
+        try:
+            settings = _make_settings(port)
+            settings.x_sys_sampling_interval = 0.5
+            iface = ServerInterface({}, settings)
+
+            mock_op = MagicMock()
+            mock_op.settings = settings
+            mock_op._iface = iface
+            mock_op._sync_manager = None
+
+            monitor = OpMonitor(mock_op)
+            monitor.start()
+
+            time.sleep(3)
+
+            assert (
+                not monitor._thread_monitor.is_alive()
+            ), 'Monitor thread should have stopped after receiving FAILED status'
+            assert trigger_stats['count'] == 1
+
+            iface.close()
+        finally:
+            server.shutdown()
+
+    def test_monitor_stops_on_terminated_status(self):
+        """Monitor should stop itself when server reports TERMINATED."""
+        server, port, trigger_stats = _make_status_server('TERMINATED')
+
+        try:
+            settings = _make_settings(port)
+            settings.x_sys_sampling_interval = 0.5
+            iface = ServerInterface({}, settings)
+
+            mock_op = MagicMock()
+            mock_op.settings = settings
+            mock_op._iface = iface
+            mock_op._sync_manager = None
+
+            monitor = OpMonitor(mock_op)
+            monitor.start()
+
+            time.sleep(3)
+
+            assert (
+                not monitor._thread_monitor.is_alive()
+            ), 'Monitor thread should have stopped after receiving TERMINATED status'
+            assert trigger_stats['count'] == 1
+
+            iface.close()
+        finally:
+            server.shutdown()
+
+    def test_monitor_continues_on_running_status(self):
+        """Monitor should keep running when server reports RUNNING."""
+        server, port, trigger_stats = _make_status_server('RUNNING')
+
+        try:
+            settings = _make_settings(port)
+            settings.x_sys_sampling_interval = 0.5
+            iface = ServerInterface({}, settings)
+
+            mock_op = MagicMock()
+            mock_op.settings = settings
+            mock_op._iface = iface
+            mock_op._sync_manager = None
+
+            monitor = OpMonitor(mock_op)
+            monitor.start()
+
+            time.sleep(3)
+
+            # Monitor should still be running
+            assert (
+                monitor._thread_monitor.is_alive()
+            ), 'Monitor thread should continue running with RUNNING status'
+            # Should have sent multiple heartbeats
+            assert (
+                trigger_stats['count'] >= 3
+            ), f'Expected >=3 heartbeats in 3s, got {trigger_stats["count"]}'
+
+            monitor.stop()
             iface.close()
         finally:
             server.shutdown()

@@ -288,9 +288,19 @@ class OpMonitor:
                         max_retries=0,
                         timeout=5.0,
                     )
-                    if hasattr(r, 'json') and r.json()['status'] == 'CANCELLED':
-                        logger.critical(f'{tag}: server finished run')
-                        os._exit(signal.SIGINT.value)  # TODO: do a more graceful exit
+                    if hasattr(r, 'json'):
+                        server_status = r.json().get('status')
+                        if server_status == 'CANCELLED':
+                            logger.critical(f'{tag}: server cancelled run')
+                            # TODO: do a more graceful exit
+                            os._exit(signal.SIGINT.value)
+                        elif server_status in ('COMPLETED', 'FAILED', 'TERMINATED'):
+                            logger.warning(
+                                '%s: server reports run is %s, stopping monitor',
+                                tag,
+                                server_status,
+                            )
+                            return  # Exit monitor thread cleanly
             except sqlite3.OperationalError as e:
                 logger.warning('%s: transient database error (will retry): %s', tag, e)
             except Exception as e:
