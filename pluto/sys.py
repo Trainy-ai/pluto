@@ -141,7 +141,10 @@ class System:
         try:
             from git import Repo, exc
         except ImportError:
-            logger.debug(f'{tag}: git: GitPython not installed, skipping git info')
+            logger.warning(
+                f'{tag}: git: GitPython not installed, '
+                'skipping git info. Install with: pip install gitpython'
+            )
             return d
 
         try:
@@ -181,10 +184,17 @@ class System:
                 if d['dirty']:
                     d['diff']['head'] = run_cmd(cmd + ' HEAD')
         except exc.InvalidGitRepositoryError:
-            logger.debug(f'{tag}: git: not a git repository')
+            logger.warning(
+                f'{tag}: git: no .git folder found in '
+                f'{self.settings.dir} or any parent directory. '
+                'Git metadata (commit, branch, diff) will not be '
+                'captured. To fix: include the .git folder in your '
+                'container, or run `git init` in the working directory.'
+            )
         except exc.GitError as e:
-            logger.debug(
-                '%s: git: repository not detected: (%s) %s',
+            logger.warning(
+                '%s: git: repository not detected: (%s) %s. '
+                'Git metadata will not be captured.',
                 tag,
                 e.__class__.__name__,
                 e,
