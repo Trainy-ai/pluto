@@ -462,6 +462,67 @@ def test_e2e_system_metrics_collected():
     assert len(sys_metrics) > 0
 
 
+def test_e2e_system_metrics_multiple_timesteps():
+    """Verify sys/* metrics are sampled at multiple timesteps over an extended run.
+
+    Uses a 2-second sampling interval and runs for ~10 seconds, so we expect
+    at least 3 distinct data points per system metric.  This catches bugs where
+    system metrics are only emitted once (e.g. only at init or finish).
+    """
+    run = pluto.init(
+        project=TESTING_PROJECT_NAME,
+        name=get_task_name(),
+        config={},
+        x_sys_sampling_interval=2,  # sample every 2s
+    )
+    run_id = run.settings._op_id
+
+    # Keep the run alive for ~10 seconds so the monitor thread fires multiple times.
+    for i in range(10):
+        run.log({'keepalive': i})
+        time.sleep(1)
+    run.finish()
+
+    # Poll until at least one sys/ metric appears on the server.
+    metric_names = _poll(
+        fn=lambda: pq.get_metric_names(TESTING_PROJECT_NAME, run_ids=[run_id]),
+        check=lambda names: any(n.startswith('sys/') for n in names),
+        timeout=_POLL_TIMEOUT,
+    )
+    sys_metric_names = [n for n in metric_names if n.startswith('sys/')]
+    if not sys_metric_names:
+        pytest.skip('No system metrics collected (monitor may not have sampled)')
+
+    # Pick the first sys metric and verify it has multiple data points.
+    target_metric = sys_metric_names[0]
+    metrics = _poll(
+        fn=lambda: pq.get_metrics(
+            TESTING_PROJECT_NAME, run_id, metric_names=[target_metric]
+        ),
+        check=lambda m: len(m) >= 3,
+        timeout=_POLL_TIMEOUT,
+    )
+
+    # With 2s sampling over ~10s we expect ≥3 samples (conservatively).
+    assert len(metrics) >= 3, (
+        f"Expected ≥3 data points for '{target_metric}', got {len(metrics)}. "
+        f'System metrics should be sampled at multiple timesteps, not just once.'
+    )
+
+    # Verify each data point has distinct timestamps (not all the same).
+    if hasattr(metrics, 'to_dict'):
+        # pandas DataFrame
+        times = list(metrics['time'])
+    else:
+        # list of dicts
+        times = [row['time'] for row in metrics]
+    unique_times = set(str(t) for t in times)
+    assert len(unique_times) >= 3, (
+        f"Expected ≥3 distinct timestamps for '{target_metric}', "
+        f'got {len(unique_times)}: {unique_times}'
+    )
+
+
 # ---------------------------------------------------------------------------
 # Full lifecycle: init → log → update_config → tags → finish → query all
 # ---------------------------------------------------------------------------
