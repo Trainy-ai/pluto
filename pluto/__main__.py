@@ -26,7 +26,7 @@ def _get_auth_token(tag: str = 'pluto') -> str | None:
 
             keyring.set_keyring(import_lib('keyrings.alt.file').PlaintextKeyring())
             return keyring.get_password(tag, tag)
-    except Exception:
+    except ImportError:
         return None
 
 
@@ -40,6 +40,9 @@ def _cmd_sync(args: argparse.Namespace) -> None:
 
     # Find sync databases
     if args.path:
+        if os.path.basename(args.path) != 'sync.db':
+            print('Error: Path must point to a sync.db file.', file=sys.stderr)
+            sys.exit(1)
         db_paths = [args.path]
         if not os.path.isfile(db_paths[0]):
             print(f'Error: {db_paths[0]} not found.', file=sys.stderr)
@@ -83,11 +86,14 @@ def _cmd_sync(args: argparse.Namespace) -> None:
                 continue
 
             # Check for pending records
+            pending_statuses = (0, 1, 3)  # PENDING, IN_PROGRESS, FAILED
             pending = conn.execute(
-                'SELECT COUNT(*) FROM sync_queue WHERE status IN (0, 1, 3)'
+                'SELECT COUNT(*) FROM sync_queue WHERE status IN (?, ?, ?)',
+                pending_statuses,
             ).fetchone()[0]
             pending_files = conn.execute(
-                'SELECT COUNT(*) FROM file_uploads WHERE status IN (0, 1, 3)'
+                'SELECT COUNT(*) FROM file_uploads WHERE status IN (?, ?, ?)',
+                pending_statuses,
             ).fetchone()[0]
             conn.close()
 

@@ -837,10 +837,11 @@ def retry_sync(
         True if all records synced, False if some remain.
     """
     log_level = logging.DEBUG if verbose else logging.INFO
-    logging.basicConfig(
-        level=log_level,
-        format='%(asctime)s [pluto-sync-retry] %(levelname)s: %(message)s',
-    )
+    if not logging.getLogger().hasHandlers():
+        logging.basicConfig(
+            level=log_level,
+            format='%(asctime)s [pluto-sync-retry] %(levelname)s: %(message)s',
+        )
     log = logging.getLogger('pluto-sync-retry')
     logging.getLogger('httpx').setLevel(logging.WARNING)
     logging.getLogger('httpcore').setLevel(logging.WARNING)

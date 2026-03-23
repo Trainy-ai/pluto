@@ -881,35 +881,40 @@ class SyncStore:
         Returns the number of records reset.
         """
         with self._lock:
-            cursor = self.conn.execute(
-                """
-                UPDATE sync_queue
-                SET status = ?, retry_count = 0, error_message = NULL
-                WHERE status IN (?, ?)
-                """,
-                (
-                    int(SyncStatus.PENDING),
-                    int(SyncStatus.FAILED),
-                    int(SyncStatus.IN_PROGRESS),
-                ),
-            )
-            records_reset = cursor.rowcount
+            try:
+                self.conn.execute('BEGIN')
+                cursor = self.conn.execute(
+                    """
+                    UPDATE sync_queue
+                    SET status = ?, retry_count = 0, error_message = NULL
+                    WHERE status IN (?, ?)
+                    """,
+                    (
+                        int(SyncStatus.PENDING),
+                        int(SyncStatus.FAILED),
+                        int(SyncStatus.IN_PROGRESS),
+                    ),
+                )
+                records_reset = cursor.rowcount
 
-            cursor = self.conn.execute(
-                """
-                UPDATE file_uploads
-                SET status = ?, retry_count = 0, error_message = NULL
-                WHERE status IN (?, ?)
-                """,
-                (
-                    int(SyncStatus.PENDING),
-                    int(SyncStatus.FAILED),
-                    int(SyncStatus.IN_PROGRESS),
-                ),
-            )
-            files_reset = cursor.rowcount
-
-            return records_reset + files_reset
+                cursor = self.conn.execute(
+                    """
+                    UPDATE file_uploads
+                    SET status = ?, retry_count = 0, error_message = NULL
+                    WHERE status IN (?, ?)
+                    """,
+                    (
+                        int(SyncStatus.PENDING),
+                        int(SyncStatus.FAILED),
+                        int(SyncStatus.IN_PROGRESS),
+                    ),
+                )
+                files_reset = cursor.rowcount
+                self.conn.commit()
+                return records_reset + files_reset
+            except Exception:
+                self.conn.rollback()
+                raise
 
     def close(self) -> None:
         """Close database connection."""
