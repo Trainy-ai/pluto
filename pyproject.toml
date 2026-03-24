@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "pluto-ml"
-version = "0.0.13"
+version = "0.0.14"
 description = "Pluto ML - Machine Learning Operations Framework"
 packages = [
     {include = "pluto"},
