@@ -384,7 +384,6 @@ class NeptuneRunWrapper:
             # cleanup requirements. The timeout must be less than Neptune's
             # 5-second cleanup timeout (use 3s for safety margin).
             settings = {
-                'x_disable_signal_handlers': not self._neptune_disabled,
                 'sync_process_enabled': True,
                 'sync_process_shutdown_timeout': 3.0,  # Short timeout for compat
             }

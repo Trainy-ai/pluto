@@ -75,8 +75,6 @@ class Settings:
     x_thread_join_timeout_seconds: int = 30
     x_grad_label: str = 'grad'
     x_param_label: str = 'param'
-    x_disable_signal_handlers: bool = False  # For compat layers (Neptune)
-
     pluto_version: Optional[str] = None
     pluto_commit: Optional[str] = None
 

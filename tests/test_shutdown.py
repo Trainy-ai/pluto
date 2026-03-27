@@ -395,288 +395,6 @@ class TestConnectionErrorHandling:
             assert call_kwargs[1]['timeout'] == 5.0
 
 
-class TestSignalHandling:
-    """Test SIGINT/SIGTERM signal handling for graceful shutdown."""
-
-    def setup_method(self):
-        """Reset signal handling state before each test."""
-        import pluto.op as op_module
-
-        op_module._signal_count = 0
-        op_module._signal_handler_registered = False
-        op_module._original_sigint_handler = None
-        op_module._original_sigterm_handler = None
-
-    def teardown_method(self):
-        """Clean up signal handling state after each test."""
-        import pluto.op as op_module
-
-        # Reset state
-        op_module._signal_count = 0
-        op_module._signal_handler_registered = False
-
-        # Restore default handlers if we changed them
-        if threading.current_thread() is threading.main_thread():
-            try:
-                signal.signal(signal.SIGINT, signal.default_int_handler)
-                signal.signal(signal.SIGTERM, signal.SIG_DFL)
-            except (ValueError, OSError):
-                pass
-
-    def test_signal_handler_registration_in_main_thread(self):
-        """Test that signal handlers are registered when in main thread."""
-        import pluto.op as op_module
-
-        # Only run in main thread
-        if threading.current_thread() is not threading.main_thread():
-            return
-
-        assert not op_module._signal_handler_registered
-
-        op_module._register_signal_handler()
-
-        assert op_module._signal_handler_registered
-        # Verify both handlers were actually set
-        assert signal.getsignal(signal.SIGINT) == op_module._shutdown_handler
-        assert signal.getsignal(signal.SIGTERM) == op_module._shutdown_handler
-
-    def test_signal_handler_only_registered_once(self):
-        """Test that signal handler registration is idempotent."""
-        import pluto.op as op_module
-
-        if threading.current_thread() is not threading.main_thread():
-            return
-
-        op_module._register_signal_handler()
-        first_handler = signal.getsignal(signal.SIGINT)
-
-        # Register again - should be no-op
-        op_module._register_signal_handler()
-        second_handler = signal.getsignal(signal.SIGINT)
-
-        assert first_handler == second_handler
-        assert op_module._signal_handler_registered
-
-    def test_first_sigint_increments_count(self):
-        """Test that first SIGINT increments count and starts graceful shutdown."""
-        import pluto
-        import pluto.op as op_module
-
-        # Mock pluto.ops to prevent actual shutdown attempts
-        original_ops = pluto.ops
-        pluto.ops = []
-
-        try:
-            with (
-                patch.object(op_module, 'logger') as mock_logger,
-                patch('sys.exit') as mock_exit,
-                patch.object(op_module, '_force_exit_watchdog'),
-            ):
-                # Simulate SIGINT
-                op_module._shutdown_handler(signal.SIGINT, None)
-
-                assert op_module._signal_count == 1
-                mock_logger.warning.assert_called()
-                mock_exit.assert_called_once_with(128 + signal.SIGINT)
-        finally:
-            pluto.ops = original_ops
-
-    def test_first_sigterm_increments_count(self):
-        """Test that first SIGTERM increments count and starts graceful shutdown."""
-        import pluto
-        import pluto.op as op_module
-
-        original_ops = pluto.ops
-        pluto.ops = []
-
-        try:
-            with (
-                patch.object(op_module, 'logger') as mock_logger,
-                patch('sys.exit') as mock_exit,
-                patch.object(op_module, '_force_exit_watchdog'),
-            ):
-                # Simulate SIGTERM (K8s termination)
-                op_module._shutdown_handler(signal.SIGTERM, None)
-
-                assert op_module._signal_count == 1
-                mock_logger.warning.assert_called()
-                # SIGTERM exit code is 128 + 15 = 143
-                mock_exit.assert_called_once_with(128 + signal.SIGTERM)
-        finally:
-            pluto.ops = original_ops
-
-    def test_second_sigint_force_exits(self):
-        """Test that second SIGINT forces immediate exit."""
-        import pluto.op as op_module
-
-        # Set count to 1 to simulate first signal already received
-        op_module._signal_count = 1
-
-        with patch('os._exit') as mock_exit:
-            op_module._shutdown_handler(signal.SIGINT, None)
-
-            assert op_module._signal_count == 2
-            mock_exit.assert_called_once_with(128 + signal.SIGINT)
-
-    def test_second_sigterm_force_exits(self):
-        """Test that second SIGTERM forces immediate exit."""
-        import pluto.op as op_module
-
-        # Set count to 1 to simulate first signal already received
-        op_module._signal_count = 1
-
-        with patch('os._exit') as mock_exit:
-            op_module._shutdown_handler(signal.SIGTERM, None)
-
-            assert op_module._signal_count == 2
-            mock_exit.assert_called_once_with(128 + signal.SIGTERM)
-
-    def test_sigint_handler_calls_finish_on_active_ops(self):
-        """Test that SIGINT handler calls finish() on all active ops."""
-        import pluto
-        import pluto.op as op_module
-
-        # Create mock ops
-        mock_op1 = MagicMock()
-        mock_op2 = MagicMock()
-        original_ops = pluto.ops
-        pluto.ops = [mock_op1, mock_op2]
-
-        try:
-            with (
-                patch('sys.exit'),
-                patch.object(op_module, '_force_exit_watchdog'),
-            ):
-                op_module._shutdown_handler(signal.SIGINT, None)
-
-                # Both ops should have finish called
-                mock_op1.finish.assert_called_once_with(code=signal.SIGINT)
-                mock_op2.finish.assert_called_once_with(code=signal.SIGINT)
-        finally:
-            pluto.ops = original_ops
-
-    def test_sigterm_handler_calls_finish_on_active_ops(self):
-        """Test that SIGTERM handler calls finish() on all active ops."""
-        import pluto
-        import pluto.op as op_module
-
-        mock_op1 = MagicMock()
-        mock_op2 = MagicMock()
-        original_ops = pluto.ops
-        pluto.ops = [mock_op1, mock_op2]
-
-        try:
-            with (
-                patch('sys.exit'),
-                patch.object(op_module, '_force_exit_watchdog'),
-            ):
-                op_module._shutdown_handler(signal.SIGTERM, None)
-
-                # Both ops should have finish called with SIGTERM code
-                mock_op1.finish.assert_called_once_with(code=signal.SIGTERM)
-                mock_op2.finish.assert_called_once_with(code=signal.SIGTERM)
-        finally:
-            pluto.ops = original_ops
-
-    def test_handler_handles_finish_exceptions(self):
-        """Test that handler continues even if finish() raises."""
-        import pluto
-        import pluto.op as op_module
-
-        # Create mock ops - first one raises, second should still be called
-        mock_op1 = MagicMock()
-        mock_op1.finish.side_effect = Exception('Simulated error')
-        mock_op2 = MagicMock()
-
-        original_ops = pluto.ops
-        pluto.ops = [mock_op1, mock_op2]
-
-        try:
-            with (
-                patch('sys.exit'),
-                patch.object(op_module, '_force_exit_watchdog'),
-            ):
-                # Should not raise despite first op failing
-                op_module._shutdown_handler(signal.SIGINT, None)
-
-                # Second op should still have finish called
-                mock_op2.finish.assert_called_once_with(code=signal.SIGINT)
-        finally:
-            pluto.ops = original_ops
-
-    def test_signal_count_thread_safety(self):
-        """Test that _signal_count is thread-safe."""
-        import pluto
-        import pluto.op as op_module
-
-        original_ops = pluto.ops
-        pluto.ops = []
-
-        try:
-            results = []
-
-            def call_handler():
-                op_module._shutdown_handler(signal.SIGINT, None)
-                with op_module._signal_lock:
-                    results.append(op_module._signal_count)
-
-            # Patch sys.exit, os._exit, and watchdog for all threads
-            with (
-                patch('sys.exit'),
-                patch('os._exit'),
-                patch('pluto.op._force_exit_watchdog'),
-            ):
-                threads = [threading.Thread(target=call_handler) for _ in range(5)]
-                for t in threads:
-                    t.start()
-                for t in threads:
-                    t.join()
-
-            # Count should be exactly 5 after 5 calls
-            assert op_module._signal_count == 5
-        finally:
-            pluto.ops = original_ops
-
-    def test_register_skipped_in_non_main_thread(self):
-        """Test that signal handler registration is skipped in non-main thread."""
-        import pluto.op as op_module
-
-        result = {'registered': None}
-
-        def register_in_thread():
-            op_module._register_signal_handler()
-            result['registered'] = op_module._signal_handler_registered
-
-        thread = threading.Thread(target=register_in_thread)
-        thread.start()
-        thread.join()
-
-        # Should not have registered since we're not in main thread
-        assert result['registered'] is False
-
-    def test_unregister_restores_original_handlers(self):
-        """Test that _unregister_signal_handler restores original handlers."""
-        import pluto.op as op_module
-
-        if threading.current_thread() is not threading.main_thread():
-            return
-
-        # Store original handlers
-        original_sigint = signal.getsignal(signal.SIGINT)
-        original_sigterm = signal.getsignal(signal.SIGTERM)
-
-        # Register our handlers
-        op_module._register_signal_handler()
-        assert op_module._signal_handler_registered
-        assert signal.getsignal(signal.SIGINT) == op_module._shutdown_handler
-
-        # Unregister - should restore originals
-        op_module._unregister_signal_handler()
-        assert not op_module._signal_handler_registered
-        assert signal.getsignal(signal.SIGINT) == original_sigint
-        assert signal.getsignal(signal.SIGTERM) == original_sigterm
-
-
 class TestFinishIdempotency:
     """Test that Op.finish() is idempotent."""
 
@@ -713,9 +431,9 @@ class TestFinishIdempotency:
         finish_count = {'count': 0}
         original_monitor_stop = op._monitor.stop
 
-        def counting_stop(code=None, join_timeout=None):
+        def counting_stop(code=None):
             finish_count['count'] += 1
-            return original_monitor_stop(code, join_timeout=join_timeout)
+            return original_monitor_stop(code)
 
         op._monitor.stop = counting_stop
 
@@ -730,7 +448,7 @@ class TestFinishIdempotency:
         assert finish_count['count'] == 1
 
 
-# Helper script used by integration tests below.  Spawned as a subprocess
+# Helper scripts used by integration tests below.  Spawned as subprocesses
 # so we can send real signals and assert the process exits in time.
 _TRAINING_SCRIPT = textwrap.dedent("""\
     import sys
@@ -738,48 +456,20 @@ _TRAINING_SCRIPT = textwrap.dedent("""\
 
     import pluto
 
-    # Init in noop mode so we don't need a server
     run = pluto.init(project="signal-test", settings={"mode": "noop"})
 
-    # Write a sentinel so the parent knows we're ready
     sys.stdout.write("READY\\n")
     sys.stdout.flush()
 
-    # Simulate a long-running training loop
     while True:
         time.sleep(0.1)
 """)
 
 
-_TRAINING_SCRIPT_WITH_BROAD_EXCEPT = textwrap.dedent("""\
-    import sys
-    import time
-
-    import pluto
-
-    run = pluto.init(project="signal-test", settings={"mode": "noop"})
-
-    sys.stdout.write("READY\\n")
-    sys.stdout.flush()
-
-    # Simulate a training framework that catches BaseException
-    # (e.g. PyTorch DataLoader, some training loops).
-    # Before the fix, sys.exit() raised SystemExit which would be caught
-    # here, and the process would continue running.
-    while True:
-        try:
-            time.sleep(0.1)
-        except BaseException:
-            # Swallow everything - this is what some frameworks do
-            pass
-""")
-
-
-# This script reproduces the exact failure from production: a PyTorch
-# DataLoader worker hits "RuntimeError: unable to allocate shared memory"
-# due to /dev/shm exhaustion, and we verify the process terminates
-# promptly when SIGTERM arrives (instead of hanging indefinitely with
-# the trigger/heartbeat loop still running).
+# Reproduces the exact production failure: a PyTorch DataLoader worker
+# hits "RuntimeError: unable to allocate shared memory" due to /dev/shm
+# exhaustion, and we verify the process terminates promptly when SIGTERM
+# arrives (instead of hanging with the heartbeat loop still running).
 _TORCH_SHM_SCRIPT = textwrap.dedent("""\
     import os
     import shutil
@@ -812,8 +502,7 @@ _TORCH_SHM_SCRIPT = textwrap.dedent("""\
         # This will raise RuntimeError from the DataLoader worker
         batch = next(iter(loader))
     except RuntimeError as e:
-        # The error happened — now sit in a "stuck" training loop.
-        # Without the signal-handling fix, SIGTERM would not kill this.
+        # The error happened - now sit in a "stuck" training loop.
         sys.stdout.write("ERROR_HIT\\n")
         sys.stdout.flush()
         while True:
@@ -833,10 +522,15 @@ except ImportError:
 
 
 class TestSignalTerminationIntegration:
-    """Integration tests: send real signals to a subprocess, assert it exits."""
+    """Integration tests: send real signals to a subprocess, assert it exits.
 
-    # Maximum seconds we allow the child to take after SIGTERM.
-    # The fix targets <5 s; 10 s gives comfortable headroom in CI.
+    Pluto does NOT register signal handlers — it relies on default signal
+    behavior (immediate process termination) plus atexit-registered finish().
+    This matches how wandb and Neptune Scale handle signals.  These tests
+    verify the process actually dies when signalled, and that daemon threads
+    (heartbeat, monitor) don't prevent termination.
+    """
+
     _DEADLINE = 10
 
     def _spawn(self, script: str) -> subprocess.Popen:
@@ -875,8 +569,8 @@ class TestSignalTerminationIntegration:
             time.sleep(0.05)
         return False
 
-    def test_sigterm_exits_promptly(self):
-        """Process must exit within deadline after SIGTERM."""
+    def test_sigterm_kills_process(self):
+        """SIGTERM must kill the process promptly via default handler."""
         proc = self._spawn(_TRAINING_SCRIPT)
         try:
             self._wait_ready(proc)
@@ -887,13 +581,15 @@ class TestSignalTerminationIntegration:
             assert elapsed < self._DEADLINE, (
                 f'Process took {elapsed:.1f}s to exit after SIGTERM'
             )
+            # Default SIGTERM kills with negative signal code
+            assert proc.returncode == -signal.SIGTERM
         finally:
             if proc.poll() is None:
                 proc.kill()
                 proc.wait()
 
-    def test_sigint_exits_promptly(self):
-        """Process must exit within deadline after SIGINT."""
+    def test_sigint_kills_process(self):
+        """SIGINT must kill the process promptly."""
         proc = self._spawn(_TRAINING_SCRIPT)
         try:
             self._wait_ready(proc)
@@ -909,55 +605,27 @@ class TestSignalTerminationIntegration:
                 proc.kill()
                 proc.wait()
 
-    def test_sigterm_exits_despite_broad_except(self):
-        """Process must exit even when user code catches BaseException.
-
-        Before the fix, _shutdown_handler used sys.exit() which raises
-        SystemExit.  A try/except BaseException would catch it and the
-        process would keep running, wasting GPU time.  The watchdog
-        timer guarantees termination via os._exit().
-        """
-        proc = self._spawn(_TRAINING_SCRIPT_WITH_BROAD_EXCEPT)
-        try:
-            self._wait_ready(proc)
-            proc.send_signal(signal.SIGTERM)
-            start = time.monotonic()
-            proc.wait(timeout=self._DEADLINE)
-            elapsed = time.monotonic() - start
-            assert elapsed < self._DEADLINE, (
-                f'Process took {elapsed:.1f}s to exit after SIGTERM '
-                f'(broad except handler may have swallowed SystemExit)'
-            )
-        finally:
-            if proc.poll() is None:
-                proc.kill()
-                proc.wait()
-
     @pytest.mark.skipif(not HAS_TORCH, reason='torch not installed')
     def test_sigterm_after_shm_oom_exits_promptly(self):
         """Reproduce the production failure: DataLoader hits shared memory
         OOM, process stays alive, then SIGTERM must still kill it.
 
-        This fills /dev/shm to trigger the real
+        Fills /dev/shm to trigger the real
         ``RuntimeError: unable to allocate shared memory`` from PyTorch,
-        then sends SIGTERM and asserts the process exits within deadline.
+        then sends SIGTERM and asserts the process exits promptly.
         """
         fill_path = '/dev/shm/_pluto_test_fill'
         proc = self._spawn(_TORCH_SHM_SCRIPT)
         try:
-            # Wait for the script to signal it's initialized pluto and
-            # is about to hit the DataLoader error
             self._wait_ready(proc)
 
-            # Wait for the RuntimeError to actually happen
             got_error = self._wait_for_line(proc, 'ERROR_HIT')
             assert got_error, (
                 'DataLoader did not hit shared memory error — '
                 'test environment may have too much /dev/shm'
             )
 
-            # Now the process is "stuck" in the recovery loop.
-            # Send SIGTERM and verify it dies promptly.
+            # Process is "stuck" in recovery loop. SIGTERM must kill it.
             proc.send_signal(signal.SIGTERM)
             start = time.monotonic()
             proc.wait(timeout=self._DEADLINE)
@@ -966,6 +634,7 @@ class TestSignalTerminationIntegration:
                 f'Process took {elapsed:.1f}s to exit after SIGTERM '
                 f'following shm OOM (would waste GPU time in production)'
             )
+            assert proc.returncode == -signal.SIGTERM
         finally:
             if proc.poll() is None:
                 proc.kill()

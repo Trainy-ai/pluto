@@ -61,138 +61,9 @@ def _is_distributed_environment() -> bool:
     return False
 
 
-# Signal handling state for graceful shutdown (Ctrl+C / SIGTERM)
-_signal_count = 0
-_signal_lock = threading.Lock()
-_original_sigint_handler = None
-_original_sigterm_handler = None
-_signal_handler_registered = False
-
 # Exception hook state for detecting unhandled exceptions (FAILED status)
 _original_excepthook = None
 _excepthook_registered = False
-
-# Map signal numbers to names for logging
-_SIGNAL_NAMES = {
-    signal.SIGINT: 'SIGINT',
-    signal.SIGTERM: 'SIGTERM',
-}
-
-
-def _force_exit_watchdog(exit_code: int, timeout: float = 5.0):
-    """Schedule a hard os._exit() as a safety net.
-
-    If sys.exit() is swallowed (e.g. by ``except BaseException`` in user
-    code), this daemon thread will force-terminate the process after
-    *timeout* seconds.  Under normal circumstances the interpreter exits
-    before the timer fires and the daemon thread is silently reaped.
-    """
-    def _watchdog():
-        time.sleep(timeout)
-        # If we're still alive, force exit
-        print(
-            f'\n{tag}: Process did not exit within {timeout}s '
-            f'after signal, forcing termination',
-            file=sys.stderr,
-        )
-        os._exit(exit_code)
-
-    t = threading.Thread(target=_watchdog, daemon=True)
-    t.start()
-
-
-def _shutdown_handler(signum, frame):
-    """
-    Handle SIGINT (Ctrl+C) and SIGTERM (K8s termination) with two-stage shutdown:
-    - First signal: Graceful shutdown - finish all active runs, then sys.exit().
-      A watchdog timer guarantees termination if sys.exit() is caught.
-    - Second signal: Force exit immediately
-    """
-    global _signal_count
-
-    with _signal_lock:
-        _signal_count += 1
-        count = _signal_count
-
-    sig_name = _SIGNAL_NAMES.get(signum, f'signal {signum}')
-    exit_code = 128 + signum
-
-    if count == 1:
-        msg = f'{tag}: Received {sig_name}, shutting down gracefully...'
-        if signum == signal.SIGINT:
-            msg += ' (press Ctrl+C again to force exit)'
-        logger.warning(msg)
-        # Print to stderr as well in case logging is not visible
-        print(f'\n{msg}', file=sys.stderr)
-
-        # Start a watchdog timer: if sys.exit() is swallowed by user code
-        # (try/except BaseException), force-kill after 5 seconds.
-        _force_exit_watchdog(exit_code)
-
-        # Finish all active ops
-        if pluto.ops:
-            # Copy list to avoid modification during iteration
-            for op in list(pluto.ops):
-                try:
-                    op.finish(code=signum)
-                except Exception as e:
-                    logger.debug(
-                        f'{tag}: Error during graceful shutdown: {e}'
-                    )
-        # Raise SystemExit so atexit handlers and finally blocks run.
-        # If something catches this, the watchdog will force-kill.
-        sys.exit(exit_code)
-    else:
-        # Second signal - force exit immediately
-        print(f'\n{tag}: Force exiting...', file=sys.stderr)
-        os._exit(exit_code)
-
-
-def _register_signal_handler():
-    """Register SIGINT and SIGTERM handlers if in main thread."""
-    global _signal_handler_registered
-    global _original_sigint_handler, _original_sigterm_handler
-
-    if _signal_handler_registered:
-        return
-
-    # Signal handlers can only be registered from the main thread
-    if threading.current_thread() is not threading.main_thread():
-        logger.debug(f'{tag}: Skipping signal handler registration (not main thread)')
-        return
-
-    try:
-        _original_sigint_handler = signal.signal(signal.SIGINT, _shutdown_handler)
-        _original_sigterm_handler = signal.signal(signal.SIGTERM, _shutdown_handler)
-        _signal_handler_registered = True
-        logger.debug(f'{tag}: Registered SIGINT/SIGTERM handlers for graceful shutdown')
-    except (ValueError, OSError) as e:
-        # ValueError: signal only works in main thread
-        # OSError: can happen in some embedded environments
-        logger.debug(f'{tag}: Could not register signal handler: {e}')
-
-
-def _unregister_signal_handler():
-    """Restore original signal handlers when no more Ops are active."""
-    global _signal_handler_registered
-    global _original_sigint_handler, _original_sigterm_handler
-
-    if not _signal_handler_registered:
-        return
-
-    # Signal handlers can only be modified from the main thread
-    if threading.current_thread() is not threading.main_thread():
-        return
-
-    try:
-        if _original_sigint_handler is not None:
-            signal.signal(signal.SIGINT, _original_sigint_handler)
-        if _original_sigterm_handler is not None:
-            signal.signal(signal.SIGTERM, _original_sigterm_handler)
-        _signal_handler_registered = False
-        logger.debug(f'{tag}: Restored original SIGINT/SIGTERM handlers')
-    except (ValueError, OSError) as e:
-        logger.debug(f'{tag}: Could not restore signal handler: {e}')
 
 
 def _excepthook(exc_type, exc_value, exc_traceback):
@@ -273,17 +144,9 @@ class OpMonitor:
             )
             self._thread_monitor.start()
 
-    def stop(
-        self,
-        code: Union[int, None] = None,
-        join_timeout: Optional[float] = None,
-    ) -> None:
+    def stop(self, code: Union[int, None] = None) -> None:
         self._stop_event.set()
-        timeout = (
-            join_timeout
-            if join_timeout is not None
-            else self.op.settings.x_thread_join_timeout_seconds
-        )
+        timeout = self.op.settings.x_thread_join_timeout_seconds
         for attr in ['_thread', '_thread_monitor']:
             thread = getattr(self, attr)
             if thread is not None:
@@ -527,11 +390,6 @@ class Op:
         # Print URL where users can view the run
         logger.info(f'{tag}: View run at {print_url(self.settings.url_view)}')
 
-        # Register signal handler for graceful Ctrl+C shutdown
-        # (unless disabled, e.g., when running under a compat layer like Neptune)
-        if not self.settings.x_disable_signal_handlers:
-            _register_signal_handler()
-
         # Register excepthook to detect unhandled exceptions and mark runs as FAILED
         _register_excepthook()
 
@@ -699,39 +557,23 @@ class Op:
     def finish(self, code: Union[int, None] = None) -> None:
         """Finish logging"""
         # Make finish() idempotent - can be called multiple times safely
-        # (e.g., from signal handler and atexit)
+        # (e.g., from atexit and explicit finish() call)
         with self._finish_lock:
             if self._finished:
                 return
             self._finished = True
 
-        # Detect if we're being preempted (SIGTERM) vs normal exit
-        # During preemption, don't block - let sync process handle it
-        is_preemption = code == signal.SIGTERM
-
         # In DDP/distributed, don't block waiting for sync - it causes deadlocks
         # because all ranks must progress together for collective operations
         is_distributed = _is_distributed_environment()
 
-        # Use short join timeout when shutting down due to a signal to avoid
-        # blocking the signal handler (and the process) for 30s per thread.
-        is_signal_shutdown = is_preemption or code == signal.SIGINT
-
         try:
             # Stop the monitor (system metrics and heartbeats)
-            self._monitor.stop(code, join_timeout=3.0 if is_signal_shutdown else None)
+            self._monitor.stop(code)
 
             # Handle sync process shutdown
             if self._sync_manager is not None:
-                if is_preemption:
-                    # Preemption mode: signal shutdown but don't wait
-                    # This prevents blocking during pod termination
-                    logger.debug(
-                        f'{tag}: preemption detected (SIGTERM), '
-                        f'signaling sync shutdown without waiting'
-                    )
-                    self._sync_manager.stop(wait=False)
-                elif is_distributed:
+                if is_distributed:
                     # DDP mode: signal shutdown but don't wait
                     # This prevents deadlocks in collective operations
                     logger.debug(
@@ -799,9 +641,7 @@ class Op:
             pluto.ops = [
                 op for op in pluto.ops if op.settings._op_id != self.settings._op_id
             ]  # TODO: make more efficient
-            # Restore original signal handlers when last op finishes
             if not pluto.ops:
-                _unregister_signal_handler()
                 _unregister_excepthook()
 
     def watch(self, module, **kwargs):
