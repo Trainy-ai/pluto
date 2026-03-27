@@ -514,6 +514,78 @@ _TORCH_SHM_SCRIPT = textwrap.dedent("""\
 """)
 
 
+# Torchrun variant: rank 1 crashes from /dev/shm OOM, torchrun sends SIGTERM
+# to rank 0.  Rank 0 wraps its training loop in ``except BaseException``
+# (common in ML frameworks like PyTorch Lightning, HuggingFace Trainer, etc.).
+# With no custom signal handler (the fix), OS-level SIGTERM kills rank 0
+# immediately.  With the OLD handler (sys.exit → SystemExit), the except block
+# would swallow the signal and rank 0 would hang, causing the entire torchrun
+# job to stall until the elastic agent's grace-period SIGKILL (~30 s).
+_TORCHRUN_SHM_SCRIPT = textwrap.dedent("""\
+    import os
+    import shutil
+    import subprocess
+    import sys
+    import time
+
+    import torch
+    import torch.distributed as dist
+    from torch.utils.data import DataLoader, TensorDataset
+
+    import pluto
+
+    rank = int(os.environ.get("LOCAL_RANK", 0))
+
+    dist.init_process_group("gloo")
+    run = pluto.init(project="signal-test", settings={"mode": "noop"})
+
+    fill_path = "/dev/shm/_pluto_test_fill_torchrun"
+
+    if rank == 0:
+        # Simulate typical ML-framework training loop: broad exception handler
+        # that would catch SystemExit if a custom signal handler raised it.
+        sys.stderr.write("RANK0_TRAINING\\n")
+        sys.stderr.flush()
+        try:
+            while True:
+                time.sleep(0.1)
+        except BaseException:
+            # If we get here, a signal was converted to a Python exception
+            # (the old bug).  Fall through to a stuck state.
+            sys.stderr.write("RANK0_SIGNAL_SWALLOWED\\n")
+            sys.stderr.flush()
+        # If signal was swallowed, sit here forever — reproducing the hang.
+        while True:
+            time.sleep(0.1)
+    else:
+        # Rank 1: fill /dev/shm and trigger the real DataLoader OOM.
+        try:
+            total, used, free = shutil.disk_usage("/dev/shm")
+            fill_size = free - (2 * 1024 * 1024)  # leave 2 MB
+            subprocess.run(
+                ["fallocate", "-l", str(fill_size), fill_path], check=True,
+            )
+
+            data = torch.randn(10000, 1000)   # ~40 MB float32
+            labels = torch.randint(0, 2, (10000,))
+            dataset = TensorDataset(data, labels)
+            loader = DataLoader(dataset, batch_size=5000, num_workers=2)
+
+            sys.stderr.write("RANK1_LOADING\\n")
+            sys.stderr.flush()
+            batch = next(iter(loader))   # should raise RuntimeError
+        except RuntimeError:
+            sys.stderr.write("RANK1_SHM_OOM\\n")
+            sys.stderr.flush()
+        finally:
+            if os.path.exists(fill_path):
+                os.remove(fill_path)
+
+        # Crash this rank — torchrun will SIGTERM rank 0.
+        sys.exit(1)
+""")
+
+
 try:
     import torch  # noqa: F401
 
@@ -643,5 +715,57 @@ class TestSignalTerminationIntegration:
                 proc.kill()
                 proc.wait()
             # Safety cleanup in case child didn't remove the fill file
+            if os.path.exists(fill_path):
+                os.remove(fill_path)
+
+    @pytest.mark.skipif(not HAS_TORCH, reason='torch not installed')
+    def test_torchrun_exits_after_rank_shm_oom(self, tmp_path):
+        """Under torchrun: rank 1 crashes from /dev/shm OOM, torchrun sends
+        SIGTERM to rank 0.  Rank 0 wraps its loop in ``except BaseException``
+        (as ML frameworks do).  With no custom signal handler, rank 0 dies
+        from OS-level SIGTERM and torchrun exits promptly.
+
+        With the old handler (sys.exit → SystemExit), the except block would
+        swallow the signal and rank 0 would hang until torchrun's grace-period
+        SIGKILL (~30 s), pushing total runtime well past the deadline.
+        """
+        script_path = tmp_path / 'torchrun_shm_test.py'
+        script_path.write_text(_TORCHRUN_SHM_SCRIPT)
+
+        fill_path = '/dev/shm/_pluto_test_fill_torchrun'
+        torchrun_deadline = 30  # generous; normal case finishes in ~10-20 s
+
+        proc = subprocess.Popen(
+            [
+                sys.executable,
+                '-m',
+                'torch.distributed.run',
+                '--standalone',
+                '--nproc-per-node=2',
+                '--max-restarts=0',
+                str(script_path),
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        try:
+            start = time.monotonic()
+            proc.wait(timeout=60)
+            elapsed = time.monotonic() - start
+            assert elapsed < torchrun_deadline, (
+                f'torchrun took {elapsed:.1f}s to exit — rank 0 likely '
+                f'hung after SIGTERM (old signal handler bug)'
+            )
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait()
+            pytest.fail(
+                'torchrun did not exit within 60s — rank 0 is stuck '
+                '(old signal handler bug)'
+            )
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait()
             if os.path.exists(fill_path):
                 os.remove(fill_path)
