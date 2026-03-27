@@ -79,10 +79,33 @@ _SIGNAL_NAMES = {
 }
 
 
+def _force_exit_watchdog(exit_code: int, timeout: float = 5.0):
+    """Schedule a hard os._exit() as a safety net.
+
+    If sys.exit() is swallowed (e.g. by ``except BaseException`` in user
+    code), this daemon thread will force-terminate the process after
+    *timeout* seconds.  Under normal circumstances the interpreter exits
+    before the timer fires and the daemon thread is silently reaped.
+    """
+    def _watchdog():
+        time.sleep(timeout)
+        # If we're still alive, force exit
+        print(
+            f'\n{tag}: Process did not exit within {timeout}s '
+            f'after signal, forcing termination',
+            file=sys.stderr,
+        )
+        os._exit(exit_code)
+
+    t = threading.Thread(target=_watchdog, daemon=True)
+    t.start()
+
+
 def _shutdown_handler(signum, frame):
     """
     Handle SIGINT (Ctrl+C) and SIGTERM (K8s termination) with two-stage shutdown:
-    - First signal: Graceful shutdown - finish all active runs, then force exit
+    - First signal: Graceful shutdown - finish all active runs, then sys.exit().
+      A watchdog timer guarantees termination if sys.exit() is caught.
     - Second signal: Force exit immediately
     """
     global _signal_count
@@ -92,6 +115,7 @@ def _shutdown_handler(signum, frame):
         count = _signal_count
 
     sig_name = _SIGNAL_NAMES.get(signum, f'signal {signum}')
+    exit_code = 128 + signum
 
     if count == 1:
         msg = f'{tag}: Received {sig_name}, shutting down gracefully...'
@@ -100,6 +124,11 @@ def _shutdown_handler(signum, frame):
         logger.warning(msg)
         # Print to stderr as well in case logging is not visible
         print(f'\n{msg}', file=sys.stderr)
+
+        # Start a watchdog timer: if sys.exit() is swallowed by user code
+        # (try/except BaseException), force-kill after 5 seconds.
+        _force_exit_watchdog(exit_code)
+
         # Finish all active ops
         if pluto.ops:
             # Copy list to avoid modification during iteration
@@ -107,17 +136,16 @@ def _shutdown_handler(signum, frame):
                 try:
                     op.finish(code=signum)
                 except Exception as e:
-                    logger.debug(f'{tag}: Error during graceful shutdown: {e}')
-        # Use os._exit() to guarantee process termination.
-        # sys.exit() raises SystemExit which can be caught by training
-        # frameworks (try/except BaseException), leaving the process alive
-        # and wasting GPU resources.  We've already flushed all runs above,
-        # so atexit-registered finish() calls would be no-ops anyway.
-        os._exit(128 + signum)
+                    logger.debug(
+                        f'{tag}: Error during graceful shutdown: {e}'
+                    )
+        # Raise SystemExit so atexit handlers and finally blocks run.
+        # If something catches this, the watchdog will force-kill.
+        sys.exit(exit_code)
     else:
         # Second signal - force exit immediately
         print(f'\n{tag}: Force exiting...', file=sys.stderr)
-        os._exit(128 + signum)
+        os._exit(exit_code)
 
 
 def _register_signal_handler():

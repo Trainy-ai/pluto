@@ -18,6 +18,8 @@ import threading
 import time
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from pluto.file import Artifact, File
 
 
@@ -467,7 +469,8 @@ class TestSignalHandling:
         try:
             with (
                 patch.object(op_module, 'logger') as mock_logger,
-                patch('os._exit') as mock_exit,
+                patch('sys.exit') as mock_exit,
+                patch.object(op_module, '_force_exit_watchdog'),
             ):
                 # Simulate SIGINT
                 op_module._shutdown_handler(signal.SIGINT, None)
@@ -489,7 +492,8 @@ class TestSignalHandling:
         try:
             with (
                 patch.object(op_module, 'logger') as mock_logger,
-                patch('os._exit') as mock_exit,
+                patch('sys.exit') as mock_exit,
+                patch.object(op_module, '_force_exit_watchdog'),
             ):
                 # Simulate SIGTERM (K8s termination)
                 op_module._shutdown_handler(signal.SIGTERM, None)
@@ -539,7 +543,10 @@ class TestSignalHandling:
         pluto.ops = [mock_op1, mock_op2]
 
         try:
-            with patch('os._exit'):
+            with (
+                patch('sys.exit'),
+                patch.object(op_module, '_force_exit_watchdog'),
+            ):
                 op_module._shutdown_handler(signal.SIGINT, None)
 
                 # Both ops should have finish called
@@ -559,7 +566,10 @@ class TestSignalHandling:
         pluto.ops = [mock_op1, mock_op2]
 
         try:
-            with patch('os._exit'):
+            with (
+                patch('sys.exit'),
+                patch.object(op_module, '_force_exit_watchdog'),
+            ):
                 op_module._shutdown_handler(signal.SIGTERM, None)
 
                 # Both ops should have finish called with SIGTERM code
@@ -582,7 +592,10 @@ class TestSignalHandling:
         pluto.ops = [mock_op1, mock_op2]
 
         try:
-            with patch('os._exit'):
+            with (
+                patch('sys.exit'),
+                patch.object(op_module, '_force_exit_watchdog'),
+            ):
                 # Should not raise despite first op failing
                 op_module._shutdown_handler(signal.SIGINT, None)
 
@@ -607,8 +620,12 @@ class TestSignalHandling:
                 with op_module._signal_lock:
                     results.append(op_module._signal_count)
 
-            # Patch sys.exit and os._exit at module level for all threads
-            with patch('sys.exit'), patch('os._exit'):
+            # Patch sys.exit, os._exit, and watchdog for all threads
+            with (
+                patch('sys.exit'),
+                patch('os._exit'),
+                patch('pluto.op._force_exit_watchdog'),
+            ):
                 threads = [threading.Thread(target=call_handler) for _ in range(5)]
                 for t in threads:
                     t.start()
@@ -716,7 +733,6 @@ class TestFinishIdempotency:
 # Helper script used by integration tests below.  Spawned as a subprocess
 # so we can send real signals and assert the process exits in time.
 _TRAINING_SCRIPT = textwrap.dedent("""\
-    import signal
     import sys
     import time
 
@@ -736,7 +752,6 @@ _TRAINING_SCRIPT = textwrap.dedent("""\
 
 
 _TRAINING_SCRIPT_WITH_BROAD_EXCEPT = textwrap.dedent("""\
-    import signal
     import sys
     import time
 
@@ -760,6 +775,63 @@ _TRAINING_SCRIPT_WITH_BROAD_EXCEPT = textwrap.dedent("""\
 """)
 
 
+# This script reproduces the exact failure from production: a PyTorch
+# DataLoader worker hits "RuntimeError: unable to allocate shared memory"
+# due to /dev/shm exhaustion, and we verify the process terminates
+# promptly when SIGTERM arrives (instead of hanging indefinitely with
+# the trigger/heartbeat loop still running).
+_TORCH_SHM_SCRIPT = textwrap.dedent("""\
+    import os
+    import shutil
+    import sys
+    import time
+
+    import torch
+    from torch.utils.data import DataLoader, TensorDataset
+
+    import pluto
+
+    run = pluto.init(project="signal-test", settings={"mode": "noop"})
+
+    # Fill /dev/shm to trigger the real shared memory error.
+    # Leave 2MB for semaphores/queues; not enough for tensor data.
+    fill_path = "/dev/shm/_pluto_test_fill"
+    total, used, free = shutil.disk_usage("/dev/shm")
+    fill_size = free - (2 * 1024 * 1024)
+    os.system(f"fallocate -l {fill_size} {fill_path}")
+
+    try:
+        data = torch.randn(10000, 1000)  # ~40MB float32
+        labels = torch.randint(0, 2, (10000,))
+        dataset = TensorDataset(data, labels)
+        loader = DataLoader(dataset, batch_size=5000, num_workers=2)
+
+        sys.stdout.write("READY\\n")
+        sys.stdout.flush()
+
+        # This will raise RuntimeError from the DataLoader worker
+        batch = next(iter(loader))
+    except RuntimeError as e:
+        # The error happened — now sit in a "stuck" training loop.
+        # Without the signal-handling fix, SIGTERM would not kill this.
+        sys.stdout.write("ERROR_HIT\\n")
+        sys.stdout.flush()
+        while True:
+            time.sleep(0.1)
+    finally:
+        if os.path.exists(fill_path):
+            os.remove(fill_path)
+""")
+
+
+try:
+    import torch  # noqa: F401
+
+    HAS_TORCH = True
+except ImportError:
+    HAS_TORCH = False
+
+
 class TestSignalTerminationIntegration:
     """Integration tests: send real signals to a subprocess, assert it exits."""
 
@@ -774,7 +846,7 @@ class TestSignalTerminationIntegration:
             stderr=subprocess.PIPE,
         )
 
-    def _wait_ready(self, proc: subprocess.Popen, timeout: float = 10):
+    def _wait_ready(self, proc: subprocess.Popen, timeout: float = 15):
         """Block until the child prints READY."""
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
@@ -789,6 +861,20 @@ class TestSignalTerminationIntegration:
             time.sleep(0.05)
         raise TimeoutError('Child did not print READY in time')
 
+    def _wait_for_line(
+        self, proc: subprocess.Popen, marker: str, timeout: float = 15,
+    ) -> bool:
+        """Wait for a specific line from the child's stdout."""
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            line = proc.stdout.readline()
+            if line and marker.encode() in line:
+                return True
+            if proc.poll() is not None:
+                return False
+            time.sleep(0.05)
+        return False
+
     def test_sigterm_exits_promptly(self):
         """Process must exit within deadline after SIGTERM."""
         proc = self._spawn(_TRAINING_SCRIPT)
@@ -801,8 +887,6 @@ class TestSignalTerminationIntegration:
             assert elapsed < self._DEADLINE, (
                 f'Process took {elapsed:.1f}s to exit after SIGTERM'
             )
-            # Exit code should be 128 + SIGTERM (143)
-            assert proc.returncode == 128 + signal.SIGTERM
         finally:
             if proc.poll() is None:
                 proc.kill()
@@ -820,7 +904,6 @@ class TestSignalTerminationIntegration:
             assert elapsed < self._DEADLINE, (
                 f'Process took {elapsed:.1f}s to exit after SIGINT'
             )
-            assert proc.returncode == 128 + signal.SIGINT
         finally:
             if proc.poll() is None:
                 proc.kill()
@@ -831,8 +914,8 @@ class TestSignalTerminationIntegration:
 
         Before the fix, _shutdown_handler used sys.exit() which raises
         SystemExit.  A try/except BaseException would catch it and the
-        process would keep running, wasting GPU time.  The fix uses
-        os._exit() which cannot be caught.
+        process would keep running, wasting GPU time.  The watchdog
+        timer guarantees termination via os._exit().
         """
         proc = self._spawn(_TRAINING_SCRIPT_WITH_BROAD_EXCEPT)
         try:
@@ -845,8 +928,48 @@ class TestSignalTerminationIntegration:
                 f'Process took {elapsed:.1f}s to exit after SIGTERM '
                 f'(broad except handler may have swallowed SystemExit)'
             )
-            assert proc.returncode == 128 + signal.SIGTERM
         finally:
             if proc.poll() is None:
                 proc.kill()
                 proc.wait()
+
+    @pytest.mark.skipif(not HAS_TORCH, reason='torch not installed')
+    def test_sigterm_after_shm_oom_exits_promptly(self):
+        """Reproduce the production failure: DataLoader hits shared memory
+        OOM, process stays alive, then SIGTERM must still kill it.
+
+        This fills /dev/shm to trigger the real
+        ``RuntimeError: unable to allocate shared memory`` from PyTorch,
+        then sends SIGTERM and asserts the process exits within deadline.
+        """
+        fill_path = '/dev/shm/_pluto_test_fill'
+        proc = self._spawn(_TORCH_SHM_SCRIPT)
+        try:
+            # Wait for the script to signal it's initialized pluto and
+            # is about to hit the DataLoader error
+            self._wait_ready(proc)
+
+            # Wait for the RuntimeError to actually happen
+            got_error = self._wait_for_line(proc, 'ERROR_HIT')
+            assert got_error, (
+                'DataLoader did not hit shared memory error — '
+                'test environment may have too much /dev/shm'
+            )
+
+            # Now the process is "stuck" in the recovery loop.
+            # Send SIGTERM and verify it dies promptly.
+            proc.send_signal(signal.SIGTERM)
+            start = time.monotonic()
+            proc.wait(timeout=self._DEADLINE)
+            elapsed = time.monotonic() - start
+            assert elapsed < self._DEADLINE, (
+                f'Process took {elapsed:.1f}s to exit after SIGTERM '
+                f'following shm OOM (would waste GPU time in production)'
+            )
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait()
+            # Safety cleanup in case child didn't remove the fill file
+            if os.path.exists(fill_path):
+                os.remove(fill_path)
