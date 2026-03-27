@@ -462,7 +462,7 @@ class TestSignalHandling:
         try:
             with (
                 patch.object(op_module, 'logger') as mock_logger,
-                patch('sys.exit') as mock_exit,
+                patch('os._exit') as mock_exit,
             ):
                 # Simulate SIGINT
                 op_module._shutdown_handler(signal.SIGINT, None)
@@ -484,7 +484,7 @@ class TestSignalHandling:
         try:
             with (
                 patch.object(op_module, 'logger') as mock_logger,
-                patch('sys.exit') as mock_exit,
+                patch('os._exit') as mock_exit,
             ):
                 # Simulate SIGTERM (K8s termination)
                 op_module._shutdown_handler(signal.SIGTERM, None)
@@ -534,7 +534,7 @@ class TestSignalHandling:
         pluto.ops = [mock_op1, mock_op2]
 
         try:
-            with patch('sys.exit'):
+            with patch('os._exit'):
                 op_module._shutdown_handler(signal.SIGINT, None)
 
                 # Both ops should have finish called
@@ -554,7 +554,7 @@ class TestSignalHandling:
         pluto.ops = [mock_op1, mock_op2]
 
         try:
-            with patch('sys.exit'):
+            with patch('os._exit'):
                 op_module._shutdown_handler(signal.SIGTERM, None)
 
                 # Both ops should have finish called with SIGTERM code
@@ -577,7 +577,7 @@ class TestSignalHandling:
         pluto.ops = [mock_op1, mock_op2]
 
         try:
-            with patch('sys.exit'):
+            with patch('os._exit'):
                 # Should not raise despite first op failing
                 op_module._shutdown_handler(signal.SIGINT, None)
 
@@ -691,9 +691,9 @@ class TestFinishIdempotency:
         finish_count = {'count': 0}
         original_monitor_stop = op._monitor.stop
 
-        def counting_stop(code=None):
+        def counting_stop(code=None, join_timeout=None):
             finish_count['count'] += 1
-            return original_monitor_stop(code)
+            return original_monitor_stop(code, join_timeout=join_timeout)
 
         op._monitor.stop = counting_stop
 

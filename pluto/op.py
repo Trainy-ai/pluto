@@ -82,7 +82,7 @@ _SIGNAL_NAMES = {
 def _shutdown_handler(signum, frame):
     """
     Handle SIGINT (Ctrl+C) and SIGTERM (K8s termination) with two-stage shutdown:
-    - First signal: Graceful shutdown - finish all active runs
+    - First signal: Graceful shutdown - finish all active runs, then force exit
     - Second signal: Force exit immediately
     """
     global _signal_count
@@ -108,8 +108,12 @@ def _shutdown_handler(signum, frame):
                     op.finish(code=signum)
                 except Exception as e:
                     logger.debug(f'{tag}: Error during graceful shutdown: {e}')
-        # Exit with appropriate status code
-        sys.exit(128 + signum)
+        # Use os._exit() to guarantee process termination.
+        # sys.exit() raises SystemExit which can be caught by training
+        # frameworks (try/except BaseException), leaving the process alive
+        # and wasting GPU resources.  We've already flushed all runs above,
+        # so atexit-registered finish() calls would be no-ops anyway.
+        os._exit(128 + signum)
     else:
         # Second signal - force exit immediately
         print(f'\n{tag}: Force exiting...', file=sys.stderr)
@@ -241,12 +245,21 @@ class OpMonitor:
             )
             self._thread_monitor.start()
 
-    def stop(self, code: Union[int, None] = None) -> None:
+    def stop(
+        self,
+        code: Union[int, None] = None,
+        join_timeout: Optional[float] = None,
+    ) -> None:
         self._stop_event.set()
+        timeout = (
+            join_timeout
+            if join_timeout is not None
+            else self.op.settings.x_thread_join_timeout_seconds
+        )
         for attr in ['_thread', '_thread_monitor']:
             thread = getattr(self, attr)
             if thread is not None:
-                thread.join(timeout=self.op.settings.x_thread_join_timeout_seconds)
+                thread.join(timeout=timeout)
                 if thread.is_alive():
                     logger.warning(
                         f'{tag}: Thread {thread.name} did not terminate, '
@@ -295,7 +308,9 @@ class OpMonitor:
                 logger.warning('%s: transient database error (will retry): %s', tag, e)
             except Exception as e:
                 logger.critical('%s: failed: %s', tag, e)
-            time.sleep(self.op.settings.x_sys_sampling_interval)
+            # Use event.wait() instead of time.sleep() so the thread wakes
+            # immediately when _stop_event is set during shutdown.
+            self._stop_event.wait(timeout=self.op.settings.x_sys_sampling_interval)
 
 
 class Op:
@@ -670,9 +685,13 @@ class Op:
         # because all ranks must progress together for collective operations
         is_distributed = _is_distributed_environment()
 
+        # Use short join timeout when shutting down due to a signal to avoid
+        # blocking the signal handler (and the process) for 30s per thread.
+        is_signal_shutdown = is_preemption or code == signal.SIGINT
+
         try:
             # Stop the monitor (system metrics and heartbeats)
-            self._monitor.stop(code)
+            self._monitor.stop(code, join_timeout=3.0 if is_signal_shutdown else None)
 
             # Handle sync process shutdown
             if self._sync_manager is not None:
