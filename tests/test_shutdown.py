@@ -6,12 +6,19 @@ These tests verify:
 2. Thread joins have timeouts to prevent hang during shutdown
 3. Connection errors are treated as shutdown signals, not retriable errors
 4. Signal handling for graceful Ctrl+C shutdown
+5. Process terminates promptly on SIGTERM (integration test)
 """
 
 import os
 import signal
+import subprocess
+import sys
+import textwrap
 import threading
+import time
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 from pluto.file import Artifact, File
 
@@ -388,273 +395,6 @@ class TestConnectionErrorHandling:
             assert call_kwargs[1]['timeout'] == 5.0
 
 
-class TestSignalHandling:
-    """Test SIGINT/SIGTERM signal handling for graceful shutdown."""
-
-    def setup_method(self):
-        """Reset signal handling state before each test."""
-        import pluto.op as op_module
-
-        op_module._signal_count = 0
-        op_module._signal_handler_registered = False
-        op_module._original_sigint_handler = None
-        op_module._original_sigterm_handler = None
-
-    def teardown_method(self):
-        """Clean up signal handling state after each test."""
-        import pluto.op as op_module
-
-        # Reset state
-        op_module._signal_count = 0
-        op_module._signal_handler_registered = False
-
-        # Restore default handlers if we changed them
-        if threading.current_thread() is threading.main_thread():
-            try:
-                signal.signal(signal.SIGINT, signal.default_int_handler)
-                signal.signal(signal.SIGTERM, signal.SIG_DFL)
-            except (ValueError, OSError):
-                pass
-
-    def test_signal_handler_registration_in_main_thread(self):
-        """Test that signal handlers are registered when in main thread."""
-        import pluto.op as op_module
-
-        # Only run in main thread
-        if threading.current_thread() is not threading.main_thread():
-            return
-
-        assert not op_module._signal_handler_registered
-
-        op_module._register_signal_handler()
-
-        assert op_module._signal_handler_registered
-        # Verify both handlers were actually set
-        assert signal.getsignal(signal.SIGINT) == op_module._shutdown_handler
-        assert signal.getsignal(signal.SIGTERM) == op_module._shutdown_handler
-
-    def test_signal_handler_only_registered_once(self):
-        """Test that signal handler registration is idempotent."""
-        import pluto.op as op_module
-
-        if threading.current_thread() is not threading.main_thread():
-            return
-
-        op_module._register_signal_handler()
-        first_handler = signal.getsignal(signal.SIGINT)
-
-        # Register again - should be no-op
-        op_module._register_signal_handler()
-        second_handler = signal.getsignal(signal.SIGINT)
-
-        assert first_handler == second_handler
-        assert op_module._signal_handler_registered
-
-    def test_first_sigint_increments_count(self):
-        """Test that first SIGINT increments count and starts graceful shutdown."""
-        import pluto
-        import pluto.op as op_module
-
-        # Mock pluto.ops to prevent actual shutdown attempts
-        original_ops = pluto.ops
-        pluto.ops = []
-
-        try:
-            with (
-                patch.object(op_module, 'logger') as mock_logger,
-                patch('sys.exit') as mock_exit,
-            ):
-                # Simulate SIGINT
-                op_module._shutdown_handler(signal.SIGINT, None)
-
-                assert op_module._signal_count == 1
-                mock_logger.warning.assert_called()
-                mock_exit.assert_called_once_with(128 + signal.SIGINT)
-        finally:
-            pluto.ops = original_ops
-
-    def test_first_sigterm_increments_count(self):
-        """Test that first SIGTERM increments count and starts graceful shutdown."""
-        import pluto
-        import pluto.op as op_module
-
-        original_ops = pluto.ops
-        pluto.ops = []
-
-        try:
-            with (
-                patch.object(op_module, 'logger') as mock_logger,
-                patch('sys.exit') as mock_exit,
-            ):
-                # Simulate SIGTERM (K8s termination)
-                op_module._shutdown_handler(signal.SIGTERM, None)
-
-                assert op_module._signal_count == 1
-                mock_logger.warning.assert_called()
-                # SIGTERM exit code is 128 + 15 = 143
-                mock_exit.assert_called_once_with(128 + signal.SIGTERM)
-        finally:
-            pluto.ops = original_ops
-
-    def test_second_sigint_force_exits(self):
-        """Test that second SIGINT forces immediate exit."""
-        import pluto.op as op_module
-
-        # Set count to 1 to simulate first signal already received
-        op_module._signal_count = 1
-
-        with patch('os._exit') as mock_exit:
-            op_module._shutdown_handler(signal.SIGINT, None)
-
-            assert op_module._signal_count == 2
-            mock_exit.assert_called_once_with(128 + signal.SIGINT)
-
-    def test_second_sigterm_force_exits(self):
-        """Test that second SIGTERM forces immediate exit."""
-        import pluto.op as op_module
-
-        # Set count to 1 to simulate first signal already received
-        op_module._signal_count = 1
-
-        with patch('os._exit') as mock_exit:
-            op_module._shutdown_handler(signal.SIGTERM, None)
-
-            assert op_module._signal_count == 2
-            mock_exit.assert_called_once_with(128 + signal.SIGTERM)
-
-    def test_sigint_handler_calls_finish_on_active_ops(self):
-        """Test that SIGINT handler calls finish() on all active ops."""
-        import pluto
-        import pluto.op as op_module
-
-        # Create mock ops
-        mock_op1 = MagicMock()
-        mock_op2 = MagicMock()
-        original_ops = pluto.ops
-        pluto.ops = [mock_op1, mock_op2]
-
-        try:
-            with patch('sys.exit'):
-                op_module._shutdown_handler(signal.SIGINT, None)
-
-                # Both ops should have finish called
-                mock_op1.finish.assert_called_once_with(code=signal.SIGINT)
-                mock_op2.finish.assert_called_once_with(code=signal.SIGINT)
-        finally:
-            pluto.ops = original_ops
-
-    def test_sigterm_handler_calls_finish_on_active_ops(self):
-        """Test that SIGTERM handler calls finish() on all active ops."""
-        import pluto
-        import pluto.op as op_module
-
-        mock_op1 = MagicMock()
-        mock_op2 = MagicMock()
-        original_ops = pluto.ops
-        pluto.ops = [mock_op1, mock_op2]
-
-        try:
-            with patch('sys.exit'):
-                op_module._shutdown_handler(signal.SIGTERM, None)
-
-                # Both ops should have finish called with SIGTERM code
-                mock_op1.finish.assert_called_once_with(code=signal.SIGTERM)
-                mock_op2.finish.assert_called_once_with(code=signal.SIGTERM)
-        finally:
-            pluto.ops = original_ops
-
-    def test_handler_handles_finish_exceptions(self):
-        """Test that handler continues even if finish() raises."""
-        import pluto
-        import pluto.op as op_module
-
-        # Create mock ops - first one raises, second should still be called
-        mock_op1 = MagicMock()
-        mock_op1.finish.side_effect = Exception('Simulated error')
-        mock_op2 = MagicMock()
-
-        original_ops = pluto.ops
-        pluto.ops = [mock_op1, mock_op2]
-
-        try:
-            with patch('sys.exit'):
-                # Should not raise despite first op failing
-                op_module._shutdown_handler(signal.SIGINT, None)
-
-                # Second op should still have finish called
-                mock_op2.finish.assert_called_once_with(code=signal.SIGINT)
-        finally:
-            pluto.ops = original_ops
-
-    def test_signal_count_thread_safety(self):
-        """Test that _signal_count is thread-safe."""
-        import pluto
-        import pluto.op as op_module
-
-        original_ops = pluto.ops
-        pluto.ops = []
-
-        try:
-            results = []
-
-            def call_handler():
-                op_module._shutdown_handler(signal.SIGINT, None)
-                with op_module._signal_lock:
-                    results.append(op_module._signal_count)
-
-            # Patch sys.exit and os._exit at module level for all threads
-            with patch('sys.exit'), patch('os._exit'):
-                threads = [threading.Thread(target=call_handler) for _ in range(5)]
-                for t in threads:
-                    t.start()
-                for t in threads:
-                    t.join()
-
-            # Count should be exactly 5 after 5 calls
-            assert op_module._signal_count == 5
-        finally:
-            pluto.ops = original_ops
-
-    def test_register_skipped_in_non_main_thread(self):
-        """Test that signal handler registration is skipped in non-main thread."""
-        import pluto.op as op_module
-
-        result = {'registered': None}
-
-        def register_in_thread():
-            op_module._register_signal_handler()
-            result['registered'] = op_module._signal_handler_registered
-
-        thread = threading.Thread(target=register_in_thread)
-        thread.start()
-        thread.join()
-
-        # Should not have registered since we're not in main thread
-        assert result['registered'] is False
-
-    def test_unregister_restores_original_handlers(self):
-        """Test that _unregister_signal_handler restores original handlers."""
-        import pluto.op as op_module
-
-        if threading.current_thread() is not threading.main_thread():
-            return
-
-        # Store original handlers
-        original_sigint = signal.getsignal(signal.SIGINT)
-        original_sigterm = signal.getsignal(signal.SIGTERM)
-
-        # Register our handlers
-        op_module._register_signal_handler()
-        assert op_module._signal_handler_registered
-        assert signal.getsignal(signal.SIGINT) == op_module._shutdown_handler
-
-        # Unregister - should restore originals
-        op_module._unregister_signal_handler()
-        assert not op_module._signal_handler_registered
-        assert signal.getsignal(signal.SIGINT) == original_sigint
-        assert signal.getsignal(signal.SIGTERM) == original_sigterm
-
-
 class TestFinishIdempotency:
     """Test that Op.finish() is idempotent."""
 
@@ -706,3 +446,326 @@ class TestFinishIdempotency:
 
         # Monitor.stop should only be called once
         assert finish_count['count'] == 1
+
+
+# Helper scripts used by integration tests below.  Spawned as subprocesses
+# so we can send real signals and assert the process exits in time.
+_TRAINING_SCRIPT = textwrap.dedent("""\
+    import sys
+    import time
+
+    import pluto
+
+    run = pluto.init(project="signal-test", settings={"mode": "noop"})
+
+    sys.stdout.write("READY\\n")
+    sys.stdout.flush()
+
+    while True:
+        time.sleep(0.1)
+""")
+
+
+# Reproduces the exact production failure: a PyTorch DataLoader worker
+# hits "RuntimeError: unable to allocate shared memory" due to /dev/shm
+# exhaustion, and we verify the process terminates promptly when SIGTERM
+# arrives (instead of hanging with the heartbeat loop still running).
+_TORCH_SHM_SCRIPT = textwrap.dedent("""\
+    import os
+    import shutil
+    import subprocess
+    import sys
+    import time
+
+    import torch
+    from torch.utils.data import DataLoader, TensorDataset
+
+    import pluto
+
+    run = pluto.init(project="signal-test", settings={"mode": "noop"})
+
+    # Fill /dev/shm to trigger the real shared memory error.
+    # Leave 2MB for semaphores/queues; not enough for tensor data.
+    fill_path = "/dev/shm/_pluto_test_fill"
+    total, used, free = shutil.disk_usage("/dev/shm")
+    fill_size = free - (2 * 1024 * 1024)
+    subprocess.run(["fallocate", "-l", str(fill_size), fill_path], check=True)
+
+    try:
+        data = torch.randn(10000, 1000)  # ~40MB float32
+        labels = torch.randint(0, 2, (10000,))
+        dataset = TensorDataset(data, labels)
+        loader = DataLoader(dataset, batch_size=5000, num_workers=2)
+
+        sys.stdout.write("READY\\n")
+        sys.stdout.flush()
+
+        # This will raise RuntimeError from the DataLoader worker
+        batch = next(iter(loader))
+    except RuntimeError as e:
+        # The error happened - now sit in a "stuck" training loop.
+        sys.stdout.write("ERROR_HIT\\n")
+        sys.stdout.flush()
+        while True:
+            time.sleep(0.1)
+    finally:
+        if os.path.exists(fill_path):
+            os.remove(fill_path)
+""")
+
+
+# Torchrun variant: rank 1 crashes from /dev/shm OOM, torchrun sends SIGTERM
+# to rank 0.  Rank 0 wraps its training loop in ``except BaseException``
+# (common in ML frameworks like PyTorch Lightning, HuggingFace Trainer, etc.).
+# With no custom signal handler (the fix), OS-level SIGTERM kills rank 0
+# immediately.  With the OLD handler (sys.exit → SystemExit), the except block
+# would swallow the signal and rank 0 would hang, causing the entire torchrun
+# job to stall until the elastic agent's grace-period SIGKILL (~30 s).
+_TORCHRUN_SHM_SCRIPT = textwrap.dedent("""\
+    import os
+    import shutil
+    import subprocess
+    import sys
+    import time
+
+    import torch
+    import torch.distributed as dist
+    from torch.utils.data import DataLoader, TensorDataset
+
+    import pluto
+
+    rank = int(os.environ.get("LOCAL_RANK", 0))
+
+    dist.init_process_group("gloo")
+    run = pluto.init(project="signal-test", settings={"mode": "noop"})
+
+    fill_path = "/dev/shm/_pluto_test_fill_torchrun"
+
+    if rank == 0:
+        # Simulate typical ML-framework training loop: broad exception handler
+        # that would catch SystemExit if a custom signal handler raised it.
+        sys.stderr.write("RANK0_TRAINING\\n")
+        sys.stderr.flush()
+        try:
+            while True:
+                time.sleep(0.1)
+        except BaseException:
+            # If we get here, a signal was converted to a Python exception
+            # (the old bug).  Fall through to a stuck state.
+            sys.stderr.write("RANK0_SIGNAL_SWALLOWED\\n")
+            sys.stderr.flush()
+        # If signal was swallowed, sit here forever — reproducing the hang.
+        while True:
+            time.sleep(0.1)
+    else:
+        # Rank 1: fill /dev/shm and trigger the real DataLoader OOM.
+        try:
+            total, used, free = shutil.disk_usage("/dev/shm")
+            fill_size = free - (2 * 1024 * 1024)  # leave 2 MB
+            subprocess.run(
+                ["fallocate", "-l", str(fill_size), fill_path], check=True,
+            )
+
+            data = torch.randn(10000, 1000)   # ~40 MB float32
+            labels = torch.randint(0, 2, (10000,))
+            dataset = TensorDataset(data, labels)
+            loader = DataLoader(dataset, batch_size=5000, num_workers=2)
+
+            sys.stderr.write("RANK1_LOADING\\n")
+            sys.stderr.flush()
+            batch = next(iter(loader))   # should raise RuntimeError
+        except RuntimeError:
+            sys.stderr.write("RANK1_SHM_OOM\\n")
+            sys.stderr.flush()
+        finally:
+            if os.path.exists(fill_path):
+                os.remove(fill_path)
+
+        # Crash this rank — torchrun will SIGTERM rank 0.
+        sys.exit(1)
+""")
+
+
+try:
+    import torch  # noqa: F401
+
+    HAS_TORCH = True
+except ImportError:
+    HAS_TORCH = False
+
+
+class TestSignalTerminationIntegration:
+    """Integration tests: send real signals to a subprocess, assert it exits.
+
+    Pluto does NOT register signal handlers — it relies on default signal
+    behavior (immediate process termination) plus atexit-registered finish().
+    These tests verify the process actually dies when signalled, and that
+    daemon threads (heartbeat, monitor) don't prevent termination.
+    """
+
+    _DEADLINE = 10
+
+    def _spawn(self, script: str) -> subprocess.Popen:
+        return subprocess.Popen(
+            [sys.executable, '-c', script],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+
+    def _wait_ready(self, proc: subprocess.Popen, timeout: float = 15):
+        """Block until the child prints READY."""
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            line = proc.stdout.readline()
+            if line and b'READY' in line:
+                return
+            if proc.poll() is not None:
+                raise RuntimeError(
+                    f'Child exited early (rc={proc.returncode}): '
+                    + (proc.stderr.read() or b'').decode()
+                )
+            time.sleep(0.05)
+        raise TimeoutError('Child did not print READY in time')
+
+    def _wait_for_line(
+        self,
+        proc: subprocess.Popen,
+        marker: str,
+        timeout: float = 15,
+    ) -> bool:
+        """Wait for a specific line from the child's stdout."""
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            line = proc.stdout.readline()
+            if line and marker.encode() in line:
+                return True
+            if proc.poll() is not None:
+                return False
+            time.sleep(0.05)
+        return False
+
+    def test_sigterm_kills_process(self):
+        """SIGTERM must kill the process promptly via default handler."""
+        proc = self._spawn(_TRAINING_SCRIPT)
+        try:
+            self._wait_ready(proc)
+            proc.send_signal(signal.SIGTERM)
+            start = time.monotonic()
+            proc.wait(timeout=self._DEADLINE)
+            elapsed = time.monotonic() - start
+            assert (
+                elapsed < self._DEADLINE
+            ), f'Process took {elapsed:.1f}s to exit after SIGTERM'
+            # Default SIGTERM kills with negative signal code
+            assert proc.returncode == -signal.SIGTERM
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait()
+
+    def test_sigint_kills_process(self):
+        """SIGINT must kill the process promptly."""
+        proc = self._spawn(_TRAINING_SCRIPT)
+        try:
+            self._wait_ready(proc)
+            proc.send_signal(signal.SIGINT)
+            start = time.monotonic()
+            proc.wait(timeout=self._DEADLINE)
+            elapsed = time.monotonic() - start
+            assert (
+                elapsed < self._DEADLINE
+            ), f'Process took {elapsed:.1f}s to exit after SIGINT'
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait()
+
+    @pytest.mark.skipif(not HAS_TORCH, reason='torch not installed')
+    def test_sigterm_after_shm_oom_exits_promptly(self):
+        """Reproduce the production failure: DataLoader hits shared memory
+        OOM, process stays alive, then SIGTERM must still kill it.
+
+        Fills /dev/shm to trigger the real
+        ``RuntimeError: unable to allocate shared memory`` from PyTorch,
+        then sends SIGTERM and asserts the process exits promptly.
+        """
+        fill_path = '/dev/shm/_pluto_test_fill'
+        proc = self._spawn(_TORCH_SHM_SCRIPT)
+        try:
+            self._wait_ready(proc)
+
+            got_error = self._wait_for_line(proc, 'ERROR_HIT')
+            assert got_error, (
+                'DataLoader did not hit shared memory error — '
+                'test environment may have too much /dev/shm'
+            )
+
+            # Process is "stuck" in recovery loop. SIGTERM must kill it.
+            proc.send_signal(signal.SIGTERM)
+            start = time.monotonic()
+            proc.wait(timeout=self._DEADLINE)
+            elapsed = time.monotonic() - start
+            assert elapsed < self._DEADLINE, (
+                f'Process took {elapsed:.1f}s to exit after SIGTERM '
+                f'following shm OOM (would waste GPU time in production)'
+            )
+            assert proc.returncode == -signal.SIGTERM
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait()
+            # Safety cleanup in case child didn't remove the fill file
+            if os.path.exists(fill_path):
+                os.remove(fill_path)
+
+    @pytest.mark.skipif(not HAS_TORCH, reason='torch not installed')
+    def test_torchrun_exits_after_rank_shm_oom(self, tmp_path):
+        """Under torchrun: rank 1 crashes from /dev/shm OOM, torchrun sends
+        SIGTERM to rank 0.  Rank 0 wraps its loop in ``except BaseException``
+        (as ML frameworks do).  With no custom signal handler, rank 0 dies
+        from OS-level SIGTERM and torchrun exits promptly.
+
+        With the old handler (sys.exit → SystemExit), the except block would
+        swallow the signal and rank 0 would hang until torchrun's grace-period
+        SIGKILL (~30 s), pushing total runtime well past the deadline.
+        """
+        script_path = tmp_path / 'torchrun_shm_test.py'
+        script_path.write_text(_TORCHRUN_SHM_SCRIPT)
+
+        fill_path = '/dev/shm/_pluto_test_fill_torchrun'
+        torchrun_deadline = 30  # generous; normal case finishes in ~10-20 s
+
+        proc = subprocess.Popen(
+            [
+                sys.executable,
+                '-m',
+                'torch.distributed.run',
+                '--standalone',
+                '--nproc-per-node=2',
+                '--max-restarts=0',
+                str(script_path),
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        try:
+            start = time.monotonic()
+            proc.wait(timeout=60)
+            elapsed = time.monotonic() - start
+            assert elapsed < torchrun_deadline, (
+                f'torchrun took {elapsed:.1f}s to exit — rank 0 likely '
+                f'hung after SIGTERM (old signal handler bug)'
+            )
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait()
+            pytest.fail(
+                'torchrun did not exit within 60s — rank 0 is stuck '
+                '(old signal handler bug)'
+            )
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait()
+            if os.path.exists(fill_path):
+                os.remove(fill_path)
