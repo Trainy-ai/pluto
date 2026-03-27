@@ -526,9 +526,8 @@ class TestSignalTerminationIntegration:
 
     Pluto does NOT register signal handlers — it relies on default signal
     behavior (immediate process termination) plus atexit-registered finish().
-    This matches how wandb and Neptune Scale handle signals.  These tests
-    verify the process actually dies when signalled, and that daemon threads
-    (heartbeat, monitor) don't prevent termination.
+    These tests verify the process actually dies when signalled, and that
+    daemon threads (heartbeat, monitor) don't prevent termination.
     """
 
     _DEADLINE = 10
