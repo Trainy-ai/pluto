@@ -6,11 +6,16 @@ These tests verify:
 2. Thread joins have timeouts to prevent hang during shutdown
 3. Connection errors are treated as shutdown signals, not retriable errors
 4. Signal handling for graceful Ctrl+C shutdown
+5. Process terminates promptly on SIGTERM (integration test)
 """
 
 import os
 import signal
+import subprocess
+import sys
+import textwrap
 import threading
+import time
 from unittest.mock import MagicMock, patch
 
 from pluto.file import Artifact, File
@@ -706,3 +711,142 @@ class TestFinishIdempotency:
 
         # Monitor.stop should only be called once
         assert finish_count['count'] == 1
+
+
+# Helper script used by integration tests below.  Spawned as a subprocess
+# so we can send real signals and assert the process exits in time.
+_TRAINING_SCRIPT = textwrap.dedent("""\
+    import signal
+    import sys
+    import time
+
+    import pluto
+
+    # Init in noop mode so we don't need a server
+    run = pluto.init(project="signal-test", settings={"mode": "noop"})
+
+    # Write a sentinel so the parent knows we're ready
+    sys.stdout.write("READY\\n")
+    sys.stdout.flush()
+
+    # Simulate a long-running training loop
+    while True:
+        time.sleep(0.1)
+""")
+
+
+_TRAINING_SCRIPT_WITH_BROAD_EXCEPT = textwrap.dedent("""\
+    import signal
+    import sys
+    import time
+
+    import pluto
+
+    run = pluto.init(project="signal-test", settings={"mode": "noop"})
+
+    sys.stdout.write("READY\\n")
+    sys.stdout.flush()
+
+    # Simulate a training framework that catches BaseException
+    # (e.g. PyTorch DataLoader, some training loops).
+    # Before the fix, sys.exit() raised SystemExit which would be caught
+    # here, and the process would continue running.
+    while True:
+        try:
+            time.sleep(0.1)
+        except BaseException:
+            # Swallow everything - this is what some frameworks do
+            pass
+""")
+
+
+class TestSignalTerminationIntegration:
+    """Integration tests: send real signals to a subprocess, assert it exits."""
+
+    # Maximum seconds we allow the child to take after SIGTERM.
+    # The fix targets <5 s; 10 s gives comfortable headroom in CI.
+    _DEADLINE = 10
+
+    def _spawn(self, script: str) -> subprocess.Popen:
+        return subprocess.Popen(
+            [sys.executable, '-c', script],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+
+    def _wait_ready(self, proc: subprocess.Popen, timeout: float = 10):
+        """Block until the child prints READY."""
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            line = proc.stdout.readline()
+            if line and b'READY' in line:
+                return
+            if proc.poll() is not None:
+                raise RuntimeError(
+                    f'Child exited early (rc={proc.returncode}): '
+                    + (proc.stderr.read() or b'').decode()
+                )
+            time.sleep(0.05)
+        raise TimeoutError('Child did not print READY in time')
+
+    def test_sigterm_exits_promptly(self):
+        """Process must exit within deadline after SIGTERM."""
+        proc = self._spawn(_TRAINING_SCRIPT)
+        try:
+            self._wait_ready(proc)
+            proc.send_signal(signal.SIGTERM)
+            start = time.monotonic()
+            proc.wait(timeout=self._DEADLINE)
+            elapsed = time.monotonic() - start
+            assert elapsed < self._DEADLINE, (
+                f'Process took {elapsed:.1f}s to exit after SIGTERM'
+            )
+            # Exit code should be 128 + SIGTERM (143)
+            assert proc.returncode == 128 + signal.SIGTERM
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait()
+
+    def test_sigint_exits_promptly(self):
+        """Process must exit within deadline after SIGINT."""
+        proc = self._spawn(_TRAINING_SCRIPT)
+        try:
+            self._wait_ready(proc)
+            proc.send_signal(signal.SIGINT)
+            start = time.monotonic()
+            proc.wait(timeout=self._DEADLINE)
+            elapsed = time.monotonic() - start
+            assert elapsed < self._DEADLINE, (
+                f'Process took {elapsed:.1f}s to exit after SIGINT'
+            )
+            assert proc.returncode == 128 + signal.SIGINT
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait()
+
+    def test_sigterm_exits_despite_broad_except(self):
+        """Process must exit even when user code catches BaseException.
+
+        Before the fix, _shutdown_handler used sys.exit() which raises
+        SystemExit.  A try/except BaseException would catch it and the
+        process would keep running, wasting GPU time.  The fix uses
+        os._exit() which cannot be caught.
+        """
+        proc = self._spawn(_TRAINING_SCRIPT_WITH_BROAD_EXCEPT)
+        try:
+            self._wait_ready(proc)
+            proc.send_signal(signal.SIGTERM)
+            start = time.monotonic()
+            proc.wait(timeout=self._DEADLINE)
+            elapsed = time.monotonic() - start
+            assert elapsed < self._DEADLINE, (
+                f'Process took {elapsed:.1f}s to exit after SIGTERM '
+                f'(broad except handler may have swallowed SystemExit)'
+            )
+            assert proc.returncode == 128 + signal.SIGTERM
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait()
