@@ -473,6 +473,7 @@ _TRAINING_SCRIPT = textwrap.dedent("""\
 _TORCH_SHM_SCRIPT = textwrap.dedent("""\
     import os
     import shutil
+    import subprocess
     import sys
     import time
 
@@ -488,7 +489,7 @@ _TORCH_SHM_SCRIPT = textwrap.dedent("""\
     fill_path = "/dev/shm/_pluto_test_fill"
     total, used, free = shutil.disk_usage("/dev/shm")
     fill_size = free - (2 * 1024 * 1024)
-    os.system(f"fallocate -l {fill_size} {fill_path}")
+    subprocess.run(["fallocate", "-l", str(fill_size), fill_path], check=True)
 
     try:
         data = torch.randn(10000, 1000)  # ~40MB float32
@@ -555,7 +556,10 @@ class TestSignalTerminationIntegration:
         raise TimeoutError('Child did not print READY in time')
 
     def _wait_for_line(
-        self, proc: subprocess.Popen, marker: str, timeout: float = 15,
+        self,
+        proc: subprocess.Popen,
+        marker: str,
+        timeout: float = 15,
     ) -> bool:
         """Wait for a specific line from the child's stdout."""
         deadline = time.monotonic() + timeout
@@ -577,9 +581,9 @@ class TestSignalTerminationIntegration:
             start = time.monotonic()
             proc.wait(timeout=self._DEADLINE)
             elapsed = time.monotonic() - start
-            assert elapsed < self._DEADLINE, (
-                f'Process took {elapsed:.1f}s to exit after SIGTERM'
-            )
+            assert (
+                elapsed < self._DEADLINE
+            ), f'Process took {elapsed:.1f}s to exit after SIGTERM'
             # Default SIGTERM kills with negative signal code
             assert proc.returncode == -signal.SIGTERM
         finally:
@@ -596,9 +600,9 @@ class TestSignalTerminationIntegration:
             start = time.monotonic()
             proc.wait(timeout=self._DEADLINE)
             elapsed = time.monotonic() - start
-            assert elapsed < self._DEADLINE, (
-                f'Process took {elapsed:.1f}s to exit after SIGINT'
-            )
+            assert (
+                elapsed < self._DEADLINE
+            ), f'Process took {elapsed:.1f}s to exit after SIGINT'
         finally:
             if proc.poll() is None:
                 proc.kill()
