@@ -56,6 +56,16 @@ bash format.sh
 
 Run these locally before sending a PR to match the automation that checks on every push and pull request.
 
+## Telemetry
+
+The Pluto SDK collects anonymous error and performance telemetry via Sentry to help us improve the library. No user data, model data, or metrics are collected — only SDK-internal errors and diagnostics.
+
+To opt out, set the environment variable before importing `pluto`:
+
+```bash
+export PLUTO_DISABLE_TELEMETRY=1
+```
+
 ## 🫡 Vision
 
 **Pluto** is a platform built for and by ML engineers, supported by [our community](https://discord.gg/d67CMuKY5V)! We were tired of the current state of the art in ML observability tools, and this tool was born to help mitigate the inefficiencies - specifically, we hope to better inform you about your model performance and training runs; and actually **save you**, instead of charging you, for your precious compute time!
