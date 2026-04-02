@@ -4,6 +4,7 @@ from typing import Any, Dict, Optional, Union
 
 import pluto
 
+from . import sentry as _sentry
 from .op import Op
 from .sets import Settings, _classify_run_id, setup
 from .util import gen_id, get_char
@@ -134,8 +135,22 @@ def init(
         op_init.setup(settings=settings)
         op = op_init.init()
 
+        # Set Sentry context for this run
+        _sentry.set_tag('project', settings.project)
+        _sentry.set_tag('run_id', str(settings._op_id))
+        _sentry.set_context(
+            'run',
+            {
+                'project': settings.project,
+                'run_id': settings._op_id,
+                'run_name': settings._op_name,
+                'sync_process': settings.sync_process_enabled,
+            },
+        )
+
         return op
     except Exception as e:
+        _sentry.capture_exception(e)
         logger.critical('%s: failed, %s', tag, e)  # add early logger
         raise e
 
