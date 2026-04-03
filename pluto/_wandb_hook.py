@@ -6,12 +6,11 @@ It registers a sys.meta_path finder that, when `import wandb` is executed,
 loads the real wandb package and then monkey-patches it to dual-log to Pluto.
 
 The hook is controlled by environment variables:
-    - PLUTO_WANDB=1: Enable the hook (required, opt-in)
-    - PLUTO_PROJECT: Pluto project name (required for logging)
-    - PLUTO_API_KEY: Pluto API key (optional, falls back to keyring)
+    - PLUTO_PROJECT: Pluto project name (required)
+    - PLUTO_API_KEY: Pluto API key (required)
     - DISABLE_WANDB_LOGGING=true: Skip real wandb, Pluto-only mode
 
-The hook is a no-op unless PLUTO_WANDB=1 is set.
+The hook is a no-op unless both PLUTO_PROJECT and PLUTO_API_KEY are set.
 """
 
 import importlib
@@ -90,7 +89,7 @@ def install():
     if _hook_installed:
         return
 
-    if os.environ.get('PLUTO_WANDB') != '1':
+    if not os.environ.get('PLUTO_PROJECT') or not os.environ.get('PLUTO_API_KEY'):
         return
 
     # Don't install if wandb is already imported (too late to intercept)
