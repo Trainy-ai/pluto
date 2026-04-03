@@ -55,7 +55,7 @@ def _init_sentry() -> None:
             default_integrations=False,
         )
         _scope = sentry_sdk.Scope(client=_client)
-        logger.debug(
+        logger.info(
             'Pluto collects anonymous telemetry to improve the SDK. '
             'To disable, set PLUTO_DISABLE_TELEMETRY=1'
         )
