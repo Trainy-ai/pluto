@@ -1,0 +1,549 @@
+"""
+Wandb-to-Pluto compatibility layer for seamless dual-logging.
+
+This module monkey-patches wandb.init() so that every wandb Run also logs
+to Pluto. It can be activated in two ways:
+
+1. Automatic (zero code changes): Set PLUTO_WANDB=1 and pip install pluto-ml.
+   The .pth file triggers the import hook which calls apply_wandb_patches().
+
+2. Explicit import: `import pluto.compat.wandb` at the top of your script.
+   This patches wandb directly (like the Neptune compat layer).
+
+Configuration:
+    Set environment variables:
+    - PLUTO_PROJECT: Pluto project name (required)
+    - PLUTO_API_KEY: Pluto API key (optional, falls back to keyring)
+    - PLUTO_URL_APP: Pluto app URL (optional)
+    - PLUTO_URL_API: Pluto API URL (optional)
+    - PLUTO_URL_INGEST: Pluto ingest URL (optional)
+    - DISABLE_WANDB_LOGGING=true: Skip real wandb entirely, Pluto-only mode
+
+Hard Requirements:
+    - MUST NOT break existing wandb functionality under ANY condition
+    - If Pluto is down/misconfigured, silently continue with wandb only
+    - Zero impact on wandb's behavior, return values, or exceptions
+"""
+
+import atexit
+import logging
+import os
+import threading
+from typing import Any, Dict, Optional
+
+logger = logging.getLogger(__name__)
+
+_original_wandb_init = None
+_original_wandb_log = None
+_original_wandb_finish = None
+_patch_applied = False
+
+
+def _get_env_with_deprecation(new_key: str, old_key: str) -> Optional[str]:
+    """Get env var with fallback to deprecated MLOP_* name."""
+    import warnings
+
+    value = os.environ.get(new_key)
+    if value is None:
+        old_value = os.environ.get(old_key)
+        if old_value is not None:
+            warnings.warn(
+                f'Environment variable {old_key} is deprecated. Use {new_key} instead.',
+                DeprecationWarning,
+                stacklevel=3,
+            )
+            return old_value
+    return value
+
+
+def _get_pluto_config_from_env() -> Optional[Dict[str, Any]]:
+    """
+    Extract Pluto configuration from environment variables.
+
+    Returns:
+        Config dict if PLUTO_PROJECT is set, None otherwise.
+    """
+    project = _get_env_with_deprecation('PLUTO_PROJECT', 'MLOP_PROJECT')
+    if not project:
+        return None
+
+    config = {'project': project}
+
+    if api_key := _get_env_with_deprecation('PLUTO_API_KEY', 'MLOP_API_KEY'):
+        config['api_key'] = api_key
+    if url_app := _get_env_with_deprecation('PLUTO_URL_APP', 'MLOP_URL_APP'):
+        config['url_app'] = url_app
+    if url_api := _get_env_with_deprecation('PLUTO_URL_API', 'MLOP_URL_API'):
+        config['url_api'] = url_api
+    if url_ingest := _get_env_with_deprecation('PLUTO_URL_INGEST', 'MLOP_URL_INGEST'):
+        config['url_ingest'] = url_ingest
+
+    return config
+
+
+def _safe_import_pluto():
+    """Safely import pluto, returning None if unavailable."""
+    try:
+        import pluto
+
+        return pluto
+    except ImportError:
+        logger.warning(
+            'pluto.compat.wandb: pluto not installed, '
+            'continuing with wandb-only logging'
+        )
+        return None
+
+
+class WandbRunWrapper:
+    """
+    Wrapper around wandb.Run that dual-logs to Pluto.
+
+    Intercepts key wandb Run methods and forwards them to both the original
+    wandb Run and to a Pluto run. All Pluto operations are wrapped in
+    try-except blocks to ensure wandb functionality is never impacted.
+    """
+
+    _PLUTO_CLEANUP_TIMEOUT_SECONDS: float = 5.0
+
+    def __init__(self, wandb_run, pluto_run, pluto_module):
+        self._wandb_run = wandb_run
+        self._pluto_run = pluto_run
+        self._pluto = pluto_module
+        self._closed = False
+        self._close_lock = threading.Lock()
+
+        if self._pluto_run:
+            atexit.register(self._atexit_cleanup_pluto)
+
+    def _atexit_cleanup_pluto(self) -> None:
+        """Atexit handler for Pluto cleanup."""
+        self._finish_pluto_with_timeout(timeout=self._PLUTO_CLEANUP_TIMEOUT_SECONDS)
+
+    def _finish_pluto_with_timeout(self, timeout: float) -> None:
+        """Finish the Pluto run with a timeout to prevent blocking."""
+        with self._close_lock:
+            if self._pluto_run is None:
+                return
+            pluto_run = self._pluto_run
+            self._pluto_run = None
+
+        done_event = threading.Event()
+
+        def _do_finish():
+            try:
+                pluto_run.finish()
+            except Exception:
+                pass
+            finally:
+                done_event.set()
+
+        thread = threading.Thread(target=_do_finish, daemon=False)
+        thread.start()
+        completed = done_event.wait(timeout=timeout)
+        if completed:
+            thread.join(timeout=1.0)
+        else:
+            logger.debug(
+                f'pluto.compat.wandb: Pluto finish timed out after {timeout}s'
+            )
+
+    def log(self, data: Dict[str, Any], step=None, commit=None, **kwargs):
+        """Log metrics to both wandb and Pluto."""
+        result = self._wandb_run.log(data, step=step, commit=commit, **kwargs)
+
+        if self._pluto_run:
+            try:
+                # Separate numeric values from rich data types
+                pluto_data = {}
+                for key, value in data.items():
+                    if isinstance(value, (int, float)):
+                        pluto_data[key] = value
+                    elif _is_torch_tensor_scalar(value):
+                        pluto_data[key] = value.item()
+                    else:
+                        # Try to convert wandb data types to pluto equivalents
+                        converted = _convert_wandb_to_pluto(key, value, self._pluto)
+                        if converted is not None:
+                            pluto_data[key] = converted
+
+                if pluto_data:
+                    log_kwargs = {}
+                    if step is not None:
+                        log_kwargs['step'] = step
+                    self._pluto_run.log(pluto_data, **log_kwargs)
+            except Exception as e:
+                logger.debug(
+                    f'pluto.compat.wandb: Failed to log metrics to Pluto: {e}'
+                )
+
+        return result
+
+    def finish(self, exit_code=None, quiet=None):
+        """Finish both wandb and Pluto runs."""
+        with self._close_lock:
+            if self._closed:
+                return self._wandb_run.finish(exit_code=exit_code, quiet=quiet)
+            self._closed = True
+
+        # Finish Pluto first (non-blocking)
+        self._finish_pluto_with_timeout(timeout=self._PLUTO_CLEANUP_TIMEOUT_SECONDS)
+
+        # Finish wandb (critical path)
+        return self._wandb_run.finish(exit_code=exit_code, quiet=quiet)
+
+    def define_metric(self, *args, **kwargs):
+        """Forward to wandb (no Pluto equivalent)."""
+        return self._wandb_run.define_metric(*args, **kwargs)
+
+    def watch(self, *args, **kwargs):
+        """Forward to wandb (Pluto watch is separate)."""
+        return self._wandb_run.watch(*args, **kwargs)
+
+    def unwatch(self, *args, **kwargs):
+        """Forward to wandb."""
+        return self._wandb_run.unwatch(*args, **kwargs)
+
+    def save(self, *args, **kwargs):
+        """Forward to wandb."""
+        return self._wandb_run.save(*args, **kwargs)
+
+    def alert(self, title, text, level=None, wait_duration=None):
+        """Alert on both wandb and Pluto."""
+        result = self._wandb_run.alert(
+            title=title, text=text, level=level, wait_duration=wait_duration
+        )
+
+        if self._pluto_run:
+            try:
+                self._pluto_run.alert(title=title, text=text)
+            except Exception as e:
+                logger.debug(
+                    f'pluto.compat.wandb: Failed to send alert to Pluto: {e}'
+                )
+
+        return result
+
+    @property
+    def config(self):
+        return self._wandb_run.config
+
+    @config.setter
+    def config(self, value):
+        self._wandb_run.config = value
+
+    @property
+    def summary(self):
+        return self._wandb_run.summary
+
+    @summary.setter
+    def summary(self, value):
+        self._wandb_run.summary = value
+
+    @property
+    def name(self):
+        return self._wandb_run.name
+
+    @name.setter
+    def name(self, value):
+        self._wandb_run.name = value
+
+    @property
+    def id(self):
+        return self._wandb_run.id
+
+    @property
+    def dir(self):
+        return self._wandb_run.dir
+
+    @property
+    def tags(self):
+        return self._wandb_run.tags
+
+    @tags.setter
+    def tags(self, value):
+        self._wandb_run.tags = value
+        if self._pluto_run:
+            try:
+                self._pluto_run.add_tags(list(value))
+            except Exception as e:
+                logger.debug(
+                    f'pluto.compat.wandb: Failed to sync tags to Pluto: {e}'
+                )
+
+    def get_url(self):
+        return self._wandb_run.get_url()
+
+    def get_project_url(self):
+        return self._wandb_run.get_project_url()
+
+    def __getattr__(self, name):
+        """Forward any unknown attributes to the real wandb run."""
+        return getattr(self._wandb_run, name)
+
+    def __enter__(self):
+        self._wandb_run.__enter__()
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        with self._close_lock:
+            self._closed = True
+        self._finish_pluto_with_timeout(timeout=self._PLUTO_CLEANUP_TIMEOUT_SECONDS)
+        return self._wandb_run.__exit__(exc_type, exc_val, exc_tb)
+
+
+def _is_torch_tensor_scalar(value):
+    """Check if value is a scalar torch tensor."""
+    try:
+        import torch
+
+        return isinstance(value, torch.Tensor) and value.dim() == 0
+    except ImportError:
+        return False
+
+
+def _convert_wandb_to_pluto(key, value, pluto_module):
+    """
+    Convert wandb data types to Pluto equivalents.
+
+    Returns the converted value, or None if conversion is not possible.
+    """
+    try:
+        type_name = type(value).__name__
+
+        if type_name == 'Image':
+            # wandb.Image -> pluto.Image
+            if hasattr(value, '_image'):
+                return pluto_module.Image(value._image)
+            return None
+
+        if type_name == 'Histogram':
+            # wandb.Histogram -> pluto.Histogram
+            if hasattr(value, 'histogram') and hasattr(value, 'bins'):
+                return pluto_module.Histogram(
+                    data=(value.histogram, value.bins), bins=None
+                )
+            return None
+
+        if type_name == 'Audio':
+            # wandb.Audio -> pluto.Audio
+            if hasattr(value, '_path'):
+                return pluto_module.Audio(value._path)
+            return None
+
+        if type_name == 'Video':
+            # wandb.Video -> pluto.Video
+            if hasattr(value, '_path'):
+                return pluto_module.Video(value._path)
+            return None
+
+        if type_name == 'Table':
+            # wandb.Table -> pluto.Table (best-effort)
+            if hasattr(value, 'data') and hasattr(value, 'columns'):
+                return pluto_module.Table(data=value.data, columns=value.columns)
+            return None
+
+    except Exception as e:
+        logger.debug(f'pluto.compat.wandb: Failed to convert {key} ({type_name}): {e}')
+
+    return None
+
+
+def _make_patched_init(original_init, wandb_module):
+    """
+    Create a patched wandb.init that wraps the returned Run with WandbRunWrapper.
+    """
+
+    def patched_init(*args, **kwargs):
+        wandb_disabled = os.environ.get('DISABLE_WANDB_LOGGING', '').lower() in (
+            'true',
+            '1',
+            'yes',
+        )
+
+        if wandb_disabled:
+            # Wandb-disabled mode: only log to Pluto
+            # Set wandb to disabled mode so it doesn't actually connect
+            kwargs['mode'] = 'disabled'
+
+        # Call real wandb.init
+        wandb_run = original_init(*args, **kwargs)
+
+        # Try to initialize Pluto
+        pluto = _safe_import_pluto()
+        if pluto is None:
+            return wandb_run
+
+        pluto_config = _get_pluto_config_from_env()
+        if pluto_config is None:
+            logger.info(
+                'pluto.compat.wandb: PLUTO_PROJECT not set, '
+                'continuing with wandb-only logging'
+            )
+            return wandb_run
+
+        try:
+            # Build Pluto init kwargs from wandb args
+            name = kwargs.get('name') or getattr(wandb_run, 'name', None)
+            wandb_config = kwargs.get('config')
+            tags = kwargs.get('tags')
+            run_id = os.environ.get('PLUTO_RUN_ID') or kwargs.get('id')
+
+            pluto_settings = {
+                'sync_process_enabled': True,
+                'sync_process_shutdown_timeout': 3.0,
+            }
+            if 'url_app' in pluto_config:
+                pluto_settings['url_app'] = pluto_config['url_app']
+            if 'url_api' in pluto_config:
+                pluto_settings['url_api'] = pluto_config['url_api']
+            if 'url_ingest' in pluto_config:
+                pluto_settings['url_ingest'] = pluto_config['url_ingest']
+            if 'api_key' in pluto_config:
+                pluto_settings['_auth'] = pluto_config['api_key']
+
+            pluto_init_kwargs = {
+                'project': pluto_config['project'],
+                'name': name or 'wandb-migration',
+                'settings': pluto_settings,
+            }
+            if wandb_config:
+                pluto_init_kwargs['config'] = (
+                    dict(wandb_config)
+                    if not isinstance(wandb_config, dict)
+                    else wandb_config
+                )
+            if tags:
+                pluto_init_kwargs['tags'] = list(tags)
+            if run_id:
+                pluto_init_kwargs['run_id'] = run_id
+
+            pluto_run = pluto.init(**pluto_init_kwargs)
+
+            logger.info(
+                f'pluto.compat.wandb: Successfully initialized Pluto run '
+                f'for project={pluto_config["project"]}, name={name}'
+            )
+
+            # Wrap the wandb run
+            wrapper = WandbRunWrapper(wandb_run, pluto_run, pluto)
+
+            # Update the wandb module's global `run` reference so that
+            # `wandb.log()` calls that go through the module-level function
+            # also get intercepted
+            wandb_module.run = wrapper
+
+            return wrapper
+
+        except Exception as e:
+            logger.warning(
+                f'pluto.compat.wandb: Failed to initialize Pluto run: {e}. '
+                f'Continuing with wandb-only logging.'
+            )
+            return wandb_run
+
+    return patched_init
+
+
+def _make_patched_log(wandb_module):
+    """
+    Create a patched wandb.log that delegates to the current run's log method.
+
+    This ensures that module-level wandb.log() calls go through the wrapper
+    when a WandbRunWrapper is the active run.
+    """
+    original_log = wandb_module.log
+
+    def patched_log(data, step=None, commit=None, **kwargs):
+        current_run = wandb_module.run
+        if isinstance(current_run, WandbRunWrapper):
+            return current_run.log(data, step=step, commit=commit, **kwargs)
+        return original_log(data, step=step, commit=commit, **kwargs)
+
+    return patched_log
+
+
+def _make_patched_finish(wandb_module):
+    """
+    Create a patched wandb.finish that delegates to the current run's finish.
+    """
+    original_finish = wandb_module.finish
+
+    def patched_finish(exit_code=None, quiet=None):
+        current_run = wandb_module.run
+        if isinstance(current_run, WandbRunWrapper):
+            return current_run.finish(exit_code=exit_code, quiet=quiet)
+        return original_finish(exit_code=exit_code, quiet=quiet)
+
+    return patched_finish
+
+
+def apply_wandb_patches(wandb_module):
+    """
+    Apply dual-logging monkey-patches to the wandb module.
+
+    This is the main entry point called by either:
+    - The .pth import hook (_wandb_hook.py)
+    - Direct import of this module (import pluto.compat.wandb)
+
+    Args:
+        wandb_module: The real wandb module to patch.
+    """
+    global _original_wandb_init, _original_wandb_log, _original_wandb_finish
+    global _patch_applied
+
+    if _patch_applied:
+        logger.debug('pluto.compat.wandb: Patches already applied')
+        return
+
+    _original_wandb_init = wandb_module.init
+    _original_wandb_log = wandb_module.log
+    _original_wandb_finish = wandb_module.finish
+
+    wandb_module.init = _make_patched_init(_original_wandb_init, wandb_module)
+    wandb_module.log = _make_patched_log(wandb_module)
+    wandb_module.finish = _make_patched_finish(wandb_module)
+
+    _patch_applied = True
+    logger.info(
+        'pluto.compat.wandb: Patches applied. wandb.init/log/finish now dual-log '
+        'to Pluto (when PLUTO_PROJECT is set).'
+    )
+
+
+def restore_wandb():
+    """Restore the original wandb functions (for testing)."""
+    global _original_wandb_init, _original_wandb_log, _original_wandb_finish
+    global _patch_applied
+
+    if not _patch_applied:
+        return
+
+    try:
+        import wandb
+
+        if _original_wandb_init:
+            wandb.init = _original_wandb_init
+        if _original_wandb_log:
+            wandb.log = _original_wandb_log
+        if _original_wandb_finish:
+            wandb.finish = _original_wandb_finish
+        _patch_applied = False
+        logger.info('pluto.compat.wandb: Patches restored')
+    except Exception as e:
+        logger.error(f'pluto.compat.wandb: Failed to restore patches: {e}')
+
+
+# When imported directly (import pluto.compat.wandb), auto-patch wandb
+def _apply_on_import():
+    try:
+        import wandb
+
+        apply_wandb_patches(wandb)
+    except ImportError:
+        logger.warning(
+            'pluto.compat.wandb: wandb not installed, patches not applied'
+        )
+
+
+_apply_on_import()
