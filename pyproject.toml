@@ -4,7 +4,8 @@ version = "0.0.15"
 description = "Pluto ML - Machine Learning Operations Framework"
 packages = [
     {include = "pluto"},
-    {include = "mlop"}
+    {include = "mlop"},
+    {include = "wandb"},
 ]
 authors = [
     "jqssun",
@@ -69,6 +70,8 @@ select = ["F", "E", "W", "I001"]
 # Required in test_neptune_compat.py because logging must be configured
 # before importing neptune_scale to prevent I/O errors
 "tests/test_neptune_compat.py" = ["E402"]
+# wandb/__init__.py has imports after the conflict detection check
+"wandb/__init__.py" = ["E402"]
 
 [tool.ruff.format]
 # 5. Use single quotes in `ruff format`.
