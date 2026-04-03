@@ -37,7 +37,11 @@ def _is_ci_environment() -> bool:
 
 def _is_telemetry_disabled() -> bool:
     val = os.environ.get('PLUTO_DISABLE_TELEMETRY', '').lower()
-    return val in ('1', 'true', 'yes') or _is_ci_environment()
+    if val in ('1', 'true', 'yes'):
+        return True
+    if val in ('0', 'false', 'no'):
+        return False
+    return _is_ci_environment()
 
 
 def _init_sentry() -> None:
