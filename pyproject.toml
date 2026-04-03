@@ -28,6 +28,7 @@ pillow = ">=10.0"
 psutil = ">=5.9"
 nvidia-ml-py = ">=11.515.0"
 rich = ">=13.0"
+sentry-sdk = ">=2.0"
 soundfile = ">=0.12"
 
 [tool.poetry.group.dev.dependencies]

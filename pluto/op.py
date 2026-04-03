@@ -13,6 +13,7 @@ from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple, Union
 
 import pluto
 
+from . import sentry as _sentry
 from .api import (
     make_compat_alert_v1,
     make_compat_monitor_v1,
@@ -83,6 +84,10 @@ def _excepthook(exc_type, exc_value, exc_traceback):
                     f'{tag}: Marked run {op.settings._op_id} as FAILED '
                     f'due to unhandled {exc_type.__name__}'
                 )
+
+    # Report to Sentry APM
+    _sentry.capture_exception(exc_value)
+    _sentry.flush()
 
     # Call the original excepthook to preserve default behavior (print traceback)
     if _original_excepthook is not None:
@@ -613,6 +618,7 @@ class Op:
             # Print URL where users can view the completed run
             logger.info(f'{tag}: View run at {print_url(self.settings.url_view)}')
         except (Exception, KeyboardInterrupt) as e:
+            _sentry.capture_exception(e)
             self.settings._op_status = signal.SIGINT.value
             if self._iface:
                 self._iface._update_status(
@@ -633,6 +639,7 @@ class Op:
                     },
                 )
             logger.critical('%s: interrupted %s', tag, e)
+        _sentry.flush()
         logger.debug(f'{tag}: finished')
         teardown_logger(logger, console=logging.getLogger('console'))
 
