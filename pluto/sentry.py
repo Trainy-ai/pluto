@@ -7,6 +7,7 @@ Sentry configuration. Opt out by setting PLUTO_DISABLE_TELEMETRY=1.
 
 import logging
 import os
+import sys
 from typing import Any, Dict, Optional
 
 logger = logging.getLogger(f'{__name__.split(".")[0]}')
@@ -83,14 +84,34 @@ def set_user(user_id: Optional[str]) -> None:
 
 def capture_exception(error: Optional[BaseException] = None) -> None:
     _init_sentry()
-    if _scope is not None:
-        _scope.capture_exception(error)
+    if _client is None:
+        return
+    try:
+        import sentry_sdk.utils
+
+        exc_info = (
+            (type(error), error, error.__traceback__)
+            if error is not None
+            else sys.exc_info()
+        )
+        event, hint = sentry_sdk.utils.event_from_exception(
+            exc_info, client_options=_client.options
+        )
+        _client.capture_event(event, hint=hint, scope=_scope)
+    except Exception:
+        pass
 
 
 def capture_message(message: str, level: str = 'info') -> None:
     _init_sentry()
-    if _scope is not None:
-        _scope.capture_message(message, level=level)
+    if _client is None:
+        return
+    try:
+        _client.capture_event(
+            {'message': message, 'level': level}, scope=_scope
+        )
+    except Exception:
+        pass
 
 
 def flush() -> None:
