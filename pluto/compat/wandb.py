@@ -386,6 +386,9 @@ def _make_patched_init(original_init, wandb_module):
 
         try:
             # Build Pluto init kwargs from wandb args
+            # NOTE: Everything below is Pluto-only. wandb_run is already
+            # fully initialized and functional. If anything here fails
+            # or hangs, we return wandb_run unmodified (see except block).
             name = kwargs.get('name') or getattr(wandb_run, 'name', None)
             wandb_config = kwargs.get('config')
             tags = kwargs.get('tags')
@@ -420,7 +423,34 @@ def _make_patched_init(original_init, wandb_module):
             if run_id:
                 pluto_init_kwargs['run_id'] = run_id
 
-            pluto_run = pluto.init(**pluto_init_kwargs)
+            # Use a thread with timeout so a slow/unreachable Pluto server
+            # never blocks the user's training script from starting.
+            pluto_run = None
+            init_error = {}
+
+            def _do_pluto_init():
+                nonlocal pluto_run
+                try:
+                    pluto_run = pluto.init(**pluto_init_kwargs)
+                except Exception as e:
+                    init_error['err'] = e
+
+            init_thread = threading.Thread(target=_do_pluto_init, daemon=True)
+            init_thread.start()
+            init_thread.join(timeout=10.0)  # 10s max for Pluto init
+
+            if init_thread.is_alive():
+                logger.warning(
+                    'pluto.compat.wandb: Pluto init timed out after 10s. '
+                    'Continuing with wandb-only logging.'
+                )
+                return wandb_run
+
+            if 'err' in init_error:
+                raise init_error['err']
+
+            if pluto_run is None:
+                return wandb_run
 
             logger.info(
                 f'pluto.compat.wandb: Successfully initialized Pluto run '
