@@ -732,9 +732,9 @@ class TestSyncUploaderPayloadFormat:
 
         # Both paths must encode config as a JSON string, not a raw dict
         assert isinstance(sync_payload['config'], type(legacy_payload['config'])), (
-            f"Sync process sends config as {type(sync_payload['config']).__name__}, "
-            f"but legacy sends {type(legacy_payload['config']).__name__}. "
-            f"Server expects a JSON-encoded string."
+            f'Sync process sends config as {type(sync_payload["config"]).__name__}, '
+            f'but legacy sends {type(legacy_payload["config"]).__name__}. '
+            f'Server expects a JSON-encoded string.'
         )
         assert json.loads(sync_payload['config']) == json.loads(
             legacy_payload['config']

@@ -1396,9 +1396,9 @@ class TestNeptuneCompatLiveBackend:
         id2 = run2._pluto_run.id
         run2.close()
 
-        assert id1 != id2, (
-            'Fresh runs with same experiment_name ' 'must get distinct server IDs'
-        )
+        assert (
+            id1 != id2
+        ), 'Fresh runs with same experiment_name must get distinct server IDs'
 
     def test_resume_reattaches_to_existing_run(self, live_pluto_env):
         """Run(run_id=X) with resume should reattach to the same server run."""
