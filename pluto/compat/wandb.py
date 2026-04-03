@@ -11,12 +11,14 @@ to Pluto. It can be activated in two ways:
    This patches wandb directly (like the Neptune compat layer).
 
 Configuration:
-    Set environment variables:
-    - PLUTO_PROJECT: Pluto project name (required)
-    - PLUTO_API_KEY: Pluto API key (optional, falls back to keyring)
-    - PLUTO_URL_APP: Pluto app URL (optional)
-    - PLUTO_URL_API: Pluto API URL (optional)
-    - PLUTO_URL_INGEST: Pluto ingest URL (optional)
+    Required environment variables:
+    - PLUTO_PROJECT: Pluto project name
+    - PLUTO_API_KEY: Pluto API key
+
+    Optional:
+    - PLUTO_URL_APP: Pluto app URL (for self-hosted)
+    - PLUTO_URL_API: Pluto API URL (for self-hosted)
+    - PLUTO_URL_INGEST: Pluto ingest URL (for self-hosted)
     - DISABLE_WANDB_LOGGING=true: Skip real wandb entirely, Pluto-only mode
 
 Hard Requirements:

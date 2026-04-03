@@ -5,12 +5,12 @@ This module is designed to be loaded via a .pth file at Python startup.
 It registers a sys.meta_path finder that, when `import wandb` is executed,
 loads the real wandb package and then monkey-patches it to dual-log to Pluto.
 
-The hook is controlled by environment variables:
-    - PLUTO_PROJECT: Pluto project name (required)
-    - PLUTO_API_KEY: Pluto API key (required)
-    - DISABLE_WANDB_LOGGING=true: Skip real wandb, Pluto-only mode
+The hook activates when both environment variables are set:
+    - PLUTO_PROJECT: Pluto project name
+    - PLUTO_API_KEY: Pluto API key
 
-The hook is a no-op unless both PLUTO_PROJECT and PLUTO_API_KEY are set.
+Optional:
+    - DISABLE_WANDB_LOGGING=true: Skip real wandb, log to Pluto only
 """
 
 import importlib
