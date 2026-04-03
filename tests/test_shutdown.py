@@ -653,9 +653,9 @@ class TestSignalTerminationIntegration:
             start = time.monotonic()
             proc.wait(timeout=self._DEADLINE)
             elapsed = time.monotonic() - start
-            assert (
-                elapsed < self._DEADLINE
-            ), f'Process took {elapsed:.1f}s to exit after SIGTERM'
+            assert elapsed < self._DEADLINE, (
+                f'Process took {elapsed:.1f}s to exit after SIGTERM'
+            )
             # Default SIGTERM kills with negative signal code
             assert proc.returncode == -signal.SIGTERM
         finally:
@@ -672,9 +672,9 @@ class TestSignalTerminationIntegration:
             start = time.monotonic()
             proc.wait(timeout=self._DEADLINE)
             elapsed = time.monotonic() - start
-            assert (
-                elapsed < self._DEADLINE
-            ), f'Process took {elapsed:.1f}s to exit after SIGINT'
+            assert elapsed < self._DEADLINE, (
+                f'Process took {elapsed:.1f}s to exit after SIGINT'
+            )
         finally:
             if proc.poll() is None:
                 proc.kill()
