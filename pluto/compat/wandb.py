@@ -428,10 +428,14 @@ def _make_patched_init(original_init, wandb_module):
             # Wrap the wandb run
             wrapper = WandbRunWrapper(wandb_run, pluto_run, pluto)
 
-            # Update the wandb module's global `run` reference so that
-            # `wandb.log()` calls that go through the module-level function
-            # also get intercepted
+            # Update the wandb module's global `run` reference
             wandb_module.run = wrapper
+
+            # CRITICAL: wandb.init() overwrites wandb.log/wandb.finish with
+            # bound methods from the Run instance, clobbering our patches.
+            # We must re-patch them after init to point at the wrapper.
+            wandb_module.log = wrapper.log
+            wandb_module.finish = wrapper.finish
 
             return wrapper
 
