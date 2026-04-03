@@ -436,6 +436,8 @@ def _make_patched_init(original_init, wandb_module):
             # CRITICAL: wandb.init() overwrites wandb.log/wandb.finish with
             # bound methods from the Run instance, clobbering our patches.
             # We must re-patch them after init to point at the wrapper.
+            # Tested against wandb 0.25.1 — if wandb changes this behavior,
+            # the re-patch becomes unnecessary (but harmless).
             wandb_module.log = wrapper.log
             wandb_module.finish = wrapper.finish
 

@@ -26,6 +26,11 @@ class _PlutoWandbFinder:
     """
     Meta path finder that intercepts `import wandb` to apply dual-logging patches.
 
+    Uses find_module/load_module (not the newer find_spec/exec_module from PEP 451)
+    because the spec-based API doesn't cleanly support "load the real package, then
+    patch it" — exec_module runs on a partially-initialized module object, causing
+    circular import issues with wandb's internal imports.
+
     On first `import wandb`, this finder:
     1. Temporarily removes itself from sys.meta_path (to avoid recursion)
     2. Loads the real wandb package via normal import machinery
@@ -42,7 +47,7 @@ class _PlutoWandbFinder:
         return None
 
     def load_module(self, fullname):
-        # If wandb is already in sys.modules, it's been loaded — don't patch again
+        # If wandb is already in sys.modules, it's been loaded
         if fullname in sys.modules:
             return sys.modules[fullname]
 
@@ -80,7 +85,8 @@ def install():
     """
     Register the wandb import hook on sys.meta_path.
 
-    Only installs if PLUTO_WANDB=1 is set. Safe to call multiple times.
+    Activates when PLUTO_PROJECT and PLUTO_API_KEY are set.
+    Safe to call multiple times.
     """
     import os
 
