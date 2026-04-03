@@ -107,9 +107,7 @@ def capture_message(message: str, level: str = 'info') -> None:
     if _client is None:
         return
     try:
-        _client.capture_event(
-            {'message': message, 'level': level}, scope=_scope
-        )
+        _client.capture_event({'message': message, 'level': level}, scope=_scope)
     except Exception:
         pass
 
