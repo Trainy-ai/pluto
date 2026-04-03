@@ -22,9 +22,22 @@ _scope: Any = None
 _disabled: bool = False
 
 
+def _is_ci_environment() -> bool:
+    ci_vars = (
+        'CI',
+        'GITHUB_ACTIONS',
+        'GITLAB_CI',
+        'JENKINS_URL',
+        'CIRCLECI',
+        'BUILDKITE',
+        'TRAVIS',
+    )
+    return any(os.environ.get(var) for var in ci_vars)
+
+
 def _is_telemetry_disabled() -> bool:
     val = os.environ.get('PLUTO_DISABLE_TELEMETRY', '').lower()
-    return val in ('1', 'true', 'yes')
+    return val in ('1', 'true', 'yes') or _is_ci_environment()
 
 
 def _init_sentry() -> None:
