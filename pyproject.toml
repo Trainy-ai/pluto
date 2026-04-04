@@ -4,7 +4,8 @@ version = "0.0.15"
 description = "Pluto ML - Machine Learning Operations Framework"
 packages = [
     {include = "pluto"},
-    {include = "mlop"}
+    {include = "mlop"},
+    {include = "zzzz_pluto_wandb_hook.pth"},
 ]
 authors = [
     "jqssun",
@@ -16,6 +17,7 @@ readme = "README.md"
 [build-system]
 requires = ["poetry-core>=1.7.0"]
 build-backend = "poetry.core.masonry.api"
+
 
 [tool.poetry.dependencies]
 python = "^3.10"

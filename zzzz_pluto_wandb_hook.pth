@@ -1,0 +1,1 @@
+import os; os.environ.get('PLUTO_PROJECT') and os.environ.get('PLUTO_API_KEY') and __import__('pluto._wandb_hook')._wandb_hook.install()
