@@ -146,9 +146,7 @@ class WandbRunWrapper:
         if completed:
             thread.join(timeout=1.0)
         else:
-            logger.debug(
-                f'pluto.compat.wandb: Pluto finish timed out after {timeout}s'
-            )
+            logger.debug(f'pluto.compat.wandb: Pluto finish timed out after {timeout}s')
 
     def log(self, data: Dict[str, Any], step=None, commit=None, **kwargs):
         """Log metrics to both wandb and Pluto."""
@@ -175,9 +173,7 @@ class WandbRunWrapper:
                         log_kwargs['step'] = step
                     self._pluto_run.log(pluto_data, **log_kwargs)
             except Exception as e:
-                logger.debug(
-                    f'pluto.compat.wandb: Failed to log metrics to Pluto: {e}'
-                )
+                logger.debug(f'pluto.compat.wandb: Failed to log metrics to Pluto: {e}')
 
         return result
 
@@ -220,9 +216,7 @@ class WandbRunWrapper:
             try:
                 self._pluto_run.alert(title=title, text=text)
             except Exception as e:
-                logger.debug(
-                    f'pluto.compat.wandb: Failed to send alert to Pluto: {e}'
-                )
+                logger.debug(f'pluto.compat.wandb: Failed to send alert to Pluto: {e}')
 
         return result
 
@@ -269,9 +263,7 @@ class WandbRunWrapper:
             try:
                 self._pluto_run.add_tags(list(value))
             except Exception as e:
-                logger.debug(
-                    f'pluto.compat.wandb: Failed to sync tags to Pluto: {e}'
-                )
+                logger.debug(f'pluto.compat.wandb: Failed to sync tags to Pluto: {e}')
 
     def get_url(self):
         return self._wandb_run.get_url()
@@ -579,9 +571,7 @@ def _apply_on_import():
 
         apply_wandb_patches(wandb)
     except ImportError:
-        logger.warning(
-            'pluto.compat.wandb: wandb not installed, patches not applied'
-        )
+        logger.warning('pluto.compat.wandb: wandb not installed, patches not applied')
 
 
 _apply_on_import()
