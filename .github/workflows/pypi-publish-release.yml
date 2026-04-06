@@ -4,12 +4,20 @@ on:
   release:
     types: [published]
   workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to publish (e.g. 0.1.0). Required for manual trigger.'
+        required: true
 
 jobs:
   release-build-pypi:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Fetch full history so we can push the version bump commit back
+          ref: main
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -19,13 +27,33 @@ jobs:
       - name: Install Poetry
         run: pip install poetry
 
-      - name: Get version from pyproject.toml
+      - name: Extract version from release tag
         id: version
         run: |
-          VERSION=$(awk -F '"' '/version =/ { print $2 }' pyproject.toml | head -n 1)
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            VERSION="${{ github.event.inputs.version }}"
+          else
+            VERSION="${{ github.event.release.tag_name }}"
+          fi
           echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Resolved version: $VERSION"
 
-      - name: Update version placeholders
+      - name: Bump version in source files
+        run: |
+          VERSION=${{ steps.version.outputs.version }}
+          sed -i "0,/version = \".*\"/s//version = \"${VERSION}\"/" pyproject.toml
+          sed -i "s/__version__ = '.*'/__version__ = '${VERSION}'/g" pluto/__init__.py
+
+      - name: Commit version bump to main
+        run: |
+          VERSION=${{ steps.version.outputs.version }}
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add pyproject.toml pluto/__init__.py
+          git diff --cached --quiet && echo "No version changes needed" || \
+            (git commit -m "Bump version to ${VERSION}" && git push origin main)
+
+      - name: Update version placeholders for build
         run: |
           VERSION=${{ steps.version.outputs.version }}
           sed -i "s/{{PLUTO_COMMIT_SHA}}/${{ github.sha }}/g" pluto/__init__.py
