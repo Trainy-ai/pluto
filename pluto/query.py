@@ -74,6 +74,7 @@ class Client:
 
         self._url_api = _resolve_url_api(host)
         self._client = httpx.Client(
+            http2=True,
             headers={
                 'Authorization': f'Bearer {self._api_token}',
                 'User-Agent': 'pluto-query',

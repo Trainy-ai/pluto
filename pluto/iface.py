@@ -48,6 +48,7 @@ class ServerInterface:
         self.headers_num.update({'Content-Type': 'application/x-ndjson'})
 
         self.client = httpx.Client(
+            http2=True,
             verify=not self.settings.insecure_disable_ssl,
             proxy=self.settings.http_proxy or self.settings.https_proxy or None,
             limits=httpx.Limits(
@@ -59,6 +60,7 @@ class ServerInterface:
             ),
         )
         self.client_api = httpx.Client(
+            http2=True,
             verify=not self.settings.insecure_disable_ssl,
             proxy=self.settings.http_proxy or self.settings.https_proxy or None,
             timeout=httpx.Timeout(
