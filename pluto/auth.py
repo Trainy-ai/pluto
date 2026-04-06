@@ -52,7 +52,9 @@ def login(settings=None, retry=False):
         tlogger.warning(f'{tag}: server not reachable; reason: {e}')
         settings._auth = '_key'
     try:
-        tlogger.info(f'{tag}: logged in as {r.json()["organization"]["slug"]}')
+        r.raise_for_status()
+        body = r.json()
+        tlogger.info(f'{tag}: logged in as {body["organization"]["slug"]}')
         keyring.set_password(f'{settings.tag}', f'{settings.tag}', f'{settings._auth}')
         teardown_logger(tlogger)
     except Exception as e:
@@ -85,6 +87,14 @@ def login(settings=None, retry=False):
             return
         else:
             webbrowser.open(url=settings.url_token)
+        if not sys.stdin or not sys.stdin.isatty():
+            tlogger.warning(
+                '%s: no interactive terminal available for authentication; '
+                'set the PLUTO_API_KEY environment variable or run `pluto login`',
+                tag,
+            )
+            teardown_logger(tlogger)
+            return
         if get_console() == 'jupyter':
             settings._auth = getpass.getpass(prompt='Enter API key: ')
         else:
