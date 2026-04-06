@@ -992,6 +992,7 @@ class _SyncUploader:
             import httpx
 
             self._client = httpx.Client(
+                http2=True,
                 timeout=httpx.Timeout(self.normal_timeout),
                 limits=httpx.Limits(max_connections=10),
             )
@@ -1004,6 +1005,7 @@ class _SyncUploader:
             import httpx
 
             self._storage_client = httpx.Client(
+                http2=True,
                 timeout=httpx.Timeout(self.FILE_UPLOAD_TIMEOUT_SECONDS),
                 limits=httpx.Limits(max_connections=5),
             )

@@ -37,6 +37,7 @@ def login(settings=None, retry=False):
     # fall through to an interactive prompt when it was.
     auth_was_provided = settings._auth is not None and settings._auth != '_key'
     client = httpx.Client(
+        http2=True,
         verify=True if not settings.insecure_disable_ssl else False,
         proxy=settings.http_proxy or settings.https_proxy or None,
     )
