@@ -59,18 +59,19 @@ def wait_for_metrics(run_id: int, expected: list[str], timeout: float = 30.0) ->
 
 def main() -> None:
     commit = get_commit_hash()
+    experiment_name = f'fork-experiment-{commit}'
     print(f'Fork integration test — commit {commit}')
     print(f'Project: {FORK_PROJECT}')
+    print(f'Experiment name: {experiment_name}')
     print()
 
     # ------------------------------------------------------------------
     # 1. Parent run
     # ------------------------------------------------------------------
-    parent_name = f'parent-{commit}'
-    print(f'[1/5] Creating parent run: {parent_name}')
+    print('[1/5] Creating parent run')
     parent = pluto.init(
         project=FORK_PROJECT,
-        name=parent_name,
+        name=experiment_name,
         config=PARENT_CONFIG,
         tags=PARENT_TAGS,
     )
@@ -93,11 +94,10 @@ def main() -> None:
     # ------------------------------------------------------------------
     # 2. Fork with inherited config + overrides
     # ------------------------------------------------------------------
-    fork1_name = f'fork-inherit-config-{commit}'
-    print(f'\n[2/5] Forking with config inheritance + override: {fork1_name}')
+    print('\n[2/5] Forking with config inheritance + override')
     fork1 = pluto.init(
         project=FORK_PROJECT,
-        name=fork1_name,
+        name=experiment_name,
         fork_run_id=parent_id,
         fork_step=5,
         inherit_config=True,
@@ -122,11 +122,10 @@ def main() -> None:
     # ------------------------------------------------------------------
     # 3. Fork with inherited tags
     # ------------------------------------------------------------------
-    fork2_name = f'fork-inherit-tags-{commit}'
-    print(f'\n[3/5] Forking with tag inheritance: {fork2_name}')
+    print('\n[3/5] Forking with tag inheritance')
     fork2 = pluto.init(
         project=FORK_PROJECT,
-        name=fork2_name,
+        name=experiment_name,
         fork_run_id=parent_id,
         fork_step=5,
         inherit_tags=True,
@@ -150,11 +149,10 @@ def main() -> None:
     # ------------------------------------------------------------------
     # 4. Fork without inheritance
     # ------------------------------------------------------------------
-    fork3_name = f'fork-no-inherit-{commit}'
-    print(f'\n[4/5] Forking without inheritance: {fork3_name}')
+    print('\n[4/5] Forking without inheritance')
     fork3 = pluto.init(
         project=FORK_PROJECT,
-        name=fork3_name,
+        name=experiment_name,
         fork_run_id=parent_id,
         fork_step=3,
         inherit_config=False,
@@ -180,11 +178,10 @@ def main() -> None:
     # ------------------------------------------------------------------
     # 5. Chain fork (fork from fork1)
     # ------------------------------------------------------------------
-    fork4_name = f'fork-chain-{commit}'
-    print(f'\n[5/5] Chain fork (from fork 1): {fork4_name}')
+    print('\n[5/5] Chain fork (from fork 1)')
     fork4 = pluto.init(
         project=FORK_PROJECT,
-        name=fork4_name,
+        name=experiment_name,
         fork_run_id=fork1_id,
         fork_step=5,
         inherit_config=True,
@@ -210,14 +207,15 @@ def main() -> None:
     # ------------------------------------------------------------------
     print('\n' + '=' * 60)
     print('Fork integration test completed successfully!')
-    print(f'Commit: {commit}')
-    print(f'Project: {FORK_PROJECT}')
-    print('Runs created:')
-    print(f'  Parent:              {parent_name} (id={parent_id})')
-    print(f'  Fork (config):       {fork1_name} (id={fork1_id})')
-    print(f'  Fork (tags):         {fork2_name} (id={fork2_id})')
-    print(f'  Fork (no inherit):   {fork3_name} (id={fork3_id})')
-    print(f'  Fork (chain):        {fork4_name} (id={fork4_id})')
+    print(f'Commit:     {commit}')
+    print(f'Project:    {FORK_PROJECT}')
+    print(f'Experiment: {experiment_name}')
+    print('Runs created (all share the same name for experiments mode):')
+    print(f'  Parent:            id={parent_id}')
+    print(f'  Fork (config):     id={fork1_id}  fork_step=5')
+    print(f'  Fork (tags):       id={fork2_id}  fork_step=5')
+    print(f'  Fork (no inherit): id={fork3_id}  fork_step=3')
+    print(f'  Fork (chain):      id={fork4_id}  fork_step=5 (from {fork1_id})')
     print('=' * 60)
 
 
