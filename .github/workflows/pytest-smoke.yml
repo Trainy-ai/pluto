@@ -57,6 +57,48 @@ jobs:
           github-token: ${{ secrets.COVERALLS_REPO_TOKEN }}
           file: coverage.lcov
 
+  fork-e2e:
+    needs: test
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11"]
+        poetry-version: ["2.1.1"]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: "Setup Python, Poetry and Dependencies"
+        uses: packetcoders/action-setup-cache-python-poetry@v1.2.0
+        with:
+          python-version: ${{matrix.python-version}}
+          poetry-version: ${{matrix.poetry-version}}
+          install-args: "--with dev"
+
+      - name: Install deps and login
+        run: |
+          set -euox pipefail
+          rm -rf .venv
+          poetry install --with dev --extras full
+          pip install -e ".[dev,full]"
+          pluto login ${{ secrets.MLOP_API_TOKEN }}
+
+      - name: Run fork E2E tests
+        timeout-minutes: 5
+        env:
+          PLUTO_API_KEY: ${{ secrets.MLOP_API_TOKEN }}
+        run: |
+          set -euox pipefail
+          poetry run pytest tests/test_fork_e2e.py -rs -v 2>&1 | tee fork_e2e.log
+
+      - name: Upload fork E2E logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fork-e2e-logs
+          path: fork_e2e.log
+          retention-days: 7
+
   distributed-tests:
     needs: test
     runs-on: ubuntu-latest
