@@ -1,0 +1,225 @@
+"""
+End-to-end fork integration test for the Pluto platform.
+
+This test validates the full fork workflow by:
+1. Creating a parent run with config, tags, and metrics
+2. Forking from the parent with various inheritance options
+3. Logging metrics on forked runs
+4. Chaining forks (fork from a fork)
+
+Run names are suffixed with the git commit hash so results are
+visible in the testing-ci-fork project UI.
+
+Usage:
+    python tests/fork_integration_test.py
+"""
+
+import subprocess
+import time
+from pathlib import Path
+
+import pluto
+
+FORK_PROJECT = 'testing-ci-fork'
+
+PARENT_CONFIG = {
+    'model': 'resnet50',
+    'lr': 0.001,
+    'optimizer': 'adam',
+    'epochs': 100,
+}
+PARENT_TAGS = ['baseline', 'integration-test']
+PARENT_STEPS = 10
+
+
+def get_commit_hash() -> str:
+    repo_root = Path(__file__).resolve().parents[1]
+    try:
+        result = subprocess.check_output(
+            ['git', 'rev-parse', '--short', 'HEAD'],
+            cwd=str(repo_root),
+        )
+        return result.decode().strip()
+    except Exception:
+        return 'unknown'
+
+
+def wait_for_metrics(run_id: int, expected: list[str], timeout: float = 30.0) -> None:
+    """Poll until expected metric names appear on the server."""
+    import pluto.query as pq
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        names = pq.get_metric_names(FORK_PROJECT, run_ids=[run_id])
+        if all(e in names for e in expected):
+            return
+        time.sleep(2)
+    print(f'  Warning: timed out waiting for metrics {expected} on run {run_id}')
+
+
+def main() -> None:
+    commit = get_commit_hash()
+    print(f'Fork integration test — commit {commit}')
+    print(f'Project: {FORK_PROJECT}')
+    print()
+
+    # ------------------------------------------------------------------
+    # 1. Parent run
+    # ------------------------------------------------------------------
+    parent_name = f'parent-{commit}'
+    print(f'[1/5] Creating parent run: {parent_name}')
+    parent = pluto.init(
+        project=FORK_PROJECT,
+        name=parent_name,
+        config=PARENT_CONFIG,
+        tags=PARENT_TAGS,
+    )
+    parent_id = parent.settings._op_id
+
+    for step in range(PARENT_STEPS):
+        parent.log(
+            {
+                'train/loss': 1.0 - step * 0.08,
+                'train/acc': step * 0.09,
+            }
+        )
+        print(f'  step {step}: loss={1.0 - step * 0.08:.2f}  acc={step * 0.09:.2f}')
+    parent.finish()
+    print(f'  Parent run finished (id={parent_id})')
+
+    # Wait for parent metrics to be ingested so forkStep validation passes
+    wait_for_metrics(parent_id, ['train/loss', 'train/acc'])
+
+    # ------------------------------------------------------------------
+    # 2. Fork with inherited config + overrides
+    # ------------------------------------------------------------------
+    fork1_name = f'fork-inherit-config-{commit}'
+    print(f'\n[2/5] Forking with config inheritance + override: {fork1_name}')
+    fork1 = pluto.init(
+        project=FORK_PROJECT,
+        name=fork1_name,
+        fork_run_id=parent_id,
+        fork_step=5,
+        inherit_config=True,
+        config={'lr': 0.01, 'scheduler': 'cosine'},
+        tags=['fork', 'config-override'],
+    )
+    fork1_id = fork1.settings._op_id
+    print(f'  fork_run_id={fork1.fork_run_id}  fork_step={fork1.fork_step}')
+
+    for step in range(10):
+        fork1.log(
+            {
+                'train/loss': 0.5 - step * 0.04,
+                'train/acc': 0.5 + step * 0.05,
+            }
+        )
+    fork1.finish()
+    print(f'  Fork 1 finished (id={fork1_id})')
+
+    wait_for_metrics(fork1_id, ['train/loss', 'train/acc'])
+
+    # ------------------------------------------------------------------
+    # 3. Fork with inherited tags
+    # ------------------------------------------------------------------
+    fork2_name = f'fork-inherit-tags-{commit}'
+    print(f'\n[3/5] Forking with tag inheritance: {fork2_name}')
+    fork2 = pluto.init(
+        project=FORK_PROJECT,
+        name=fork2_name,
+        fork_run_id=parent_id,
+        fork_step=5,
+        inherit_tags=True,
+        tags=['fork', 'tag-inherit'],
+    )
+    fork2_id = fork2.settings._op_id
+    print(f'  fork_run_id={fork2.fork_run_id}  fork_step={fork2.fork_step}')
+
+    for step in range(8):
+        fork2.log(
+            {
+                'train/loss': 0.6 - step * 0.06,
+                'val/loss': 0.7 - step * 0.05,
+            }
+        )
+    fork2.finish()
+    print(f'  Fork 2 finished (id={fork2_id})')
+
+    wait_for_metrics(fork2_id, ['train/loss', 'val/loss'])
+
+    # ------------------------------------------------------------------
+    # 4. Fork without inheritance
+    # ------------------------------------------------------------------
+    fork3_name = f'fork-no-inherit-{commit}'
+    print(f'\n[4/5] Forking without inheritance: {fork3_name}')
+    fork3 = pluto.init(
+        project=FORK_PROJECT,
+        name=fork3_name,
+        fork_run_id=parent_id,
+        fork_step=3,
+        inherit_config=False,
+        inherit_tags=False,
+        config={'model': 'vit', 'lr': 0.0001},
+        tags=['fork', 'fresh-start'],
+    )
+    fork3_id = fork3.settings._op_id
+    print(f'  fork_run_id={fork3.fork_run_id}  fork_step={fork3.fork_step}')
+
+    for step in range(15):
+        fork3.log(
+            {
+                'train/loss': 0.8 - step * 0.05,
+                'train/acc': 0.2 + step * 0.05,
+            }
+        )
+    fork3.finish()
+    print(f'  Fork 3 finished (id={fork3_id})')
+
+    wait_for_metrics(fork3_id, ['train/loss', 'train/acc'])
+
+    # ------------------------------------------------------------------
+    # 5. Chain fork (fork from fork1)
+    # ------------------------------------------------------------------
+    fork4_name = f'fork-chain-{commit}'
+    print(f'\n[5/5] Chain fork (from fork 1): {fork4_name}')
+    fork4 = pluto.init(
+        project=FORK_PROJECT,
+        name=fork4_name,
+        fork_run_id=fork1_id,
+        fork_step=5,
+        inherit_config=True,
+        inherit_tags=True,
+        config={'lr': 0.005},
+        tags=['fork', 'chain'],
+    )
+    fork4_id = fork4.settings._op_id
+    print(f'  fork_run_id={fork4.fork_run_id}  fork_step={fork4.fork_step}')
+
+    for step in range(10):
+        fork4.log(
+            {
+                'train/loss': 0.3 - step * 0.02,
+                'train/acc': 0.7 + step * 0.03,
+            }
+        )
+    fork4.finish()
+    print(f'  Fork 4 finished (id={fork4_id})')
+
+    # ------------------------------------------------------------------
+    # Summary
+    # ------------------------------------------------------------------
+    print('\n' + '=' * 60)
+    print('Fork integration test completed successfully!')
+    print(f'Commit: {commit}')
+    print(f'Project: {FORK_PROJECT}')
+    print('Runs created:')
+    print(f'  Parent:              {parent_name} (id={parent_id})')
+    print(f'  Fork (config):       {fork1_name} (id={fork1_id})')
+    print(f'  Fork (tags):         {fork2_name} (id={fork2_id})')
+    print(f'  Fork (no inherit):   {fork3_name} (id={fork3_id})')
+    print(f'  Fork (chain):        {fork4_name} (id={fork4_id})')
+    print('=' * 60)
+
+
+if __name__ == '__main__':
+    main()

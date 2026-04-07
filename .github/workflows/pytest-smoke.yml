@@ -83,6 +83,14 @@ jobs:
           pip install -e ".[dev,full]"
           pluto login ${{ secrets.MLOP_API_TOKEN }}
 
+      - name: Run fork integration test
+        timeout-minutes: 5
+        env:
+          PLUTO_API_KEY: ${{ secrets.MLOP_API_TOKEN }}
+        run: |
+          set -euox pipefail
+          poetry run python tests/fork_integration_test.py 2>&1 | tee fork_integration.log
+
       - name: Run fork E2E tests
         timeout-minutes: 5
         env:
@@ -91,12 +99,14 @@ jobs:
           set -euox pipefail
           poetry run pytest tests/test_fork_e2e.py -rs -v 2>&1 | tee fork_e2e.log
 
-      - name: Upload fork E2E logs
+      - name: Upload fork logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: fork-e2e-logs
-          path: fork_e2e.log
+          path: |
+            fork_integration.log
+            fork_e2e.log
           retention-days: 7
 
   distributed-tests:
