@@ -16,9 +16,13 @@ except ImportError:  # pragma: no cover - optional dependency
     plt = None
     HAS_MATPLOTLIB = False
 
+import json
+
 import numpy as np
 
 import pluto
+from pluto.api import make_compat_start_v1
+from pluto.sets import Settings
 from tests.utils import get_task_name
 
 try:
@@ -322,7 +326,7 @@ def test_update_config_multiple_calls():
 
 def test_fork_validation_missing_fork_step():
     """Test that fork_run_id without fork_step raises ValueError."""
-    with pytest.raises(ValueError, match='fork_step is required'):
+    with pytest.raises(ValueError, match='must be provided together'):
         pluto.init(
             project=TESTING_PROJECT_NAME,
             name=get_task_name(),
@@ -332,7 +336,7 @@ def test_fork_validation_missing_fork_step():
 
 def test_fork_validation_missing_fork_run_id():
     """Test that fork_step without fork_run_id raises ValueError."""
-    with pytest.raises(ValueError, match='fork_run_id is required'):
+    with pytest.raises(ValueError, match='must be provided together'):
         pluto.init(
             project=TESTING_PROJECT_NAME,
             name=get_task_name(),
@@ -342,11 +346,6 @@ def test_fork_validation_missing_fork_run_id():
 
 def test_fork_parameters_in_start_payload():
     """Test that fork parameters are included in the start payload."""
-    import json
-
-    from pluto.api import make_compat_start_v1
-    from pluto.sets import Settings
-
     settings = Settings()
     settings._fork_run_id = 12345
     settings._fork_step = 500
@@ -363,11 +362,6 @@ def test_fork_parameters_in_start_payload():
 
 def test_fork_parameters_omitted_when_none():
     """Test that fork parameters are omitted from payload when not set."""
-    import json
-
-    from pluto.api import make_compat_start_v1
-    from pluto.sets import Settings
-
     settings = Settings()
 
     payload = json.loads(make_compat_start_v1({}, settings, None))

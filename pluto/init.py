@@ -127,10 +127,8 @@ def init(
         use the same ``name`` value across all ranks.
     """
     # Validate fork parameters
-    if fork_run_id is not None and fork_step is None:
-        raise ValueError('fork_step is required when fork_run_id is provided')
-    if fork_step is not None and fork_run_id is None:
-        raise ValueError('fork_run_id is required when fork_step is provided')
+    if (fork_run_id is not None) ^ (fork_step is not None):
+        raise ValueError('fork_run_id and fork_step must be provided together')
 
     # TODO: remove legacy compat
     dir = kwargs.get('save_dir', dir)
