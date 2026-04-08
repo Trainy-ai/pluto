@@ -150,6 +150,14 @@ class WandbRunWrapper:
 
     def log(self, data: Dict[str, Any], step=None, commit=None, **kwargs):
         """Log metrics to both wandb and Pluto."""
+        # Capture wandb's current step BEFORE log() increments it.
+        # When step=None, wandb auto-increments _step on each log() call.
+        # We need the pre-increment value to stay in sync with Pluto.
+        if step is None:
+            actual_step = getattr(self._wandb_run, '_step', None)
+        else:
+            actual_step = step
+
         result = self._wandb_run.log(data, step=step, commit=commit, **kwargs)
 
         if self._pluto_run:
@@ -168,12 +176,6 @@ class WandbRunWrapper:
                             pluto_data[key] = converted
 
                 if pluto_data:
-                    # Use the step wandb actually recorded. When step=None,
-                    # wandb auto-increments internally — read it back from
-                    # the run object so Pluto stays in sync.
-                    actual_step = step if step is not None else getattr(
-                        self._wandb_run, '_step', None
-                    )
                     log_kwargs = {}
                     if actual_step is not None:
                         log_kwargs['step'] = actual_step
