@@ -2,6 +2,7 @@ import json
 import logging
 import queue
 import time
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Optional, Union
 
@@ -17,6 +18,41 @@ from .sets import Settings
 
 logger = logging.getLogger(f'{__name__.split(".")[0]}')
 tag = 'Interface'
+
+
+@contextmanager
+def _suppress_sentry_breadcrumbs():
+    """Prevent the host app's Sentry from capturing Pluto's internal HTTP traffic.
+
+    When a user calls ``sentry_sdk.init()`` in their own code, global HTTP
+    integrations monkey-patch urllib3/httpx at the module level.  Every HTTP
+    call Pluto makes (heartbeats every ~4 s, status updates, etc.) gets
+    recorded as a breadcrumb on the *user's* Sentry scope — eating their
+    quota with Pluto's internal API chatter.
+
+    This context manager forks the current Sentry isolation scope so that
+    any breadcrumbs added during the ``with`` block are captured on the
+    fork and silently discarded when it exits.
+    """
+    try:
+        import sentry_sdk
+
+        # sentry_sdk 2.x
+        if hasattr(sentry_sdk, 'isolation_scope'):
+            with sentry_sdk.isolation_scope():
+                yield
+                return
+
+        # sentry_sdk 1.x
+        if hasattr(sentry_sdk, 'Hub'):
+            with sentry_sdk.Hub.current.push_scope():
+                yield
+                return
+    except ImportError:
+        pass
+
+    # sentry_sdk not installed or API unrecognised — nothing to suppress.
+    yield
 
 
 class ServerInterface:
@@ -35,6 +71,12 @@ class ServerInterface:
     def __init__(self, config: dict, settings: Settings) -> None:
         self.config = config
         self.settings = settings
+
+        # Suppress httpx/httpcore INFO-level request logs (e.g.
+        # "HTTP Request: POST … 200 OK") that fire on every heartbeat (~4 s).
+        # The sync subprocess already does this; mirror it in the main process.
+        logging.getLogger('httpx').setLevel(logging.WARNING)
+        logging.getLogger('httpcore').setLevel(logging.WARNING)
 
         self.headers = {
             'Authorization': f'Bearer {self.settings._auth}',
@@ -225,7 +267,8 @@ class ServerInterface:
             kwargs: Dict[str, Any] = {}
             if timeout is not None:
                 kwargs['timeout'] = timeout
-            r = method(url, content=content, headers=headers, **kwargs)
+            with _suppress_sentry_breadcrumbs():
+                r = method(url, content=content, headers=headers, **kwargs)
             if r.status_code in [200, 201]:
                 return r
 
