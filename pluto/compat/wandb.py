@@ -168,9 +168,15 @@ class WandbRunWrapper:
                             pluto_data[key] = converted
 
                 if pluto_data:
+                    # Use the step wandb actually recorded. When step=None,
+                    # wandb auto-increments internally — read it back from
+                    # the run object so Pluto stays in sync.
+                    actual_step = step if step is not None else getattr(
+                        self._wandb_run, '_step', None
+                    )
                     log_kwargs = {}
-                    if step is not None:
-                        log_kwargs['step'] = step
+                    if actual_step is not None:
+                        log_kwargs['step'] = actual_step
                     self._pluto_run.log(pluto_data, **log_kwargs)
             except Exception as e:
                 logger.debug(f'pluto.compat.wandb: Failed to log metrics to Pluto: {e}')
