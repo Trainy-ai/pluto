@@ -108,10 +108,12 @@ class WandbRunWrapper:
 
     _PLUTO_CLEANUP_TIMEOUT_SECONDS: float = 5.0
 
-    def __init__(self, wandb_run, pluto_run, pluto_module):
+    def __init__(self, wandb_run, pluto_run, pluto_module, wandb_disabled=False):
         self._wandb_run = wandb_run
         self._pluto_run = pluto_run
         self._pluto = pluto_module
+        self._wandb_disabled = wandb_disabled
+        self._fallback_step = 0  # Used when wandb is disabled (_step won't increment)
         self._closed = False
         self._close_lock = threading.Lock()
 
@@ -150,13 +152,17 @@ class WandbRunWrapper:
 
     def log(self, data: Dict[str, Any], step=None, commit=None, **kwargs):
         """Log metrics to both wandb and Pluto."""
-        # Capture wandb's current step BEFORE log() increments it.
-        # When step=None, wandb auto-increments _step on each log() call.
-        # We need the pre-increment value to stay in sync with Pluto.
-        if step is None:
-            actual_step = getattr(self._wandb_run, '_step', None)
-        else:
+        # Determine the step to use for Pluto.
+        # When step is explicit, use it. Otherwise:
+        # - Normal mode: read wandb's _step before log() increments it
+        # - Disabled mode: wandb._step never increments, use our own counter
+        if step is not None:
             actual_step = step
+        elif self._wandb_disabled:
+            actual_step = self._fallback_step
+            self._fallback_step += 1
+        else:
+            actual_step = getattr(self._wandb_run, '_step', None)
 
         result = self._wandb_run.log(data, step=step, commit=commit, **kwargs)
 
@@ -396,7 +402,7 @@ def _make_patched_init(original_init, wandb_module):
 
             pluto_settings = {
                 'sync_process_enabled': True,
-                'sync_process_shutdown_timeout': 3.0,
+                'sync_process_shutdown_timeout': 30.0,
             }
             if 'url_app' in pluto_config:
                 pluto_settings['url_app'] = pluto_config['url_app']
@@ -458,7 +464,7 @@ def _make_patched_init(original_init, wandb_module):
             )
 
             # Wrap the wandb run
-            wrapper = WandbRunWrapper(wandb_run, pluto_run, pluto)
+            wrapper = WandbRunWrapper(wandb_run, pluto_run, pluto, wandb_disabled)
 
             # Update the wandb module's global `run` reference
             wandb_module.run = wrapper
