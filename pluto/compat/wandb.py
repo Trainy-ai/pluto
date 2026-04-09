@@ -402,7 +402,7 @@ def _make_patched_init(original_init, wandb_module):
 
             pluto_settings = {
                 'sync_process_enabled': True,
-                'sync_process_shutdown_timeout': 30.0,
+                'sync_process_shutdown_timeout': 3.0,
             }
             if 'url_app' in pluto_config:
                 pluto_settings['url_app'] = pluto_config['url_app']
