@@ -454,9 +454,7 @@ class TestSentryBreadcrumbSuppression:
         mock_sentry = MagicMock(spec=[])  # No isolation_scope attr
         mock_hub = MagicMock()
         mock_scope = MagicMock()
-        mock_hub.push_scope.return_value.__enter__ = MagicMock(
-            return_value=mock_scope
-        )
+        mock_hub.push_scope.return_value.__enter__ = MagicMock(return_value=mock_scope)
         mock_hub.push_scope.return_value.__exit__ = MagicMock(return_value=False)
         mock_sentry.Hub = MagicMock()
         mock_sentry.Hub.current = mock_hub
