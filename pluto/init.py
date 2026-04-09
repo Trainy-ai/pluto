@@ -183,7 +183,10 @@ def init(
 
     # Set fork parameters on settings
     if fork_run_id is not None:
-        logger.info('Run forking is currently in preview. The API may change in future releases.')
+        logger.info(
+            'Run forking is currently in preview.'
+            ' The API may change in future releases.'
+        )
         settings._fork_run_id = _resolve_fork_run_id(fork_run_id, settings.project)
         settings._fork_step = fork_step
     if inherit_config is not None:
