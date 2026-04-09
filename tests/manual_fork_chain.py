@@ -14,6 +14,7 @@ experiment named 'llm-pretrain-<commit>'.
 
 import subprocess
 import time
+import uuid
 from pathlib import Path
 
 import pluto
@@ -62,7 +63,8 @@ def wait_for_step(run_id: int, expected_step: int, timeout: float = 60.0) -> Non
 
 def main() -> None:
     commit = get_commit_hash()
-    experiment_name = f'llm-pretrain-{commit}'
+    suffix = str(uuid.uuid4())[:4]
+    experiment_name = f'llm-pretrain-{commit}-{suffix}'
 
     print(f'Chained fork test — {NUM_RUNS} runs, {STEPS_PER_RUN} steps each')
     print(f'Project:    {PROJECT}')
@@ -122,7 +124,8 @@ def main() -> None:
                     'train/loss': loss,
                     'train/lr': lr,
                     'train/tokens_seen': (global_step + 1) * 4096,
-                }
+                },
+                step=global_step,
             )
 
         last_step = global_step_offset + STEPS_PER_RUN - 1
