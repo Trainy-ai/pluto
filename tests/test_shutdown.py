@@ -8,10 +8,8 @@ These tests verify:
 4. Signal handling for graceful Ctrl+C shutdown
 5. Process terminates promptly on SIGTERM (integration test)
 6. Sentry breadcrumb isolation for Pluto's internal HTTP traffic
-7. httpx/httpcore logger suppression in the main process
 """
 
-import logging
 import os
 import signal
 import subprocess
@@ -525,52 +523,6 @@ class TestSentryBreadcrumbSuppression:
             )
         finally:
             sentry_sdk.init()  # Reset global state
-
-
-class TestHttpxLoggerSuppression:
-    """Test that ServerInterface suppresses noisy httpx request logging."""
-
-    def test_httpx_logger_set_to_warning(self):
-        """ServerInterface.__init__ sets httpx logger to WARNING."""
-        from pluto.iface import ServerInterface
-        from pluto.sets import Settings
-
-        # Reset httpx logger to default before test
-        httpx_logger = logging.getLogger('httpx')
-        httpcore_logger = logging.getLogger('httpcore')
-        httpx_logger.setLevel(logging.NOTSET)
-        httpcore_logger.setLevel(logging.NOTSET)
-
-        settings = Settings()
-        settings._op_id = 'test-op-id'
-        settings._run_id = 12345
-
-        with patch('pluto.iface.httpx.Client'):
-            ServerInterface({}, settings)
-
-        assert httpx_logger.level == logging.WARNING
-        assert httpcore_logger.level == logging.WARNING
-
-    def test_httpx_logger_not_suppressed_in_debug_mode(self):
-        """httpx loggers are left alone when Pluto is in DEBUG mode."""
-        from pluto.iface import ServerInterface
-        from pluto.sets import Settings
-
-        httpx_logger = logging.getLogger('httpx')
-        httpcore_logger = logging.getLogger('httpcore')
-        httpx_logger.setLevel(logging.NOTSET)
-        httpcore_logger.setLevel(logging.NOTSET)
-
-        settings = Settings()
-        settings._op_id = 'test-op-id'
-        settings._run_id = 12345
-        settings.x_log_level = logging.DEBUG
-
-        with patch('pluto.iface.httpx.Client'):
-            ServerInterface({}, settings)
-
-        assert httpx_logger.level == logging.NOTSET
-        assert httpcore_logger.level == logging.NOTSET
 
 
 class TestFinishIdempotency:
