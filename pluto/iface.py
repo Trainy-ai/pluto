@@ -55,6 +55,27 @@ def _suppress_sentry_breadcrumbs():
     yield
 
 
+@contextmanager
+def _suppress_httpx_logging():
+    """Temporarily raise httpx/httpcore log level to WARNING for the call.
+
+    Only affects the duration of the ``with`` block — the user's own httpx
+    log level is saved and restored afterwards.  Inspired by SkyPilot's
+    ``set_logging_level`` pattern for kubernetes urllib3 suppression.
+    """
+    httpx_logger = logging.getLogger('httpx')
+    httpcore_logger = logging.getLogger('httpcore')
+    original_httpx = httpx_logger.level
+    original_httpcore = httpcore_logger.level
+    httpx_logger.setLevel(logging.WARNING)
+    httpcore_logger.setLevel(logging.WARNING)
+    try:
+        yield
+    finally:
+        httpx_logger.setLevel(original_httpx)
+        httpcore_logger.setLevel(original_httpcore)
+
+
 class ServerInterface:
     """
     HTTP interface for communicating with the Pluto backend.
@@ -261,7 +282,7 @@ class ServerInterface:
             kwargs: Dict[str, Any] = {}
             if timeout is not None:
                 kwargs['timeout'] = timeout
-            with _suppress_sentry_breadcrumbs():
+            with _suppress_sentry_breadcrumbs(), _suppress_httpx_logging():
                 r = method(url, content=content, headers=headers, **kwargs)
             if r.status_code in [200, 201]:
                 return r
