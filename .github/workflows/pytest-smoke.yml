@@ -91,6 +91,14 @@ jobs:
           set -euox pipefail
           poetry run python tests/fork_integration_test.py 2>&1 | tee fork_integration.log
 
+      - name: Run fork chain test
+        timeout-minutes: 10
+        env:
+          PLUTO_API_KEY: ${{ secrets.MLOP_API_TOKEN }}
+        run: |
+          set -euox pipefail
+          poetry run python tests/manual_fork_chain.py 2>&1 | tee fork_chain.log
+
       - name: Run fork E2E tests
         timeout-minutes: 5
         env:
@@ -106,6 +114,7 @@ jobs:
           name: fork-e2e-logs
           path: |
             fork_integration.log
+            fork_chain.log
             fork_e2e.log
           retention-days: 7
 
