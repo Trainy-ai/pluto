@@ -21,7 +21,10 @@ import pluto
 
 PROJECT = 'testing-ci-fork'
 NUM_RUNS = 5
-STEPS_PER_RUN = 20
+STEPS_PER_RUN = 30
+# Fork 10 steps before the end of each run, creating a 10-step overlap
+# where both parent and child have logged data for the same step range.
+FORK_OVERLAP = 10
 
 
 def get_commit_hash() -> str:
@@ -87,14 +90,19 @@ def main() -> None:
 
         fork_kwargs = {}
         if prev_id is not None:
+            # Fork 10 steps before the parent's end, so parent has data
+            # past the fork point that the stitching should ignore.
+            fork_step = prev_last_step - FORK_OVERLAP
             fork_kwargs = {
                 'fork_run_id': prev_id,
-                'fork_step': prev_last_step,
+                'fork_step': fork_step,
                 'inherit_config': True,
             }
             print(
                 f'[{i + 1}/{NUM_RUNS}] Forking from run {prev_id}'
-                f' at step {prev_last_step}  (lr={lr})'
+                f' at step {fork_step}  (lr={lr})'
+                f'  (parent went to {prev_last_step},'
+                f' {FORK_OVERLAP}-step overlap)'
             )
         else:
             print(f'[{i + 1}/{NUM_RUNS}] Starting root run  (lr={lr})')
@@ -114,23 +122,26 @@ def main() -> None:
                 f'  fork_step={run.fork_step}'
             )
 
-        # Log metrics — global step is continuous across all runs
-        global_step_offset = i * STEPS_PER_RUN
+        # Log metrics — child starts at fork_step+1 for continuity
+        if prev_id is not None:
+            start_step = fork_step + 1
+        else:
+            start_step = 0
         for s in range(STEPS_PER_RUN):
-            global_step = global_step_offset + s
-            loss = 2.0 / (global_step + 1) + 0.01 * (0.5**i)
+            step = start_step + s
+            loss = 2.0 / (step + 1) + 0.01 * (0.5**i)
             run.log(
                 {
                     'train/loss': loss,
                     'train/lr': lr,
-                    'train/tokens_seen': (global_step + 1) * 4096,
+                    'train/tokens_seen': (step + 1) * 4096,
                 },
-                step=global_step,
+                step=step,
             )
 
-        last_step = global_step_offset + STEPS_PER_RUN - 1
+        last_step = start_step + STEPS_PER_RUN - 1
         run.finish()
-        print(f'  Finished run {run_id}  (steps {global_step_offset}..{last_step})')
+        print(f'  Finished run {run_id}  (steps {start_step}..{last_step})')
 
         # Wait for ClickHouse to ingest up to last_step before forking
         if i < NUM_RUNS - 1:
@@ -150,7 +161,7 @@ def main() -> None:
     print('What to verify in the UI:')
     print('  1. Switch to experiments mode — all 5 runs group under one name')
     print('  2. Open a chart for train/loss — should be one continuous line')
-    print(f'     from step 0 to step {NUM_RUNS * STEPS_PER_RUN - 1}')
+    print('     (stitching ignores parent data past each fork point)')
     print('  3. Each fork point should be seamless (no gaps)')
     print()
     for r in all_runs:
