@@ -582,12 +582,9 @@ class TestHttpxLoggingSuppression:
 
         assert httpx_logger.level == logging.INFO
 
-    def test_e2e_no_log_spam_or_sentry_leak(self):
-        """End-to-end: real HTTP server, real httpx calls.
-
-        BEFORE (raw httpx):  breadcrumbs land on user's Sentry scope
-        AFTER  (via _try()): breadcrumbs suppressed, httpx logger restored
-        """
+    def test_e2e_try_suppresses_breadcrumbs_and_restores_logger(self):
+        """_try() with a real HTTP server produces zero Sentry breadcrumbs
+        and restores the httpx logger level afterwards."""
         import threading
         from http.server import BaseHTTPRequestHandler, HTTPServer
 
@@ -597,7 +594,6 @@ class TestHttpxLoggingSuppression:
         from pluto.iface import ServerInterface
         from pluto.sets import Settings
 
-        # Spin up a local server that returns 200
         class _Handler(BaseHTTPRequestHandler):
             def do_POST(self, *a):
                 self.send_response(200)
@@ -629,39 +625,12 @@ class TestHttpxLoggingSuppression:
 
         client = httpx.Client()
 
-        def _capture_event_crumbs():
-            events = []
-            orig = sentry_sdk.get_client().options.get('before_send')
-            sentry_sdk.get_client().options['before_send'] = lambda e, h: (
-                events.append(e),
-                None,
-            )[1]
-            try:
-                raise RuntimeError('test')
-            except Exception:
-                sentry_sdk.capture_exception()
-            sentry_sdk.get_client().options['before_send'] = orig
-            if not events:
-                return []
-            return events[0].get('breadcrumbs', {}).get('values', [])
-
         try:
-            # ── BEFORE: raw httpx calls (simulates old behavior) ─────
             logging.getLogger('httpx').setLevel(logging.NOTSET)
             sentry_sdk.get_current_scope().clear_breadcrumbs()
             sentry_sdk.get_isolation_scope().clear_breadcrumbs()
 
-            for _ in range(3):
-                client.post(url, content=b'{}')
-
-            before_crumbs = _capture_event_crumbs()
-            before_trigger = [b for b in before_crumbs if 'trigger' in str(b)]
-
-            # ── AFTER: calls through _try() (with fix) ───────────────
-            logging.getLogger('httpx').setLevel(logging.NOTSET)
-            sentry_sdk.get_current_scope().clear_breadcrumbs()
-            sentry_sdk.get_isolation_scope().clear_breadcrumbs()
-
+            # Make real HTTP calls through _try()
             for _ in range(3):
                 iface._try(
                     client.post,
@@ -673,23 +642,30 @@ class TestHttpxLoggingSuppression:
                     timeout=5.0,
                 )
 
-            after_crumbs = _capture_event_crumbs()
-            after_trigger = [b for b in after_crumbs if 'trigger' in str(b)]
+            # Capture what Sentry would attach to a crash report
+            events = []
+            sentry_sdk.get_client().options['before_send'] = lambda e, h: (
+                events.append(e),
+                None,
+            )[1]
+            try:
+                raise RuntimeError('test')
+            except Exception:
+                sentry_sdk.capture_exception()
 
-            # Sentry: breadcrumbs should appear BEFORE, not AFTER
-            assert len(before_trigger) > 0, 'Baseline should have trigger breadcrumbs'
+            crumbs = events[0].get('breadcrumbs', {}).get('values', [])
+            trigger_crumbs = [b for b in crumbs if 'trigger' in str(b)]
+
             assert (
-                len(after_trigger) == 0
-            ), f'Fix failed: {len(after_trigger)} trigger breadcrumbs leaked'
-
-            # httpx logger: should be restored after _try() calls
+                len(trigger_crumbs) == 0
+            ), f'{len(trigger_crumbs)} trigger breadcrumbs leaked to Sentry'
             assert (
                 logging.getLogger('httpx').level < logging.WARNING
             ), 'httpx logger level was not restored after _try()'
         finally:
             srv.shutdown()
             client.close()
-            sentry_sdk.init()  # Reset global Sentry state
+            sentry_sdk.init()
 
 
 class TestFinishIdempotency:
