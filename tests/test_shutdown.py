@@ -559,7 +559,14 @@ class TestHttpxLoggingSuppression:
         mock_method = MagicMock(side_effect=capture_level)
         mock_method.__name__ = 'post'
 
-        iface._try(mock_method, 'http://example.com', {}, b'', name='test')
+        iface._try(
+            mock_method,
+            'http://example.com',
+            {},
+            b'',
+            name='test',
+            suppress_httpx_logs=True,
+        )
 
         # During the call, httpx logger should have been WARNING
         assert levels_during_call[0] == logging.WARNING
