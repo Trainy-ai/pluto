@@ -2,6 +2,7 @@ import json
 import logging
 import queue
 import time
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Optional, Union
 
@@ -17,6 +18,61 @@ from .sets import Settings
 
 logger = logging.getLogger(f'{__name__.split(".")[0]}')
 tag = 'Interface'
+
+
+@contextmanager
+def _suppress_sentry_breadcrumbs():
+    """Prevent the host app's Sentry from capturing Pluto's internal HTTP traffic.
+
+    When a user calls ``sentry_sdk.init()`` in their own code, global HTTP
+    integrations monkey-patch urllib3/httpx at the module level.  Every HTTP
+    call Pluto makes (heartbeats every ~4 s, status updates, etc.) gets
+    recorded as a breadcrumb on the *user's* Sentry scope — eating their
+    quota with Pluto's internal API chatter.
+
+    This context manager forks the current Sentry isolation scope so that
+    any breadcrumbs added during the ``with`` block are captured on the
+    fork and silently discarded when it exits.
+    """
+    try:
+        import sentry_sdk
+
+        # sentry_sdk 2.x
+        if hasattr(sentry_sdk, 'isolation_scope'):
+            with sentry_sdk.isolation_scope():
+                yield
+                return
+
+        # sentry_sdk 1.x
+        if hasattr(sentry_sdk, 'Hub'):
+            with sentry_sdk.Hub.current.push_scope():
+                yield
+                return
+    except ImportError:
+        pass
+
+    # sentry_sdk not installed or API unrecognised — nothing to suppress.
+    yield
+
+
+@contextmanager
+def _suppress_httpx_logging():
+    """Temporarily raise httpx/httpcore log level to WARNING for the call.
+
+    Only affects the duration of the ``with`` block — the user's own httpx
+    log level is saved and restored afterwards.
+    """
+    httpx_logger = logging.getLogger('httpx')
+    httpcore_logger = logging.getLogger('httpcore')
+    original_httpx = httpx_logger.level
+    original_httpcore = httpcore_logger.level
+    httpx_logger.setLevel(logging.WARNING)
+    httpcore_logger.setLevel(logging.WARNING)
+    try:
+        yield
+    finally:
+        httpx_logger.setLevel(original_httpx)
+        httpcore_logger.setLevel(original_httpcore)
 
 
 class ServerInterface:
@@ -225,7 +281,8 @@ class ServerInterface:
             kwargs: Dict[str, Any] = {}
             if timeout is not None:
                 kwargs['timeout'] = timeout
-            r = method(url, content=content, headers=headers, **kwargs)
+            with _suppress_sentry_breadcrumbs(), _suppress_httpx_logging():
+                r = method(url, content=content, headers=headers, **kwargs)
             if r.status_code in [200, 201]:
                 return r
 

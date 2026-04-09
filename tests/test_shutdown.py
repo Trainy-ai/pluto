@@ -7,8 +7,11 @@ These tests verify:
 3. Connection errors are treated as shutdown signals, not retriable errors
 4. Signal handling for graceful Ctrl+C shutdown
 5. Process terminates promptly on SIGTERM (integration test)
+6. Sentry breadcrumb isolation for Pluto's internal HTTP traffic
+7. Scoped httpx log suppression during Pluto's HTTP calls
 """
 
+import logging
 import os
 import signal
 import subprocess
@@ -393,6 +396,276 @@ class TestConnectionErrorHandling:
             call_kwargs = mock_try.call_args
             assert call_kwargs[1]['max_retries'] == 0
             assert call_kwargs[1]['timeout'] == 5.0
+
+
+class TestSentryBreadcrumbSuppression:
+    """Test that Pluto's HTTP calls don't leak breadcrumbs to the host's Sentry."""
+
+    def _make_iface(self):
+        """Helper to create a ServerInterface with test settings."""
+        from pluto.iface import ServerInterface
+        from pluto.sets import Settings
+
+        settings = Settings()
+        settings._op_id = 'test-op-id'
+        settings._run_id = 12345
+        settings.x_file_stream_retry_max = 0
+        settings.x_file_stream_retry_wait_min_seconds = 0.001
+        settings.x_file_stream_retry_wait_max_seconds = 0.001
+
+        with patch('pluto.iface.httpx.Client') as mock_client_class:
+            mock_client = MagicMock()
+            mock_client_class.return_value = mock_client
+            iface = ServerInterface({}, settings)
+        return iface
+
+    def test_suppress_context_manager_without_sentry(self):
+        """Context manager works when sentry_sdk is not installed."""
+        from pluto.iface import _suppress_sentry_breadcrumbs
+
+        with patch.dict('sys.modules', {'sentry_sdk': None}):
+            with _suppress_sentry_breadcrumbs():
+                pass  # Should not raise
+
+    def test_suppress_context_manager_with_sentry_v2(self):
+        """Context manager uses isolation_scope on sentry_sdk 2.x."""
+        from pluto.iface import _suppress_sentry_breadcrumbs
+
+        mock_sentry = MagicMock()
+        mock_sentry.isolation_scope = MagicMock()
+        # Make isolation_scope a real context manager
+        mock_scope = MagicMock()
+        mock_sentry.isolation_scope.return_value.__enter__ = MagicMock(
+            return_value=mock_scope
+        )
+        mock_sentry.isolation_scope.return_value.__exit__ = MagicMock(
+            return_value=False
+        )
+
+        with patch.dict('sys.modules', {'sentry_sdk': mock_sentry}):
+            with _suppress_sentry_breadcrumbs():
+                pass
+            mock_sentry.isolation_scope.assert_called_once()
+
+    def test_suppress_context_manager_with_sentry_v1(self):
+        """Context manager uses Hub.push_scope on sentry_sdk 1.x."""
+        from pluto.iface import _suppress_sentry_breadcrumbs
+
+        mock_sentry = MagicMock(spec=[])  # No isolation_scope attr
+        mock_hub = MagicMock()
+        mock_scope = MagicMock()
+        mock_hub.push_scope.return_value.__enter__ = MagicMock(return_value=mock_scope)
+        mock_hub.push_scope.return_value.__exit__ = MagicMock(return_value=False)
+        mock_sentry.Hub = MagicMock()
+        mock_sentry.Hub.current = mock_hub
+
+        with patch.dict('sys.modules', {'sentry_sdk': mock_sentry}):
+            with _suppress_sentry_breadcrumbs():
+                pass
+            mock_hub.push_scope.assert_called_once()
+
+    def test_try_wraps_http_call_in_sentry_suppression(self):
+        """_try() wraps the HTTP method call with _suppress_sentry_breadcrumbs."""
+        iface = self._make_iface()
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+
+        mock_method = MagicMock(return_value=mock_response)
+        mock_method.__name__ = 'post'
+
+        with patch('pluto.iface._suppress_sentry_breadcrumbs') as mock_suppress:
+            mock_suppress.return_value.__enter__ = MagicMock()
+            mock_suppress.return_value.__exit__ = MagicMock(return_value=False)
+
+            iface._try(
+                mock_method,
+                'http://example.com',
+                {},
+                b'content',
+                name='trigger',
+            )
+
+            mock_suppress.assert_called_once()
+
+    @pytest.mark.skipif(
+        not __import__('importlib').util.find_spec('sentry_sdk'),
+        reason='sentry_sdk not installed',
+    )
+    def test_breadcrumbs_not_leaked_to_host_scope(self):
+        """End-to-end: HTTP calls inside suppression don't add breadcrumbs
+        to the host app's isolation scope."""
+        import sentry_sdk
+
+        # Simulate host app initialising Sentry
+        sentry_sdk.init(
+            dsn='https://examplePublicKey@o0.ingest.sentry.io/0',
+            traces_sample_rate=0,
+        )
+
+        try:
+            scope = sentry_sdk.get_isolation_scope()
+            scope.clear_breadcrumbs()
+            before = list(scope._breadcrumbs)
+
+            from pluto.iface import _suppress_sentry_breadcrumbs
+
+            with _suppress_sentry_breadcrumbs():
+                # Manually add a breadcrumb (simulates what httpx integration does)
+                sentry_sdk.add_breadcrumb(
+                    category='http',
+                    message='POST https://pluto-py.trainy.ai/api/runs/trigger',
+                    level='info',
+                )
+
+            after = list(scope._breadcrumbs)
+            assert after == before, (
+                'Breadcrumbs leaked to host scope: '
+                f'before={len(before)}, after={len(after)}'
+            )
+        finally:
+            sentry_sdk.init()  # Reset global state
+
+
+class TestHttpxLoggingSuppression:
+    """Test that httpx logging is suppressed only during Pluto's HTTP calls."""
+
+    def test_httpx_suppressed_during_try(self):
+        """httpx logger is WARNING inside _try(), restored after."""
+        from pluto.iface import ServerInterface
+        from pluto.sets import Settings
+
+        settings = Settings()
+        settings._op_id = 'test-op-id'
+        settings._run_id = 12345
+        settings.x_file_stream_retry_max = 0
+        settings.x_file_stream_retry_wait_min_seconds = 0.001
+        settings.x_file_stream_retry_wait_max_seconds = 0.001
+
+        with patch('pluto.iface.httpx.Client'):
+            iface = ServerInterface({}, settings)
+
+        httpx_logger = logging.getLogger('httpx')
+        httpx_logger.setLevel(logging.DEBUG)
+
+        levels_during_call = []
+
+        def capture_level(*args, **kwargs):
+            levels_during_call.append(httpx_logger.level)
+            resp = MagicMock()
+            resp.status_code = 200
+            return resp
+
+        mock_method = MagicMock(side_effect=capture_level)
+        mock_method.__name__ = 'post'
+
+        iface._try(mock_method, 'http://example.com', {}, b'', name='test')
+
+        # During the call, httpx logger should have been WARNING
+        assert levels_during_call[0] == logging.WARNING
+        # After the call, restored to DEBUG
+        assert httpx_logger.level == logging.DEBUG
+
+    def test_httpx_level_restored_on_exception(self):
+        """httpx logger level is restored even if the HTTP call raises."""
+        from pluto.iface import _suppress_httpx_logging
+
+        httpx_logger = logging.getLogger('httpx')
+        httpx_logger.setLevel(logging.INFO)
+
+        try:
+            with _suppress_httpx_logging():
+                assert httpx_logger.level == logging.WARNING
+                raise RuntimeError('boom')
+        except RuntimeError:
+            pass
+
+        assert httpx_logger.level == logging.INFO
+
+    def test_e2e_try_suppresses_breadcrumbs_and_restores_logger(self):
+        """_try() with a real HTTP server produces zero Sentry breadcrumbs
+        and restores the httpx logger level afterwards."""
+        import threading
+        from http.server import BaseHTTPRequestHandler, HTTPServer
+
+        import httpx
+        import sentry_sdk
+
+        from pluto.iface import ServerInterface
+        from pluto.sets import Settings
+
+        class _Handler(BaseHTTPRequestHandler):
+            def do_POST(self, *a):
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(b'{"status": "OK"}')
+
+            def log_message(self, *a):
+                pass
+
+        srv = HTTPServer(('127.0.0.1', 0), _Handler)
+        port = srv.server_address[1]
+        url = f'http://127.0.0.1:{port}/api/runs/trigger'
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+
+        sentry_sdk.init(
+            dsn='https://examplePublicKey@o0.ingest.sentry.io/0',
+            traces_sample_rate=0.0,
+        )
+
+        settings = Settings()
+        settings._op_id = 'test-op-id'
+        settings._run_id = 12345
+        settings.x_file_stream_retry_max = 0
+        settings.x_file_stream_retry_wait_min_seconds = 0.001
+        settings.x_file_stream_retry_wait_max_seconds = 0.001
+
+        with patch('pluto.iface.httpx.Client'):
+            iface = ServerInterface({}, settings)
+
+        client = httpx.Client()
+
+        try:
+            logging.getLogger('httpx').setLevel(logging.NOTSET)
+            sentry_sdk.get_current_scope().clear_breadcrumbs()
+            sentry_sdk.get_isolation_scope().clear_breadcrumbs()
+
+            # Make real HTTP calls through _try()
+            for _ in range(3):
+                iface._try(
+                    client.post,
+                    url,
+                    {'Content-Type': 'application/json'},
+                    b'{}',
+                    name='trigger',
+                    max_retries=0,
+                    timeout=5.0,
+                )
+
+            # Capture what Sentry would attach to a crash report
+            events = []
+            sentry_sdk.get_client().options['before_send'] = lambda e, h: (
+                events.append(e),
+                None,
+            )[1]
+            try:
+                raise RuntimeError('test')
+            except Exception:
+                sentry_sdk.capture_exception()
+
+            crumbs = events[0].get('breadcrumbs', {}).get('values', [])
+            trigger_crumbs = [b for b in crumbs if 'trigger' in str(b)]
+
+            assert (
+                len(trigger_crumbs) == 0
+            ), f'{len(trigger_crumbs)} trigger breadcrumbs leaked to Sentry'
+            assert (
+                logging.getLogger('httpx').level < logging.WARNING
+            ), 'httpx logger level was not restored after _try()'
+        finally:
+            srv.shutdown()
+            client.close()
+            sentry_sdk.init()
 
 
 class TestFinishIdempotency:
