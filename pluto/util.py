@@ -387,6 +387,24 @@ def to_human(n):
     return '%sB' % n
 
 
+def deep_merge(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any]:
+    """Recursively merge *override* into *base*, returning a new dict.
+
+    For keys present in both dicts:
+    - If both values are dicts, merge them recursively.
+    - Otherwise the value from *override* wins.
+
+    Neither *base* nor *override* is mutated.
+    """
+    merged = base.copy()
+    for key, value in override.items():
+        if key in merged and isinstance(merged[key], dict) and isinstance(value, dict):
+            merged[key] = deep_merge(merged[key], value)
+        else:
+            merged[key] = value
+    return merged
+
+
 def clean_dict(d):
     c = {}
     for k, v in d.items():

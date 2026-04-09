@@ -132,9 +132,9 @@ def test_e2e_update_config():
     run.finish()
 
     server_config = pq.get_run(TESTING_PROJECT_NAME, run_id).get('config', {})
-    assert (
-        server_config['lr'] == 0.01
-    ), f'Server has lr={server_config.get("lr")}, expected 0.01'
+    assert server_config['lr'] == 0.01, (
+        f'Server has lr={server_config.get("lr")}, expected 0.01'
+    )
     assert server_config['arch'] == 'resnet50'
     assert server_config['epochs'] == 100
 
@@ -223,9 +223,9 @@ def test_e2e_list_runs_by_tag():
 
     runs = pq.list_runs(TESTING_PROJECT_NAME, tags=[unique_tag])
     found_ids = [r['id'] for r in runs]
-    assert (
-        run_id in found_ids
-    ), f"Run {run_id} not found when filtering by tag '{unique_tag}'"
+    assert run_id in found_ids, (
+        f"Run {run_id} not found when filtering by tag '{unique_tag}'"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -246,9 +246,9 @@ def test_e2e_metrics_logged():
     metric_names = _poll_metric_names(
         TESTING_PROJECT_NAME, run_id, ['train/loss', 'train/acc']
     )
-    assert (
-        'train/loss' in metric_names
-    ), f"'train/loss' not in server metric names: {metric_names}"
+    assert 'train/loss' in metric_names, (
+        f"'train/loss' not in server metric names: {metric_names}"
+    )
     assert 'train/acc' in metric_names
 
     # Check metric values
@@ -304,9 +304,9 @@ def test_e2e_image_upload(tmp_path):
         check=lambda fs: any('red-square' in f['fileName'] for f in fs),
     )
     file_names = [f['fileName'] for f in files]
-    assert any(
-        'red-square' in name for name in file_names
-    ), f"Image 'red-square' not found in server files: {file_names}"
+    assert any('red-square' in name for name in file_names), (
+        f"Image 'red-square' not found in server files: {file_names}"
+    )
 
     # Download and verify actual image content
     try:
@@ -433,9 +433,9 @@ def test_e2e_multiple_metrics_single_log():
     expected = ['multi/loss', 'multi/accuracy', 'multi/lr']
     metric_names = _poll_metric_names(TESTING_PROJECT_NAME, run_id, expected)
     for name in expected:
-        assert (
-            name in metric_names
-        ), f"'{name}' not in server metric names: {metric_names}"
+        assert name in metric_names, (
+            f"'{name}' not in server metric names: {metric_names}"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -595,9 +595,9 @@ def test_e2e_full_lifecycle():
         check=lambda fs: any('green' in f['fileName'] for f in fs),
     )
     file_names = [f['fileName'] for f in files]
-    assert any(
-        'green' in name for name in file_names
-    ), f'Image not found in server files: {file_names}'
+    assert any('green' in name for name in file_names), (
+        f'Image not found in server files: {file_names}'
+    )
 
     # Verify the image content survived the round-trip
     matched = [f for f in files if 'green' in f['fileName']][0]
@@ -608,6 +608,6 @@ def test_e2e_full_lifecycle():
             downloaded = PILImage.open(io.BytesIO(resp.content))
             assert downloaded.size == (4, 4), f'Expected 4x4, got {downloaded.size}'
             r, g, b = downloaded.convert('RGB').getpixel((0, 0))
-            assert (
-                g > 100 and r < 50 and b < 50
-            ), f'Expected green pixel, got ({r},{g},{b})'
+            assert g > 100 and r < 50 and b < 50, (
+                f'Expected green pixel, got ({r},{g},{b})'
+            )

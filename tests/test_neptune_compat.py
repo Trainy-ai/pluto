@@ -1133,9 +1133,9 @@ class TestNeptuneCompatCleanup:
             elapsed = time.time() - start
 
             # Should complete within timeout + buffer (not hang for 100s)
-            assert (
-                elapsed < 10
-            ), f'close() took {elapsed}s, should be < 10s (timeout should work)'
+            assert elapsed < 10, (
+                f'close() took {elapsed}s, should be < 10s (timeout should work)'
+            )
 
     def test_pluto_cleanup_silent_on_error(
         self, mock_neptune_backend, pluto_config_env
@@ -1244,17 +1244,17 @@ class TestNeptuneCompatCleanup:
                 run = Run(experiment_name='atexit-test')
 
                 # Verify an atexit handler was registered
-                assert (
-                    len(registered_handlers) > 0
-                ), 'atexit handler should be registered'
+                assert len(registered_handlers) > 0, (
+                    'atexit handler should be registered'
+                )
 
                 # The handler should be the wrapper's cleanup method
                 handler_names = [
                     h.__name__ for h in registered_handlers if hasattr(h, '__name__')
                 ]
-                assert (
-                    '_atexit_cleanup_pluto' in handler_names
-                ), 'atexit handler should be _atexit_cleanup_pluto'
+                assert '_atexit_cleanup_pluto' in handler_names, (
+                    'atexit handler should be _atexit_cleanup_pluto'
+                )
 
                 run.close()
 
@@ -1281,9 +1281,9 @@ class TestNeptuneCompatCleanup:
             elapsed = time.time() - start
 
             # Should complete quickly due to timeout
-            assert (
-                elapsed < 10
-            ), f'Context manager exit took {elapsed}s, should be < 10s'
+            assert elapsed < 10, (
+                f'Context manager exit took {elapsed}s, should be < 10s'
+            )
 
     def test_wrapper_closed_flag_prevents_double_cleanup(
         self, mock_neptune_backend, pluto_config_env
@@ -1312,9 +1312,9 @@ class TestNeptuneCompatCleanup:
             run.__exit__(None, None, None)
 
             # Pluto finish should only be called once
-            assert (
-                finish_call_count == 1
-            ), f'Pluto finish called {finish_call_count} times, should be 1'
+            assert finish_call_count == 1, (
+                f'Pluto finish called {finish_call_count} times, should be 1'
+            )
 
 
 class TestNeptuneSeededRandom:
@@ -1341,9 +1341,9 @@ class TestNeptuneSeededRandom:
             state_after = random.getstate()
             run.close()
 
-            assert (
-                state_before == state_after
-            ), 'Neptune compat layer should preserve global random state'
+            assert state_before == state_after, (
+                'Neptune compat layer should preserve global random state'
+            )
 
 
 @pytest.fixture()
@@ -1396,9 +1396,9 @@ class TestNeptuneCompatLiveBackend:
         id2 = run2._pluto_run.id
         run2.close()
 
-        assert (
-            id1 != id2
-        ), 'Fresh runs with same experiment_name must get distinct server IDs'
+        assert id1 != id2, (
+            'Fresh runs with same experiment_name must get distinct server IDs'
+        )
 
     def test_resume_reattaches_to_existing_run(self, live_pluto_env):
         """Run(run_id=X) with resume should reattach to the same server run."""
