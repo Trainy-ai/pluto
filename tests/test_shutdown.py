@@ -656,12 +656,12 @@ class TestHttpxLoggingSuppression:
             crumbs = events[0].get('breadcrumbs', {}).get('values', [])
             trigger_crumbs = [b for b in crumbs if 'trigger' in str(b)]
 
-            assert (
-                len(trigger_crumbs) == 0
-            ), f'{len(trigger_crumbs)} trigger breadcrumbs leaked to Sentry'
-            assert (
-                logging.getLogger('httpx').level < logging.WARNING
-            ), 'httpx logger level was not restored after _try()'
+            assert len(trigger_crumbs) == 0, (
+                f'{len(trigger_crumbs)} trigger breadcrumbs leaked to Sentry'
+            )
+            assert logging.getLogger('httpx').level < logging.WARNING, (
+                'httpx logger level was not restored after _try()'
+            )
         finally:
             srv.shutdown()
             client.close()
@@ -926,9 +926,9 @@ class TestSignalTerminationIntegration:
             start = time.monotonic()
             proc.wait(timeout=self._DEADLINE)
             elapsed = time.monotonic() - start
-            assert (
-                elapsed < self._DEADLINE
-            ), f'Process took {elapsed:.1f}s to exit after SIGTERM'
+            assert elapsed < self._DEADLINE, (
+                f'Process took {elapsed:.1f}s to exit after SIGTERM'
+            )
             # Default SIGTERM kills with negative signal code
             assert proc.returncode == -signal.SIGTERM
         finally:
@@ -945,9 +945,9 @@ class TestSignalTerminationIntegration:
             start = time.monotonic()
             proc.wait(timeout=self._DEADLINE)
             elapsed = time.monotonic() - start
-            assert (
-                elapsed < self._DEADLINE
-            ), f'Process took {elapsed:.1f}s to exit after SIGINT'
+            assert elapsed < self._DEADLINE, (
+                f'Process took {elapsed:.1f}s to exit after SIGINT'
+            )
         finally:
             if proc.poll() is None:
                 proc.kill()
