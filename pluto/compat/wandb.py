@@ -4,8 +4,9 @@ Wandb-to-Pluto compatibility layer for seamless dual-logging.
 This module monkey-patches wandb.init() so that every wandb Run also logs
 to Pluto. It can be activated in two ways:
 
-1. Automatic (zero code changes): Set PLUTO_WANDB=1 and pip install pluto-ml.
-   The .pth file triggers the import hook which calls apply_wandb_patches().
+1. Automatic (zero code changes): Set PLUTO_PROJECT + PLUTO_API_KEY env vars
+   and pip install pluto-ml. The .pth file triggers the import hook which
+   calls apply_wandb_patches().
 
 2. Explicit import: `import pluto.compat.wandb` at the top of your script.
    This patches wandb directly (like the Neptune compat layer).
