@@ -8,8 +8,10 @@ These tests verify:
 4. Signal handling for graceful Ctrl+C shutdown
 5. Process terminates promptly on SIGTERM (integration test)
 6. Sentry breadcrumb isolation for Pluto's internal HTTP traffic
+7. Scoped httpx log suppression during Pluto's HTTP calls
 """
 
+import logging
 import os
 import signal
 import subprocess
@@ -523,6 +525,62 @@ class TestSentryBreadcrumbSuppression:
             )
         finally:
             sentry_sdk.init()  # Reset global state
+
+
+class TestHttpxLoggingSuppression:
+    """Test that httpx logging is suppressed only during Pluto's HTTP calls."""
+
+    def test_httpx_suppressed_during_try(self):
+        """httpx logger is WARNING inside _try(), restored after."""
+        from pluto.iface import ServerInterface
+        from pluto.sets import Settings
+
+        settings = Settings()
+        settings._op_id = 'test-op-id'
+        settings._run_id = 12345
+        settings.x_file_stream_retry_max = 0
+        settings.x_file_stream_retry_wait_min_seconds = 0.001
+        settings.x_file_stream_retry_wait_max_seconds = 0.001
+
+        with patch('pluto.iface.httpx.Client'):
+            iface = ServerInterface({}, settings)
+
+        httpx_logger = logging.getLogger('httpx')
+        httpx_logger.setLevel(logging.DEBUG)
+
+        levels_during_call = []
+
+        def capture_level(*args, **kwargs):
+            levels_during_call.append(httpx_logger.level)
+            resp = MagicMock()
+            resp.status_code = 200
+            return resp
+
+        mock_method = MagicMock(side_effect=capture_level)
+        mock_method.__name__ = 'post'
+
+        iface._try(mock_method, 'http://example.com', {}, b'', name='test')
+
+        # During the call, httpx logger should have been WARNING
+        assert levels_during_call[0] == logging.WARNING
+        # After the call, restored to DEBUG
+        assert httpx_logger.level == logging.DEBUG
+
+    def test_httpx_level_restored_on_exception(self):
+        """httpx logger level is restored even if the HTTP call raises."""
+        from pluto.iface import _suppress_httpx_logging
+
+        httpx_logger = logging.getLogger('httpx')
+        httpx_logger.setLevel(logging.INFO)
+
+        try:
+            with _suppress_httpx_logging():
+                assert httpx_logger.level == logging.WARNING
+                raise RuntimeError('boom')
+        except RuntimeError:
+            pass
+
+        assert httpx_logger.level == logging.INFO
 
 
 class TestFinishIdempotency:
