@@ -196,6 +196,7 @@ class OpMonitor:
                         client=self.op._iface.client,
                         max_retries=0,
                         timeout=5.0,
+                        suppress_httpx_logs=True,
                     )
                     if hasattr(r, 'json') and r.json()['status'] == 'CANCELLED':
                         logger.critical(f'{tag}: server finished run')

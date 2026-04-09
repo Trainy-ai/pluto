@@ -59,8 +59,10 @@ def _suppress_sentry_breadcrumbs():
 def _suppress_httpx_logging():
     """Temporarily raise httpx/httpcore log level to WARNING for the call.
 
-    Only affects the duration of the ``with`` block — the user's own httpx
-    log level is saved and restored afterwards.
+    Used to silence the noisy INFO-level log lines from high-frequency
+    endpoints (e.g. the trigger/heartbeat that fires every ~4 s).  Only
+    affects the duration of the ``with`` block — the user's own httpx log
+    level is saved and restored afterwards.
     """
     httpx_logger = logging.getLogger('httpx')
     httpcore_logger = logging.getLogger('httpcore')
@@ -245,6 +247,7 @@ class ServerInterface:
         error_info: str = '',
         max_retries: Optional[int] = None,
         timeout: Optional[float] = None,
+        suppress_httpx_logs: bool = False,
     ):
         effective_max_retries = (
             max_retries
@@ -281,8 +284,12 @@ class ServerInterface:
             kwargs: Dict[str, Any] = {}
             if timeout is not None:
                 kwargs['timeout'] = timeout
-            with _suppress_sentry_breadcrumbs(), _suppress_httpx_logging():
-                r = method(url, content=content, headers=headers, **kwargs)
+            with _suppress_sentry_breadcrumbs():
+                if suppress_httpx_logs:
+                    with _suppress_httpx_logging():
+                        r = method(url, content=content, headers=headers, **kwargs)
+                else:
+                    r = method(url, content=content, headers=headers, **kwargs)
             if r.status_code in [200, 201]:
                 return r
 
@@ -352,6 +359,7 @@ class ServerInterface:
             error_info=error_info,
             max_retries=effective_max_retries,
             timeout=timeout,
+            suppress_httpx_logs=suppress_httpx_logs,
         )
 
     def _put_v1(
@@ -363,6 +371,7 @@ class ServerInterface:
         name='put',
         max_retries: Optional[int] = None,
         timeout: Optional[float] = None,
+        suppress_httpx_logs: bool = False,
     ):
         return self._try(
             client.put,
@@ -372,6 +381,7 @@ class ServerInterface:
             name=name,
             max_retries=max_retries,
             timeout=timeout,
+            suppress_httpx_logs=suppress_httpx_logs,
         )
 
     def _post_v1(
@@ -383,6 +393,7 @@ class ServerInterface:
         name: Union[str, None] = 'post',
         max_retries: Optional[int] = None,
         timeout: Optional[float] = None,
+        suppress_httpx_logs: bool = False,
     ):
         # Support both queue and direct content
         if isinstance(q, queue.Queue):
@@ -403,6 +414,7 @@ class ServerInterface:
             drained=drained,
             max_retries=max_retries,
             timeout=timeout,
+            suppress_httpx_logs=suppress_httpx_logs,
         )
 
         if (
