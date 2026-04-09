@@ -6,11 +6,34 @@ import pluto
 
 from . import sentry as _sentry
 from .op import Op
-from .sets import Settings, _classify_run_id, setup
+from .sets import Settings, _classify_run_id, _is_display_id, setup
 from .util import gen_id, get_char
 
 logger = logging.getLogger(f'{__name__.split(".")[0]}')
 tag = 'Init'
+
+
+def _resolve_fork_run_id(fork_run_id: Union[int, str], project: str) -> int:
+    """Resolve fork_run_id to a numeric run ID.
+
+    Accepts:
+        - int: used as-is
+        - numeric string (e.g. "12345"): cast to int
+        - display ID (e.g. "T0-123"): resolved via query API
+    """
+    if isinstance(fork_run_id, int):
+        return fork_run_id
+    if isinstance(fork_run_id, str) and fork_run_id.isdigit():
+        return int(fork_run_id)
+    if isinstance(fork_run_id, str) and _is_display_id(fork_run_id):
+        import pluto.query as pq
+
+        run = pq.get_run(project, fork_run_id)
+        return run['id']
+    raise ValueError(
+        f'fork_run_id must be a numeric run ID or display ID '
+        f'(e.g. "T0-123"), got: {fork_run_id!r}'
+    )
 
 
 class OpInit:
@@ -44,7 +67,7 @@ def init(
     tags: Union[str, list[str], None] = None,
     run_id: Optional[str] = None,
     resume: bool = False,
-    fork_run_id: Optional[int] = None,
+    fork_run_id: Optional[Union[int, str]] = None,
     fork_step: Optional[int] = None,
     inherit_config: Optional[bool] = None,
     inherit_tags: Optional[bool] = None,
@@ -71,8 +94,9 @@ def init(
                 same externalId already exists (prevents accidental data
                 collision). Runs created via PLUTO_RUN_ID env var are always
                 allowed to resume regardless of this flag.
-        fork_run_id: Numeric run ID of the parent run to fork from.
-            Must be used together with fork_step.
+        fork_run_id: Parent run to fork from. Accepts a numeric run ID
+            (int), a display ID string (e.g. ``"T0-123"``), or a numeric
+            string (e.g. ``"12345"``). Must be used together with fork_step.
         fork_step: Step number to fork at.
             Must be used together with fork_run_id.
         inherit_config: Whether to inherit config from the parent run
@@ -95,10 +119,10 @@ def init(
             run = pluto.init(
                 project="my-project",
                 name="lr-tuned",
-                fork_run_id=12345,
+                fork_run_id="T0-123",   # display ID from the UI
                 fork_step=500,
                 inherit_config=True,
-                config={"lr": 0.01},  # overrides inherited config keys
+                config={"lr": 0.01},    # overrides inherited config keys
             )
 
         Multi-node distributed training::
@@ -159,7 +183,7 @@ def init(
 
     # Set fork parameters on settings
     if fork_run_id is not None:
-        settings._fork_run_id = fork_run_id
+        settings._fork_run_id = _resolve_fork_run_id(fork_run_id, settings.project)
         settings._fork_step = fork_step
     if inherit_config is not None:
         settings._inherit_config = inherit_config

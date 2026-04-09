@@ -22,6 +22,7 @@ import numpy as np
 
 import pluto
 from pluto.api import make_compat_start_v1
+from pluto.init import _resolve_fork_run_id
 from pluto.sets import Settings
 from tests.utils import get_task_name
 
@@ -370,6 +371,22 @@ def test_fork_parameters_omitted_when_none():
     assert 'forkStep' not in payload
     assert 'inheritConfig' not in payload
     assert 'inheritTags' not in payload
+
+
+def test_fork_resolve_int():
+    """Resolve fork_run_id passes through int unchanged."""
+    assert _resolve_fork_run_id(12345, 'proj') == 12345
+
+
+def test_fork_resolve_numeric_string():
+    """Resolve fork_run_id casts numeric string to int."""
+    assert _resolve_fork_run_id('12345', 'proj') == 12345
+
+
+def test_fork_resolve_invalid_string():
+    """Resolve fork_run_id raises on non-display-ID string."""
+    with pytest.raises(ValueError, match='numeric run ID or display ID'):
+        _resolve_fork_run_id('not-a-valid-id', 'proj')
 
 
 def test_fork_metadata_properties_default_none():
