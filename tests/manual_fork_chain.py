@@ -34,16 +34,30 @@ def get_commit_hash() -> str:
         return 'unknown'
 
 
-def wait_for_metrics(run_id: int, timeout: float = 30.0) -> None:
+def wait_for_step(run_id: int, expected_step: int, timeout: float = 60.0) -> None:
+    """Poll until ClickHouse has ingested metrics up to expected_step."""
     import pluto.query as pq
 
     deadline = time.monotonic() + timeout
+    max_seen = -1
     while time.monotonic() < deadline:
-        names = pq.get_metric_names(PROJECT, run_ids=[run_id])
-        if 'train/loss' in names:
-            return
-        time.sleep(2)
-    print(f'  Warning: timed out waiting for metrics on run {run_id}')
+        try:
+            metrics = pq.get_metrics(PROJECT, run_id, metric_names=['train/loss'])
+            if hasattr(metrics, 'to_dict'):
+                steps = metrics['step'].tolist()
+            else:
+                steps = [m['step'] for m in metrics]
+            max_seen = max(steps) if steps else -1
+            if max_seen >= expected_step:
+                print(f'  ClickHouse has step {max_seen} (needed {expected_step})')
+                return
+        except Exception:
+            pass
+        time.sleep(3)
+    print(
+        f'  Warning: timed out waiting for step {expected_step} '
+        f'on run {run_id} (max seen: {max_seen})'
+    )
 
 
 def main() -> None:
@@ -115,9 +129,9 @@ def main() -> None:
         run.finish()
         print(f'  Finished run {run_id}  (steps {global_step_offset}..{last_step})')
 
-        # Wait for metrics before forking the next run
+        # Wait for ClickHouse to ingest up to last_step before forking
         if i < NUM_RUNS - 1:
-            wait_for_metrics(run_id)
+            wait_for_step(run_id, last_step)
 
         all_runs.append({'index': i, 'id': run_id, 'lr': lr})
         prev_id = run_id

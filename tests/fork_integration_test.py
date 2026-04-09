@@ -44,17 +44,29 @@ def get_commit_hash() -> str:
         return 'unknown'
 
 
-def wait_for_metrics(run_id: int, expected: list[str], timeout: float = 30.0) -> None:
-    """Poll until expected metric names appear on the server."""
+def wait_for_step(run_id: int, expected_step: int, timeout: float = 60.0) -> None:
+    """Poll until ClickHouse has ingested metrics up to expected_step."""
     import pluto.query as pq
 
     deadline = time.monotonic() + timeout
+    max_seen = -1
     while time.monotonic() < deadline:
-        names = pq.get_metric_names(FORK_PROJECT, run_ids=[run_id])
-        if all(e in names for e in expected):
-            return
-        time.sleep(2)
-    print(f'  Warning: timed out waiting for metrics {expected} on run {run_id}')
+        try:
+            metrics = pq.get_metrics(FORK_PROJECT, run_id, metric_names=['train/loss'])
+            if hasattr(metrics, 'to_dict'):
+                steps = metrics['step'].tolist()
+            else:
+                steps = [m['step'] for m in metrics]
+            max_seen = max(steps) if steps else -1
+            if max_seen >= expected_step:
+                return
+        except Exception:
+            pass
+        time.sleep(3)
+    print(
+        f'  Warning: timed out waiting for step {expected_step} '
+        f'on run {run_id} (max seen: {max_seen})'
+    )
 
 
 def main() -> None:
@@ -88,8 +100,8 @@ def main() -> None:
     parent.finish()
     print(f'  Parent run finished (id={parent_id})')
 
-    # Wait for parent metrics to be ingested so forkStep validation passes
-    wait_for_metrics(parent_id, ['train/loss', 'train/acc'])
+    # Wait for ClickHouse to ingest all parent steps so forkStep validation passes
+    wait_for_step(parent_id, PARENT_STEPS - 1)
 
     # ------------------------------------------------------------------
     # 2. Fork with inherited config + overrides
@@ -117,7 +129,7 @@ def main() -> None:
     fork1.finish()
     print(f'  Fork 1 finished (id={fork1_id})')
 
-    wait_for_metrics(fork1_id, ['train/loss', 'train/acc'])
+    wait_for_step(fork1_id, 9)
 
     # ------------------------------------------------------------------
     # 3. Fork with inherited tags
@@ -143,8 +155,6 @@ def main() -> None:
         )
     fork2.finish()
     print(f'  Fork 2 finished (id={fork2_id})')
-
-    wait_for_metrics(fork2_id, ['train/loss', 'val/loss'])
 
     # ------------------------------------------------------------------
     # 4. Fork without inheritance
@@ -172,8 +182,6 @@ def main() -> None:
         )
     fork3.finish()
     print(f'  Fork 3 finished (id={fork3_id})')
-
-    wait_for_metrics(fork3_id, ['train/loss', 'train/acc'])
 
     # ------------------------------------------------------------------
     # 5. Chain fork (fork from fork1)

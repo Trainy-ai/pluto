@@ -55,6 +55,26 @@ def _poll_metric_names(
     )
 
 
+def _poll_max_step(
+    project: str,
+    run_id: int,
+    expected_step: int,
+    metric: str = 'train/loss',
+    timeout: float = 60,
+) -> None:
+    """Poll until ClickHouse has ingested metrics up to *expected_step*."""
+
+    def _check() -> int:
+        metrics = pq.get_metrics(project, run_id, metric_names=[metric])
+        if hasattr(metrics, 'to_dict'):
+            steps = metrics['step'].tolist()
+        else:
+            steps = [m['step'] for m in metrics]
+        return max(steps) if steps else -1
+
+    _poll(fn=_check, check=lambda s: s >= expected_step, timeout=timeout)
+
+
 # ---------------------------------------------------------------------------
 # Module-scoped parent run (created once, shared by all fork tests)
 # ---------------------------------------------------------------------------
@@ -82,8 +102,8 @@ def parent_run() -> Dict:
         run.log({'train/loss': 1.0 - step * 0.1, 'train/acc': step * 0.1})
     run.finish()
 
-    # Wait for metrics to be ingested so the server can validate forkStep
-    _poll_metric_names(FORK_PROJECT, run_id, ['train/loss', 'train/acc'])
+    # Wait for ClickHouse to ingest all steps so forkStep validation passes
+    _poll_max_step(FORK_PROJECT, run_id, _PARENT_STEPS - 1)
 
     return {
         'run_id': run_id,
@@ -271,7 +291,7 @@ def test_fork_e2e_chain_fork(parent_run):
         run1.log({'chain/metric': step})
     run1.finish()
 
-    _poll_metric_names(FORK_PROJECT, run1_id, ['chain/metric'])
+    _poll_max_step(FORK_PROJECT, run1_id, 4, metric='chain/metric')
 
     # Second fork (from the first fork)
     run2 = pluto.init(
