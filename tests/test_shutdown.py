@@ -551,6 +551,27 @@ class TestHttpxLoggerSuppression:
         assert httpx_logger.level == logging.WARNING
         assert httpcore_logger.level == logging.WARNING
 
+    def test_httpx_logger_not_suppressed_in_debug_mode(self):
+        """httpx loggers are left alone when Pluto is in DEBUG mode."""
+        from pluto.iface import ServerInterface
+        from pluto.sets import Settings
+
+        httpx_logger = logging.getLogger('httpx')
+        httpcore_logger = logging.getLogger('httpcore')
+        httpx_logger.setLevel(logging.NOTSET)
+        httpcore_logger.setLevel(logging.NOTSET)
+
+        settings = Settings()
+        settings._op_id = 'test-op-id'
+        settings._run_id = 12345
+        settings.x_log_level = logging.DEBUG
+
+        with patch('pluto.iface.httpx.Client'):
+            ServerInterface({}, settings)
+
+        assert httpx_logger.level == logging.NOTSET
+        assert httpcore_logger.level == logging.NOTSET
+
 
 class TestFinishIdempotency:
     """Test that Op.finish() is idempotent."""

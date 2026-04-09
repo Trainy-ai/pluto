@@ -75,8 +75,10 @@ class ServerInterface:
         # Suppress httpx/httpcore INFO-level request logs (e.g.
         # "HTTP Request: POST … 200 OK") that fire on every heartbeat (~4 s).
         # The sync subprocess already does this; mirror it in the main process.
-        logging.getLogger('httpx').setLevel(logging.WARNING)
-        logging.getLogger('httpcore').setLevel(logging.WARNING)
+        # Skip when Pluto is in DEBUG mode so developers can still see httpx traffic.
+        if self.settings.x_log_level > logging.DEBUG:
+            logging.getLogger('httpx').setLevel(logging.WARNING)
+            logging.getLogger('httpcore').setLevel(logging.WARNING)
 
         self.headers = {
             'Authorization': f'Bearer {self.settings._auth}',
