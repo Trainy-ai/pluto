@@ -51,6 +51,12 @@ class Settings:
     _resume_run_id: Optional[int] = None  # Numeric run ID for resuming
     _resume_display_id: Optional[str] = None  # Display ID (e.g. "T0-123") for resuming
 
+    # Fork parameters
+    _fork_run_id: Optional[int] = None  # Parent run ID to fork from
+    _fork_step: Optional[int] = None  # Step number to fork at
+    _inherit_config: Optional[bool] = None  # Inherit parent config
+    _inherit_tags: Optional[bool] = None  # Inherit parent tags (server default: False)
+
     store_db: str = 'store.db'
     store_table_num: str = 'num'
     store_table_file: str = 'file'
