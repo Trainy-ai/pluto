@@ -35,20 +35,30 @@ def make_compat_trigger_v1(settings):
 
 
 def make_compat_start_v1(config, settings, info, tags=None):
-    return json.dumps(
-        {
-            # "runId": settings._op_id,
-            'runName': settings._op_name,
-            'projectName': settings.project,
-            'externalId': settings._external_id,  # User-provided run ID for multi-node
-            'config': json.dumps(config) if config is not None else None,
-            'loggerSettings': json.dumps(clean_dict(settings.to_dict())),
-            'systemMetadata': json.dumps(info) if info is not None else None,
-            'tags': tags if tags else None,
-            'createdAt': settings.compat.get('createdAt'),
-            'updatedAt': settings.compat.get('updatedAt'),
-        }
-    ).encode()
+    payload = {
+        # "runId": settings._op_id,
+        'runName': settings._op_name,
+        'projectName': settings.project,
+        'externalId': settings._external_id,  # User-provided run ID for multi-node
+        'config': json.dumps(config) if config is not None else None,
+        'loggerSettings': json.dumps(clean_dict(settings.to_dict())),
+        'systemMetadata': json.dumps(info) if info is not None else None,
+        'tags': tags if tags else None,
+        'createdAt': settings.compat.get('createdAt'),
+        'updatedAt': settings.compat.get('updatedAt'),
+    }
+
+    # Fork parameters (only include when set)
+    if settings._fork_run_id is not None:
+        payload['forkRunId'] = settings._fork_run_id
+    if settings._fork_step is not None:
+        payload['forkStep'] = settings._fork_step
+    if settings._inherit_config is not None:
+        payload['inheritConfig'] = settings._inherit_config
+    if settings._inherit_tags is not None:
+        payload['inheritTags'] = settings._inherit_tags
+
+    return json.dumps(payload).encode()
 
 
 def make_compat_resume_v1(settings):

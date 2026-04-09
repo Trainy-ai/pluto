@@ -16,9 +16,14 @@ except ImportError:  # pragma: no cover - optional dependency
     plt = None
     HAS_MATPLOTLIB = False
 
+import json
+
 import numpy as np
 
 import pluto
+from pluto.api import make_compat_start_v1
+from pluto.init import _resolve_fork_run_id
+from pluto.sets import Settings
 from tests.utils import get_task_name
 
 try:
@@ -317,4 +322,76 @@ def test_update_config_multiple_calls():
     assert run.config['epochs'] == 100
     assert run.config['model'] == 'resnet50'
 
+    run.finish()
+
+
+def test_fork_validation_missing_fork_step():
+    """Test that fork_run_id without fork_step raises ValueError."""
+    with pytest.raises(ValueError, match='must be provided together'):
+        pluto.init(
+            project=TESTING_PROJECT_NAME,
+            name=get_task_name(),
+            fork_run_id=12345,
+        )
+
+
+def test_fork_validation_missing_fork_run_id():
+    """Test that fork_step without fork_run_id raises ValueError."""
+    with pytest.raises(ValueError, match='must be provided together'):
+        pluto.init(
+            project=TESTING_PROJECT_NAME,
+            name=get_task_name(),
+            fork_step=500,
+        )
+
+
+def test_fork_parameters_in_start_payload():
+    """Test that fork parameters are included in the start payload."""
+    settings = Settings()
+    settings._fork_run_id = 12345
+    settings._fork_step = 500
+    settings._inherit_config = True
+    settings._inherit_tags = False
+
+    payload = json.loads(make_compat_start_v1({}, settings, None))
+
+    assert payload['forkRunId'] == 12345
+    assert payload['forkStep'] == 500
+    assert payload['inheritConfig'] is True
+    assert payload['inheritTags'] is False
+
+
+def test_fork_parameters_omitted_when_none():
+    """Test that fork parameters are omitted from payload when not set."""
+    settings = Settings()
+
+    payload = json.loads(make_compat_start_v1({}, settings, None))
+
+    assert 'forkRunId' not in payload
+    assert 'forkStep' not in payload
+    assert 'inheritConfig' not in payload
+    assert 'inheritTags' not in payload
+
+
+def test_fork_resolve_int():
+    """Resolve fork_run_id passes through int unchanged."""
+    assert _resolve_fork_run_id(12345, 'proj') == 12345
+
+
+def test_fork_resolve_numeric_string():
+    """Resolve fork_run_id casts numeric string to int."""
+    assert _resolve_fork_run_id('12345', 'proj') == 12345
+
+
+def test_fork_resolve_invalid_string():
+    """Resolve fork_run_id raises on non-display-ID string."""
+    with pytest.raises(ValueError, match='numeric run ID or display ID'):
+        _resolve_fork_run_id('not-a-valid-id', 'proj')
+
+
+def test_fork_metadata_properties_default_none():
+    """Test that fork properties are None on a normal (non-forked) run."""
+    run = pluto.init(project=TESTING_PROJECT_NAME, name=get_task_name(), config={})
+    assert run.fork_run_id is None
+    assert run.fork_step is None
     run.finish()

@@ -134,7 +134,7 @@ def test_e2e_update_config():
     server_config = pq.get_run(TESTING_PROJECT_NAME, run_id).get('config', {})
     assert (
         server_config['lr'] == 0.01
-    ), f"Server has lr={server_config.get('lr')}, expected 0.01"
+    ), f'Server has lr={server_config.get("lr")}, expected 0.01'
     assert server_config['arch'] == 'resnet50'
     assert server_config['epochs'] == 100
 

@@ -196,6 +196,7 @@ class OpMonitor:
                         client=self.op._iface.client,
                         max_retries=0,
                         timeout=5.0,
+                        suppress_httpx_logs=True,
                     )
                     if hasattr(r, 'json') and r.json()['status'] == 'CANCELLED':
                         logger.critical(f'{tag}: server finished run')
@@ -218,6 +219,8 @@ class Op:
         self._resumed: bool = False  # Whether this run was resumed (multi-node)
         self._resume: bool = resume  # Whether resume was explicitly requested
         self._sync_manager: Optional[SyncProcessManager] = None
+        self._fork_run_id: Optional[int] = None  # Resolved parent run ID from response
+        self._fork_step: Optional[int] = None  # Fork step from response
 
         # Determine if sync process should be used
         self._use_sync_process = settings.sync_process_enabled
@@ -263,6 +266,8 @@ class Op:
             self.settings.url_view = response_data['url']
             self.settings._op_id = response_data['runId']
             self._resumed = response_data.get('resumed', False)
+            self._fork_run_id = response_data.get('forkedFromRunId')
+            self._fork_step = response_data.get('forkStep')
             if self._resumed:
                 # Collision detection: prevent accidental data interleaving
                 if self._resume:
@@ -785,6 +790,25 @@ class Op:
         The server-assigned numeric run ID.
         """
         return self.settings._op_id
+
+    @property
+    def fork_run_id(self) -> Optional[int]:
+        """
+        The resolved parent run ID this run was forked from.
+
+        May differ from the requested fork_run_id due to lineage resolution.
+        Returns None if this run was not forked.
+        """
+        return self._fork_run_id
+
+    @property
+    def fork_step(self) -> Optional[int]:
+        """
+        The step at which this run was forked from its parent.
+
+        Returns None if this run was not forked.
+        """
+        return self._fork_step
 
     def alert(
         self,

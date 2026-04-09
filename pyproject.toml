@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "pluto-ml"
-version = "0.0.15"
+version = "0.0.19"
 description = "Pluto ML - Machine Learning Operations Framework"
 packages = [
     {include = "pluto"},
@@ -22,7 +22,7 @@ build-backend = "poetry.core.masonry.api"
 [tool.poetry.dependencies]
 python = "^3.10"
 GitPython = ">=3.1"
-httpx = { extras = ["http2"], version = ">=0.24" }
+httpx = { extras = ["http2"], version = ">=0.24,<1.0" }
 keyring = ">=24.0"
 keyrings-alt = ">=5.0"
 numpy = "^2.0"
