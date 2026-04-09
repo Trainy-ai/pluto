@@ -60,8 +60,7 @@ def _suppress_httpx_logging():
     """Temporarily raise httpx/httpcore log level to WARNING for the call.
 
     Only affects the duration of the ``with`` block — the user's own httpx
-    log level is saved and restored afterwards.  Inspired by SkyPilot's
-    ``set_logging_level`` pattern for kubernetes urllib3 suppression.
+    log level is saved and restored afterwards.
     """
     httpx_logger = logging.getLogger('httpx')
     httpcore_logger = logging.getLogger('httpcore')
