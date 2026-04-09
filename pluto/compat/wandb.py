@@ -40,6 +40,10 @@ _original_wandb_log = None
 _original_wandb_finish = None
 _patch_applied = False
 
+# Maps wandb run IDs to Pluto numeric run IDs.
+# Populated when pluto.init() succeeds in patched_init, used by fork_from.
+_wandb_to_pluto_run_ids: Dict[str, int] = {}
+
 
 def _get_env_with_deprecation(new_key: str, old_key: str) -> Optional[str]:
     """Get env var with fallback to deprecated MLOP_* name."""
@@ -300,6 +304,49 @@ class WandbRunWrapper:
         return self._wandb_run.__exit__(exc_type, exc_val, exc_tb)
 
 
+def _parse_wandb_fork_from(fork_from):
+    """Parse wandb's fork_from string into (run_id, step).
+
+    wandb format: "{run_id}?_step={step}"
+    Returns (run_id, step) tuple or None if unparseable.
+    """
+    try:
+        if '?_step=' in fork_from:
+            run_id, step_str = fork_from.split('?_step=', 1)
+            return run_id.strip(), int(step_str)
+    except (ValueError, AttributeError):
+        pass
+    logger.debug(f'pluto.compat.wandb: Could not parse fork_from: {fork_from}')
+    return None
+
+
+def _resolve_wandb_to_pluto_run(wandb_run_id, project):
+    """Look up a Pluto run ID from a wandb run ID.
+
+    First checks the in-process mapping (populated when pluto.init succeeds).
+    Falls back to searching the Pluto API by run name.
+
+    Returns the Pluto numeric run ID, or None if not found.
+    """
+    # Fast path: in-process mapping from earlier wandb.init() calls
+    if wandb_run_id in _wandb_to_pluto_run_ids:
+        return _wandb_to_pluto_run_ids[wandb_run_id]
+
+    # Slow path: search Pluto API
+    try:
+        import pluto.query as pq
+
+        runs = pq.list_runs(project, search=wandb_run_id, limit=10)
+        for run in runs:
+            if run.get('id'):
+                return run['id']
+    except Exception as e:
+        logger.debug(
+            f'pluto.compat.wandb: Failed to resolve wandb run {wandb_run_id}: {e}'
+        )
+    return None
+
+
 def _is_torch_tensor_scalar(value):
     """Check if value is a scalar torch tensor."""
     try:
@@ -398,7 +445,11 @@ def _make_patched_init(original_init, wandb_module):
             name = kwargs.get('name') or getattr(wandb_run, 'name', None)
             wandb_config = kwargs.get('config')
             tags = kwargs.get('tags')
-            run_id = os.environ.get('PLUTO_RUN_ID') or kwargs.get('id')
+            # Always use the wandb run ID as Pluto's externalId so we can
+            # look up the Pluto run from the wandb ID later (e.g. for forking).
+            # PLUTO_RUN_ID env var takes precedence (for distributed training).
+            wandb_run_id = getattr(wandb_run, 'id', None)
+            run_id = os.environ.get('PLUTO_RUN_ID') or wandb_run_id
 
             pluto_settings = {
                 'sync_process_enabled': True,
@@ -428,6 +479,19 @@ def _make_patched_init(original_init, wandb_module):
                 pluto_init_kwargs['tags'] = list(tags)
             if run_id:
                 pluto_init_kwargs['run_id'] = run_id
+
+            # Handle wandb fork_from — translate to Pluto fork parameters
+            fork_from = kwargs.get('fork_from')
+            if fork_from:
+                fork_info = _parse_wandb_fork_from(fork_from)
+                if fork_info:
+                    wandb_source_id, fork_step = fork_info
+                    pluto_source_id = _resolve_wandb_to_pluto_run(
+                        wandb_source_id, pluto_config['project']
+                    )
+                    if pluto_source_id is not None:
+                        pluto_init_kwargs['fork_run_id'] = pluto_source_id
+                        pluto_init_kwargs['fork_step'] = fork_step
 
             # Use a thread with timeout so a slow/unreachable Pluto server
             # never blocks the user's training script from starting.
@@ -462,6 +526,10 @@ def _make_patched_init(original_init, wandb_module):
                 f'pluto.compat.wandb: Successfully initialized Pluto run '
                 f'for project={pluto_config["project"]}, name={name}'
             )
+
+            # Store wandb→pluto ID mapping for fork resolution
+            if wandb_run_id and hasattr(pluto_run, 'id') and pluto_run.id:
+                _wandb_to_pluto_run_ids[wandb_run_id] = pluto_run.id
 
             # Wrap the wandb run
             wrapper = WandbRunWrapper(wandb_run, pluto_run, pluto, wandb_disabled)
