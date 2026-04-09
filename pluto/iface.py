@@ -285,7 +285,7 @@ class ServerInterface:
             if timeout is not None:
                 kwargs['timeout'] = timeout
             with _suppress_sentry_breadcrumbs():
-                if suppress_httpx_logs:
+                if suppress_httpx_logs and self.settings.x_log_level > logging.DEBUG:
                     with _suppress_httpx_logging():
                         r = method(url, content=content, headers=headers, **kwargs)
                 else:
