@@ -111,7 +111,14 @@ class WandbRunWrapper:
     try-except blocks to ensure wandb functionality is never impacted.
     """
 
+    # Single-GPU cleanup timeout — short, since Pluto's own finish() drains
+    # the sync process synchronously in non-distributed mode.
     _PLUTO_CLEANUP_TIMEOUT_SECONDS: float = 5.0
+
+    # Multi-rank cleanup timeout — longer, because in distributed mode we
+    # explicitly drain the sync manager before calling pluto.finish(), which
+    # Pluto's own finish() would skip to avoid collective-op deadlocks.
+    _PLUTO_DISTRIBUTED_CLEANUP_TIMEOUT_SECONDS: float = 30.0
 
     def __init__(self, wandb_run, pluto_run, pluto_module, wandb_disabled=False):
         self._wandb_run = wandb_run
@@ -127,20 +134,52 @@ class WandbRunWrapper:
 
     def _atexit_cleanup_pluto(self) -> None:
         """Atexit handler for Pluto cleanup."""
-        self._finish_pluto_with_timeout(timeout=self._PLUTO_CLEANUP_TIMEOUT_SECONDS)
+        self._finish_pluto_with_timeout(timeout=self._get_cleanup_timeout())
+
+    def _get_cleanup_timeout(self) -> float:
+        """
+        Return the cleanup timeout, longer in distributed mode.
+
+        In distributed mode (DDP/FSDP), Pluto's finish() skips the drain
+        to avoid collective-op deadlocks. We compensate here by running
+        an explicit drain before finish(), which needs a longer timeout.
+        """
+        if _is_torch_distributed():
+            return self._PLUTO_DISTRIBUTED_CLEANUP_TIMEOUT_SECONDS
+        return self._PLUTO_CLEANUP_TIMEOUT_SECONDS
 
     def _finish_pluto_with_timeout(self, timeout: float) -> None:
-        """Finish the Pluto run with a timeout to prevent blocking."""
+        """
+        Finish the Pluto run with a timeout to prevent blocking.
+
+        In distributed mode, explicitly drains the sync manager before
+        calling finish(), because Pluto's own finish() would skip the
+        drain (to avoid collective-op deadlocks in normal Pluto usage).
+        In single-GPU mode, Pluto's finish() handles the drain itself.
+        """
         with self._close_lock:
             if self._pluto_run is None:
                 return
             pluto_run = self._pluto_run
             self._pluto_run = None
 
+        is_distributed = _is_torch_distributed()
         done_event = threading.Event()
 
         def _do_finish():
             try:
+                # In distributed mode, explicitly drain the sync manager
+                # BEFORE finish() so we don't lose tail records. This
+                # bypasses Pluto's "is_distributed → don't wait" logic.
+                # Safe to wait here because training is already done and
+                # no more collective ops will happen on this process.
+                if is_distributed and hasattr(pluto_run, '_sync_manager'):
+                    sync_mgr = pluto_run._sync_manager
+                    if sync_mgr is not None:
+                        try:
+                            sync_mgr.stop(timeout=timeout - 2.0, wait=True)
+                        except Exception as e:
+                            logger.debug(f'pluto.compat.wandb: sync drain failed: {e}')
                 pluto_run.finish()
             except Exception:
                 pass
@@ -203,8 +242,8 @@ class WandbRunWrapper:
                 return self._wandb_run.finish(exit_code=exit_code, quiet=quiet)
             self._closed = True
 
-        # Finish Pluto first (non-blocking)
-        self._finish_pluto_with_timeout(timeout=self._PLUTO_CLEANUP_TIMEOUT_SECONDS)
+        # Finish Pluto first (non-blocking, bounded timeout)
+        self._finish_pluto_with_timeout(timeout=self._get_cleanup_timeout())
 
         # Finish wandb (critical path)
         return self._wandb_run.finish(exit_code=exit_code, quiet=quiet)
@@ -301,7 +340,7 @@ class WandbRunWrapper:
     def __exit__(self, exc_type, exc_val, exc_tb):
         with self._close_lock:
             self._closed = True
-        self._finish_pluto_with_timeout(timeout=self._PLUTO_CLEANUP_TIMEOUT_SECONDS)
+        self._finish_pluto_with_timeout(timeout=self._get_cleanup_timeout())
         return self._wandb_run.__exit__(exc_type, exc_val, exc_tb)
 
 
@@ -354,6 +393,29 @@ def _is_torch_tensor_scalar(value):
         import torch
 
         return isinstance(value, torch.Tensor) and value.dim() == 0
+    except ImportError:
+        return False
+
+
+def _is_torch_distributed() -> bool:
+    """
+    Check if we're running in a torch.distributed environment.
+
+    Used to decide whether to explicitly drain the Pluto sync manager
+    before finish() (needed in distributed mode because Pluto skips the
+    drain there to avoid collective-op deadlocks).
+    """
+    # Cheap env-var check first — avoids importing torch if it's not used.
+    if (
+        os.environ.get('RANK') is not None
+        or os.environ.get('LOCAL_RANK') is not None
+        or os.environ.get('WORLD_SIZE') is not None
+    ):
+        return True
+    try:
+        import torch.distributed as dist
+
+        return dist.is_available() and dist.is_initialized()
     except ImportError:
         return False
 
