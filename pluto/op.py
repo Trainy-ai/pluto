@@ -67,6 +67,25 @@ _original_excepthook = None
 _excepthook_registered = False
 
 
+def _traceback_touches_pluto(exc_traceback) -> bool:
+    """
+    Return True if any frame in the traceback belongs to the pluto package.
+
+    Used to decide whether an unhandled exception should be forwarded to
+    Pluto's internal Sentry telemetry. We only want to report errors that
+    actually originated in (or passed through) Pluto's own code, not
+    unrelated user/framework exceptions that merely happened while a Pluto
+    run was active.
+    """
+    tb = exc_traceback
+    while tb is not None:
+        module = tb.tb_frame.f_globals.get('__name__', '')
+        if module == 'pluto' or module.startswith('pluto.'):
+            return True
+        tb = tb.tb_next
+    return False
+
+
 def _excepthook(exc_type, exc_value, exc_traceback):
     """
     Custom sys.excepthook to mark active runs as FAILED on unhandled exceptions.
@@ -85,9 +104,13 @@ def _excepthook(exc_type, exc_value, exc_traceback):
                     f'due to unhandled {exc_type.__name__}'
                 )
 
-    # Report to Sentry APM
-    _sentry.capture_exception(exc_value)
-    _sentry.flush()
+    # Report to Sentry APM — but only if the exception actually touches pluto.
+    # Otherwise we'd capture unrelated errors from user/framework code (e.g.
+    # NCCL/CUDA failures in torch.distributed) that have nothing to do with
+    # the SDK.
+    if _traceback_touches_pluto(exc_traceback):
+        _sentry.capture_exception(exc_value)
+        _sentry.flush()
 
     # Call the original excepthook to preserve default behavior (print traceback)
     if _original_excepthook is not None:
