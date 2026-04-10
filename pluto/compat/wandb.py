@@ -549,10 +549,18 @@ def _make_patched_init(original_init, wandb_module):
             return wrapper
 
         except Exception as e:
-            logger.warning(
-                f'pluto.compat.wandb: Failed to initialize Pluto run: {e}. '
-                f'Continuing with wandb-only logging.'
+            # Loud failure — users should know dual-logging is off
+            _msg = (
+                f'pluto.compat.wandb: DUAL-LOGGING DISABLED. Failed to '
+                f'initialize Pluto run: {type(e).__name__}: {e}. '
+                f'wandb will continue to work normally, but NO DATA will be '
+                f'sent to Pluto. To fix, resolve the error above and retry.'
             )
+            logger.error(_msg)
+            # Also print to stderr so it shows up even if logging is not configured
+            import sys
+
+            print(f'[pluto.compat.wandb] {_msg}', file=sys.stderr, flush=True)
             return wandb_run
 
     return patched_init
