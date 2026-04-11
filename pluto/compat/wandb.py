@@ -482,33 +482,45 @@ def _make_patched_init(original_init, wandb_module):
             #
             # Resolution order for each field:
             #   1. Explicit kwarg to wandb.init(...)
-            #   2. Attribute on the resolved wandb_run (wandb reads WANDB_*
-            #      env vars during init and populates these)
-            #   3. WANDB_* env var direct fallback (in case wandb_run
-            #      attribute is missing)
+            #   2. WANDB_* env var (authoritative — user-set)
+            #   3. Attribute on the resolved wandb_run (fallback)
+            #
+            # Env vars come before wandb_run attributes because in
+            # wandb's disabled mode (DISABLE_WANDB_LOGGING=true → wandb
+            # mode=disabled), wandb generates a fake "dummy-xxx" name
+            # that ignores WANDB_NAME. We want the user-specified name.
+            #
             # See https://docs.wandb.ai/guides/track/environment-variables
             name = (
                 kwargs.get('name')
-                or getattr(wandb_run, 'name', None)
                 or os.environ.get('WANDB_NAME')
+                or getattr(wandb_run, 'name', None)
             )
             wandb_config = kwargs.get('config') or getattr(wandb_run, 'config', None)
+            wandb_tags_env = os.environ.get('WANDB_TAGS', '')
             tags = (
                 kwargs.get('tags')
+                or (wandb_tags_env.split(',') if wandb_tags_env else None)
                 or getattr(wandb_run, 'tags', None)
-                or (
-                    os.environ.get('WANDB_TAGS', '').split(',')
-                    if os.environ.get('WANDB_TAGS')
-                    else None
-                )
             )
-            # Wandb notes have no direct Pluto equivalent, but we can
-            # stash them in the config so they're still visible.
             notes = (
                 kwargs.get('notes')
-                or getattr(wandb_run, 'notes', None)
                 or os.environ.get('WANDB_NOTES')
+                or getattr(wandb_run, 'notes', None)
             )
+            # WANDB_RUN_GROUP and WANDB_JOB_TYPE: wandb-specific concepts
+            # with no direct Pluto equivalent. We surface them as tags so
+            # they're searchable in the Pluto UI. These are documented at
+            # https://docs.wandb.ai/guides/track/environment-variables
+            wandb_group = kwargs.get('group') or os.environ.get('WANDB_RUN_GROUP')
+            wandb_job_type = kwargs.get('job_type') or os.environ.get('WANDB_JOB_TYPE')
+            extra_tags = []
+            if wandb_group:
+                extra_tags.append(f'group:{wandb_group}')
+            if wandb_job_type:
+                extra_tags.append(f'job_type:{wandb_job_type}')
+            if extra_tags:
+                tags = (list(tags) if tags else []) + extra_tags
             # Always use the wandb run ID as Pluto's externalId so we can
             # look up the Pluto run from the wandb ID later (e.g. for forking).
             # PLUTO_RUN_ID env var takes precedence (for distributed training).
