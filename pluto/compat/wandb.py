@@ -163,13 +163,31 @@ class WandbRunWrapper:
 
         if self._pluto_run:
             try:
-                # Separate numeric values from rich data types
+                # Separate numeric values from rich data types.
+                #
+                # Values can be: scalars, tensors, single wandb media
+                # objects (Image/Video/Audio/Histogram/Table), or LISTS
+                # of wandb media objects. Lists are a common pattern
+                # from Composer/HuggingFace loggers that batch multiple
+                # generated samples under one key:
+                #     wandb.log({"gens": [wandb.Image(t) for t in imgs]})
+                # Pluto.log() natively supports lists, so we just need
+                # to convert each element and pass the list through.
                 pluto_data = {}
                 for key, value in data.items():
                     if isinstance(value, (int, float)):
                         pluto_data[key] = value
                     elif _is_torch_tensor_scalar(value):
                         pluto_data[key] = value.item()
+                    elif isinstance(value, (list, tuple)):
+                        # List of wandb media — convert each element.
+                        converted_items = []
+                        for item in value:
+                            c = _convert_wandb_to_pluto(key, item, self._pluto)
+                            if c is not None:
+                                converted_items.append(c)
+                        if converted_items:
+                            pluto_data[key] = converted_items
                     else:
                         # Try to convert wandb data types to pluto equivalents
                         converted = _convert_wandb_to_pluto(key, value, self._pluto)
