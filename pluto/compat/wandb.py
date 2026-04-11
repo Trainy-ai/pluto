@@ -229,9 +229,139 @@ class WandbRunWrapper:
         """Forward to wandb."""
         return self._wandb_run.unwatch(*args, **kwargs)
 
-    def save(self, *args, **kwargs):
-        """Forward to wandb."""
-        return self._wandb_run.save(*args, **kwargs)
+    def save(self, glob_str=None, base_path=None, policy='live'):
+        """
+        Save files to wandb AND log them to Pluto as artifacts.
+
+        wandb.save() accepts a glob pattern and uploads matching files
+        to the wandb run. Our dual-logging version expands the glob, and
+        for each matching regular file, logs it to Pluto via
+        pluto.Artifact. The key in Pluto is the file's basename.
+
+        Safety: wandb.save() is called first and its result is always
+        returned. Any failure in the Pluto path is logged at debug level
+        and swallowed — wandb behavior is never affected.
+
+        Policy semantics ('live', 'now', 'end') are handled by wandb;
+        Pluto logs the file once, at the time save() is called.
+        """
+        result = self._wandb_run.save(glob_str, base_path=base_path, policy=policy)
+
+        if self._pluto_run and glob_str:
+            try:
+                import glob as _glob_module
+
+                # wandb.save() allows relative globs resolved against
+                # cwd or base_path. Mirror that behavior.
+                pattern = glob_str
+                if base_path and not os.path.isabs(pattern):
+                    pattern = os.path.join(base_path, pattern)
+
+                matches = _glob_module.glob(pattern, recursive=True)
+                pluto_files = {}
+                for match in matches:
+                    if not os.path.isfile(match):
+                        continue
+                    basename = os.path.basename(match)
+                    # Namespace under 'save/' so these don't collide
+                    # with metric / media keys.
+                    log_name = f'save/{basename}'
+                    pluto_files[log_name] = self._pluto.Artifact(
+                        match, caption=basename
+                    )
+
+                if pluto_files:
+                    self._pluto_run.log(pluto_files)
+                    logger.info(
+                        f'pluto.compat.wandb: save() forwarded '
+                        f'{len(pluto_files)} file(s) to Pluto'
+                    )
+            except Exception as e:
+                logger.debug(f'pluto.compat.wandb: save() Pluto forward failed: {e}')
+
+        return result
+
+    def log_artifact(
+        self, artifact_or_path, name=None, type=None, aliases=None, tags=None
+    ):
+        """
+        Log a wandb.Artifact to wandb AND forward its local files to Pluto.
+
+        wandb.Artifact is a versioned bundle of files/dirs/references.
+        Pluto has no equivalent versioning/aliasing, but we can still
+        log the local file contents as Pluto artifacts so the data is
+        preserved. Reference entries (S3 URLs, etc.) are skipped —
+        we only forward entries that have a local file path.
+
+        Accepts either:
+        - A wandb.Artifact instance (iterates its manifest entries)
+        - A file path string (wandb.Artifact with a single file)
+
+        Safety: wandb.log_artifact() is called first. Any failure in
+        the Pluto path is swallowed — wandb behavior is never affected.
+        """
+        # Call the real wandb log_artifact first — it finalizes the
+        # artifact's manifest, which we need to read local_path from.
+        try:
+            forward_kwargs = {}
+            if name is not None:
+                forward_kwargs['name'] = name
+            if type is not None:
+                forward_kwargs['type'] = type
+            if aliases is not None:
+                forward_kwargs['aliases'] = aliases
+            if tags is not None:
+                forward_kwargs['tags'] = tags
+            result = self._wandb_run.log_artifact(artifact_or_path, **forward_kwargs)
+        except Exception:
+            # Re-raise — wandb errors must surface to the user.
+            raise
+
+        if self._pluto_run:
+            try:
+                pluto_files = {}
+
+                # Path-string form: single file/dir reference.
+                if isinstance(artifact_or_path, str):
+                    if os.path.isfile(artifact_or_path):
+                        basename = os.path.basename(artifact_or_path)
+                        art_name = name or basename
+                        log_name = f'artifacts/{art_name}'
+                        pluto_files[log_name] = self._pluto.Artifact(
+                            artifact_or_path, caption=art_name
+                        )
+                else:
+                    # wandb.Artifact form: iterate manifest entries.
+                    art = artifact_or_path
+                    art_name = getattr(art, 'name', None) or 'artifact'
+                    manifest = getattr(art, 'manifest', None)
+                    entries = {}
+                    if manifest is not None:
+                        entries = getattr(manifest, 'entries', {}) or {}
+
+                    for entry_name, entry in entries.items():
+                        # Skip reference entries (S3 URLs etc.) — we
+                        # can't upload something we don't have locally.
+                        local_path = getattr(entry, 'local_path', None)
+                        if not local_path or not os.path.isfile(local_path):
+                            continue
+                        log_name = f'artifacts/{art_name}/{entry_name}'
+                        pluto_files[log_name] = self._pluto.Artifact(
+                            local_path, caption=entry_name
+                        )
+
+                if pluto_files:
+                    self._pluto_run.log(pluto_files)
+                    logger.info(
+                        f'pluto.compat.wandb: log_artifact() forwarded '
+                        f'{len(pluto_files)} file(s) to Pluto'
+                    )
+            except Exception as e:
+                logger.debug(
+                    f'pluto.compat.wandb: log_artifact() Pluto forward failed: {e}'
+                )
+
+        return result
 
     def alert(self, title, text, level=None, wait_duration=None):
         """Alert on both wandb and Pluto."""
@@ -667,6 +797,11 @@ def _make_patched_init(original_init, wandb_module):
             # the re-patch becomes unnecessary (but harmless).
             wandb_module.log = wrapper.log
             wandb_module.finish = wrapper.finish
+            # wandb.save and wandb.log_artifact also get rebound to
+            # Run instance methods after init, same as log/finish.
+            # Route them through our wrapper so dual-logging works.
+            wandb_module.save = wrapper.save
+            wandb_module.log_artifact = wrapper.log_artifact
 
             return wrapper
 
