@@ -173,7 +173,7 @@ class WandbRunWrapper:
                 #     wandb.log({"gens": [wandb.Image(t) for t in imgs]})
                 # Pluto.log() natively supports lists, so we just need
                 # to convert each element and pass the list through.
-                pluto_data = {}
+                pluto_data: Dict[str, Any] = {}
                 for key, value in data.items():
                     if isinstance(value, (int, float)):
                         pluto_data[key] = value
