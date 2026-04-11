@@ -1,4 +1,5 @@
 import atexit
+import builtins
 import logging
 import os
 import queue
@@ -67,22 +68,73 @@ _original_excepthook = None
 _excepthook_registered = False
 
 
-def _traceback_touches_pluto(exc_traceback) -> bool:
+def _module_is_pluto(module: str) -> bool:
+    return module == 'pluto' or module.startswith('pluto.')
+
+
+def _exception_touches_pluto(
+    exc: Optional[BaseException],
+    _seen: Optional[set] = None,
+) -> bool:
     """
-    Return True if any frame in the traceback belongs to the pluto package.
+    Return True if an exception, its traceback, chained causes/contexts, or
+    ExceptionGroup members involve the pluto package.
 
     Used to decide whether an unhandled exception should be forwarded to
     Pluto's internal Sentry telemetry. We only want to report errors that
     actually originated in (or passed through) Pluto's own code, not
     unrelated user/framework exceptions that merely happened while a Pluto
     run was active.
+
+    The check covers:
+      * the exception class's defining module (e.g. ``pluto.errors.X``)
+      * every frame in the exception's own traceback
+      * ``__cause__`` (explicit ``raise X from Y``)
+      * ``__context__`` (implicit chaining, unless ``__suppress_context__``)
+      * ``BaseExceptionGroup.exceptions`` members on Python 3.11+
+
+    An id-based seen set guards against cyclic exception chains.
     """
-    tb = exc_traceback
+    if exc is None:
+        return False
+
+    if _seen is None:
+        _seen = set()
+    if id(exc) in _seen:
+        return False
+    _seen.add(id(exc))
+
+    # Check the exception class's defining module
+    module = getattr(type(exc), '__module__', '') or ''
+    if _module_is_pluto(module):
+        return True
+
+    # Walk the traceback frames
+    tb = exc.__traceback__
     while tb is not None:
-        module = tb.tb_frame.f_globals.get('__name__', '')
-        if module == 'pluto' or module.startswith('pluto.'):
+        frame_module = tb.tb_frame.f_globals.get('__name__', '')
+        if _module_is_pluto(frame_module):
             return True
         tb = tb.tb_next
+
+    # Follow the explicit `raise X from Y` chain
+    if _exception_touches_pluto(exc.__cause__, _seen):
+        return True
+
+    # Follow the implicit `except: raise Y` chain, unless suppressed by
+    # `raise Y from None`.
+    if not getattr(exc, '__suppress_context__', False):
+        if _exception_touches_pluto(exc.__context__, _seen):
+            return True
+
+    # ExceptionGroup members (Python 3.11+). BaseExceptionGroup does not
+    # exist on 3.10, so look it up defensively.
+    base_group = getattr(builtins, 'BaseExceptionGroup', None)
+    if base_group is not None and isinstance(exc, base_group):
+        for inner in exc.exceptions:
+            if _exception_touches_pluto(inner, _seen):
+                return True
+
     return False
 
 
@@ -107,8 +159,9 @@ def _excepthook(exc_type, exc_value, exc_traceback):
     # Report to Sentry APM — but only if the exception actually touches pluto.
     # Otherwise we'd capture unrelated errors from user/framework code (e.g.
     # NCCL/CUDA failures in torch.distributed) that have nothing to do with
-    # the SDK.
-    if _traceback_touches_pluto(exc_traceback):
+    # the SDK. The check walks the exception's traceback, chained causes and
+    # contexts, and any ExceptionGroup members.
+    if _exception_touches_pluto(exc_value):
         _sentry.capture_exception(exc_value)
         _sentry.flush()
 
