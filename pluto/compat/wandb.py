@@ -383,12 +383,24 @@ def _convert_wandb_to_pluto(key, value, pluto_module):
         if type_name == 'Image':
             # wandb.Image -> pluto.Image. wandb.Image has both `.image`
             # (public) and `._image` (legacy alias) pointing to the same
-            # PIL.Image. Prefer the public attribute, fall back to path.
-            pil_img = getattr(value, 'image', None) or getattr(value, '_image', None)
-            if pil_img is not None:
-                return pluto_module.Image(pil_img)
+            # PIL.Image (typically a PIL.PngImagePlugin.PngImageFile
+            # subclass, not the base PIL.Image.Image class).
+            #
+            # pluto.Image's class-name check uses startswith('PIL.Image.Image')
+            # which does NOT match subclasses, so we can't pass the PIL
+            # object directly. Instead, use the file path — wandb.Image
+            # always writes to _path on construction.
             if getattr(value, '_path', None):
                 return pluto_module.Image(value._path)
+            # Fallback: convert PIL to numpy (which pluto.Image handles)
+            pil_img = getattr(value, 'image', None) or getattr(value, '_image', None)
+            if pil_img is not None:
+                try:
+                    import numpy as np
+
+                    return pluto_module.Image(np.asarray(pil_img))
+                except Exception:
+                    return None
             return None
 
         if type_name == 'Histogram':
