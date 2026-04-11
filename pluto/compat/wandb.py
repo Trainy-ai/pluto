@@ -32,7 +32,14 @@ import atexit
 import logging
 import os
 import threading
-from typing import Any, Dict, Optional
+from typing import Any, Dict
+
+from ._utils import (
+    get_pluto_config_from_env as _get_pluto_config_from_env,
+)
+from ._utils import (
+    safe_import_pluto as _safe_import_pluto,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -44,62 +51,6 @@ _patch_applied = False
 # Maps wandb run IDs to Pluto numeric run IDs.
 # Populated when pluto.init() succeeds in patched_init, used by fork_from.
 _wandb_to_pluto_run_ids: Dict[str, int] = {}
-
-
-def _get_env_with_deprecation(new_key: str, old_key: str) -> Optional[str]:
-    """Get env var with fallback to deprecated MLOP_* name."""
-    import warnings
-
-    value = os.environ.get(new_key)
-    if value is None:
-        old_value = os.environ.get(old_key)
-        if old_value is not None:
-            warnings.warn(
-                f'Environment variable {old_key} is deprecated. Use {new_key} instead.',
-                DeprecationWarning,
-                stacklevel=3,
-            )
-            return old_value
-    return value
-
-
-def _get_pluto_config_from_env() -> Optional[Dict[str, Any]]:
-    """
-    Extract Pluto configuration from environment variables.
-
-    Returns:
-        Config dict if PLUTO_PROJECT is set, None otherwise.
-    """
-    project = _get_env_with_deprecation('PLUTO_PROJECT', 'MLOP_PROJECT')
-    if not project:
-        return None
-
-    config = {'project': project}
-
-    if api_key := _get_env_with_deprecation('PLUTO_API_KEY', 'MLOP_API_KEY'):
-        config['api_key'] = api_key
-    if url_app := _get_env_with_deprecation('PLUTO_URL_APP', 'MLOP_URL_APP'):
-        config['url_app'] = url_app
-    if url_api := _get_env_with_deprecation('PLUTO_URL_API', 'MLOP_URL_API'):
-        config['url_api'] = url_api
-    if url_ingest := _get_env_with_deprecation('PLUTO_URL_INGEST', 'MLOP_URL_INGEST'):
-        config['url_ingest'] = url_ingest
-
-    return config
-
-
-def _safe_import_pluto():
-    """Safely import pluto, returning None if unavailable."""
-    try:
-        import pluto
-
-        return pluto
-    except ImportError:
-        logger.warning(
-            'pluto.compat.wandb: pluto not installed, '
-            'continuing with wandb-only logging'
-        )
-        return None
 
 
 class WandbRunWrapper:
@@ -430,33 +381,44 @@ def _convert_wandb_to_pluto(key, value, pluto_module):
         type_name = type(value).__name__
 
         if type_name == 'Image':
-            # wandb.Image -> pluto.Image
-            if hasattr(value, '_image'):
-                return pluto_module.Image(value._image)
+            # wandb.Image -> pluto.Image. wandb.Image has both `.image`
+            # (public) and `._image` (legacy alias) pointing to the same
+            # PIL.Image. Prefer the public attribute, fall back to path.
+            pil_img = getattr(value, 'image', None) or getattr(value, '_image', None)
+            if pil_img is not None:
+                return pluto_module.Image(pil_img)
+            if getattr(value, '_path', None):
+                return pluto_module.Image(value._path)
             return None
 
         if type_name == 'Histogram':
-            # wandb.Histogram -> pluto.Histogram
+            # wandb.Histogram -> pluto.Histogram. wandb stores the
+            # pre-binned counts as `.histogram` (list) and edges as
+            # `.bins` (list of len N+1). pluto.Histogram takes a
+            # (counts, bin_edges) tuple.
             if hasattr(value, 'histogram') and hasattr(value, 'bins'):
                 return pluto_module.Histogram(
-                    data=(value.histogram, value.bins), bins=None
+                    data=(list(value.histogram), list(value.bins)), bins=None
                 )
             return None
 
         if type_name == 'Audio':
-            # wandb.Audio -> pluto.Audio
-            if hasattr(value, '_path'):
+            # wandb.Audio always writes to _path on construction
+            # (whether from numpy, file path, or bytes).
+            if getattr(value, '_path', None):
                 return pluto_module.Audio(value._path)
             return None
 
         if type_name == 'Video':
-            # wandb.Video -> pluto.Video
-            if hasattr(value, '_path'):
+            # wandb.Video always writes to _path on construction (after
+            # encoding). This can take a few seconds for numpy input.
+            if getattr(value, '_path', None):
                 return pluto_module.Video(value._path)
             return None
 
         if type_name == 'Table':
-            # wandb.Table -> pluto.Table (best-effort)
+            # wandb.Table -> pluto.Table (best-effort — pluto.Table has
+            # a different API, this may need adjustment).
             if hasattr(value, 'data') and hasattr(value, 'columns'):
                 return pluto_module.Table(data=value.data, columns=value.columns)
             return None
@@ -505,9 +467,36 @@ def _make_patched_init(original_init, wandb_module):
             # NOTE: Everything below is Pluto-only. wandb_run is already
             # fully initialized and functional. If anything here fails
             # or hangs, we return wandb_run unmodified (see except block).
-            name = kwargs.get('name') or getattr(wandb_run, 'name', None)
-            wandb_config = kwargs.get('config')
-            tags = kwargs.get('tags')
+            #
+            # Resolution order for each field:
+            #   1. Explicit kwarg to wandb.init(...)
+            #   2. Attribute on the resolved wandb_run (wandb reads WANDB_*
+            #      env vars during init and populates these)
+            #   3. WANDB_* env var direct fallback (in case wandb_run
+            #      attribute is missing)
+            # See https://docs.wandb.ai/guides/track/environment-variables
+            name = (
+                kwargs.get('name')
+                or getattr(wandb_run, 'name', None)
+                or os.environ.get('WANDB_NAME')
+            )
+            wandb_config = kwargs.get('config') or getattr(wandb_run, 'config', None)
+            tags = (
+                kwargs.get('tags')
+                or getattr(wandb_run, 'tags', None)
+                or (
+                    os.environ.get('WANDB_TAGS', '').split(',')
+                    if os.environ.get('WANDB_TAGS')
+                    else None
+                )
+            )
+            # Wandb notes have no direct Pluto equivalent, but we can
+            # stash them in the config so they're still visible.
+            notes = (
+                kwargs.get('notes')
+                or getattr(wandb_run, 'notes', None)
+                or os.environ.get('WANDB_NOTES')
+            )
             # Always use the wandb run ID as Pluto's externalId so we can
             # look up the Pluto run from the wandb ID later (e.g. for forking).
             # PLUTO_RUN_ID env var takes precedence (for distributed training).
@@ -538,6 +527,11 @@ def _make_patched_init(original_init, wandb_module):
                     if not isinstance(wandb_config, dict)
                     else wandb_config
                 )
+            # Stash wandb notes in config since Pluto has no native
+            # "notes" field on init. Users can still see it.
+            if notes:
+                pluto_init_kwargs.setdefault('config', {})
+                pluto_init_kwargs['config']['_wandb_notes'] = notes
             if tags:
                 pluto_init_kwargs['tags'] = list(tags)
             if run_id:

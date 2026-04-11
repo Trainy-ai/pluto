@@ -43,73 +43,19 @@ from dataclasses import asdict, is_dataclass
 from datetime import datetime
 from typing import Any, Dict, List, Mapping, Optional, Union
 
+from ._utils import (
+    get_env_with_deprecation as _get_env_with_deprecation,  # noqa: F401
+)
+from ._utils import (
+    get_pluto_config_from_env as _get_pluto_config_from_env,
+)
+from ._utils import (
+    safe_import_pluto as _safe_import_pluto,
+)
+
 logger = logging.getLogger(__name__)
 _original_neptune_run = None
 _patch_applied = False
-
-
-def _get_env_with_deprecation(new_key: str, old_key: str) -> Optional[str]:
-    """Get env var with fallback to deprecated MLOP_* name."""
-    import warnings
-
-    value = os.environ.get(new_key)
-    if value is None:
-        old_value = os.environ.get(old_key)
-        if old_value is not None:
-            warnings.warn(
-                f'Environment variable {old_key} is deprecated. Use {new_key} instead.',
-                DeprecationWarning,
-                stacklevel=3,
-            )
-            return old_value
-    return value
-
-
-def _get_pluto_config_from_env() -> Optional[Dict[str, Any]]:
-    """
-    Extract pluto configuration from environment variables.
-
-    Returns:
-        Config dict if PLUTO_PROJECT is set, None otherwise
-    """
-    project = _get_env_with_deprecation('PLUTO_PROJECT', 'MLOP_PROJECT')
-    if not project:
-        return None
-
-    config = {'project': project}
-
-    # Optional: API key (will fall back to keyring if not provided)
-    if api_key := _get_env_with_deprecation('PLUTO_API_KEY', 'MLOP_API_KEY'):
-        config['api_key'] = api_key
-
-    # Optional: Custom URLs
-    if url_app := _get_env_with_deprecation('PLUTO_URL_APP', 'MLOP_URL_APP'):
-        config['url_app'] = url_app
-    if url_api := _get_env_with_deprecation('PLUTO_URL_API', 'MLOP_URL_API'):
-        config['url_api'] = url_api
-    if url_ingest := _get_env_with_deprecation('PLUTO_URL_INGEST', 'MLOP_URL_INGEST'):
-        config['url_ingest'] = url_ingest
-
-    return config
-
-
-def _safe_import_pluto():
-    """
-    Safely import pluto, returning None if unavailable.
-
-    Returns:
-        pluto module or None if import fails
-    """
-    try:
-        import pluto
-
-        return pluto
-    except ImportError:
-        logger.warning(
-            'pluto.compat.neptune: pluto not installed, '
-            'continuing with Neptune-only logging'
-        )
-        return None
 
 
 def _detect_media_type_from_bytes(data: bytes) -> Optional[str]:
