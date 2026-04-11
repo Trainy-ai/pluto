@@ -85,7 +85,11 @@ def install():
     """
     Register the wandb import hook on sys.meta_path.
 
-    Activates when PLUTO_PROJECT and PLUTO_API_KEY are set.
+    Activates when either:
+    1. PLUTO_PROJECT + PLUTO_API_KEY are set (normal dual-logging), OR
+    2. DISABLE_WANDB_LOGGING=true + WANDB_PROJECT + WANDB_API_KEY are
+       set (Pluto-only mode reusing wandb env vars as a migration aid).
+
     Safe to call multiple times.
     """
     import os
@@ -95,7 +99,20 @@ def install():
     if _hook_installed:
         return
 
-    if not os.environ.get('PLUTO_PROJECT') or not os.environ.get('PLUTO_API_KEY'):
+    pluto_configured = os.environ.get('PLUTO_PROJECT') and os.environ.get(
+        'PLUTO_API_KEY'
+    )
+    wandb_disabled = os.environ.get('DISABLE_WANDB_LOGGING', '').lower() in (
+        'true',
+        '1',
+        'yes',
+    )
+    wandb_fallback_configured = (
+        wandb_disabled
+        and os.environ.get('WANDB_PROJECT')
+        and os.environ.get('WANDB_API_KEY')
+    )
+    if not (pluto_configured or wandb_fallback_configured):
         return
 
     # Don't install if wandb is already imported (too late to intercept)
