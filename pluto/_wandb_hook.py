@@ -5,9 +5,14 @@ This module is designed to be loaded via a .pth file at Python startup.
 It registers a sys.meta_path finder that, when `import wandb` is executed,
 loads the real wandb package and then monkey-patches it to dual-log to Pluto.
 
-The hook activates when both environment variables are set:
-    - PLUTO_PROJECT: Pluto project name
-    - PLUTO_API_KEY: Pluto API key
+Activation (needs both an API key and a project name):
+    API key (required):
+      - PLUTO_API_KEY: Pluto API token, OR
+      - WANDB_API_KEY as a fallback when DISABLE_WANDB_LOGGING=true
+        (user reuses the wandb env var to hold a Pluto token)
+    Project name (required):
+      - PLUTO_PROJECT, OR
+      - WANDB_PROJECT as a fallback (works in all modes)
 
 Optional:
     - DISABLE_WANDB_LOGGING=true: Skip real wandb, log to Pluto only
@@ -85,10 +90,18 @@ def install():
     """
     Register the wandb import hook on sys.meta_path.
 
-    Activates when either:
-    1. PLUTO_PROJECT + PLUTO_API_KEY are set (normal dual-logging), OR
-    2. DISABLE_WANDB_LOGGING=true + WANDB_PROJECT + WANDB_API_KEY are
-       set (Pluto-only mode reusing wandb env vars as a migration aid).
+    Activation requires:
+      - An API key: PLUTO_API_KEY (always), OR WANDB_API_KEY if
+        DISABLE_WANDB_LOGGING=true (migration shortcut — user reuses
+        the wandb env var to hold a Pluto token).
+      - A project name: PLUTO_PROJECT, OR WANDB_PROJECT as a fallback
+        (works in all modes; saves users from setting the same value
+        in two env vars).
+
+    PLUTO_API_KEY is the user's explicit opt-in signal — if it's not
+    set, the hook never activates even if WANDB_PROJECT is present.
+    This means wandb users who happen to have pluto-ml installed but
+    never set a Pluto API key see no behavior change.
 
     Safe to call multiple times.
     """
@@ -99,20 +112,20 @@ def install():
     if _hook_installed:
         return
 
-    pluto_configured = os.environ.get('PLUTO_PROJECT') and os.environ.get(
-        'PLUTO_API_KEY'
-    )
     wandb_disabled = os.environ.get('DISABLE_WANDB_LOGGING', '').lower() in (
         'true',
         '1',
         'yes',
     )
-    wandb_fallback_configured = (
-        wandb_disabled
-        and os.environ.get('WANDB_PROJECT')
-        and os.environ.get('WANDB_API_KEY')
+    # API key: PLUTO_API_KEY preferred; WANDB_API_KEY only in disabled mode.
+    have_api_key = bool(os.environ.get('PLUTO_API_KEY')) or (
+        wandb_disabled and bool(os.environ.get('WANDB_API_KEY'))
     )
-    if not (pluto_configured or wandb_fallback_configured):
+    # Project name: PLUTO_PROJECT preferred; WANDB_PROJECT fallback always.
+    have_project = bool(os.environ.get('PLUTO_PROJECT')) or bool(
+        os.environ.get('WANDB_PROJECT')
+    )
+    if not (have_api_key and have_project):
         return
 
     # Don't install if wandb is already imported (too late to intercept)
