@@ -87,12 +87,15 @@ class System:
     def get_gpu(self) -> Dict[str, Any]:
         d: Dict[str, Any] = {}
 
-        # NVIDIA
+        # NVIDIA — only populate d['nvidia'] if pynvml imports successfully.
+        # Otherwise downstream code (monitor, monitor_human) that does
+        # `import pynvml` inside `if self.gpu.get('nvidia')` will crash.
         n = run_cmd('nvidia-smi')
         if n:
-            d['nvidia'] = {'smi': n}
             try:
                 import pynvml
+
+                d['nvidia'] = {'smi': n}
 
                 try:
                     pynvml.nvmlInit()
