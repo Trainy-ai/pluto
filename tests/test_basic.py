@@ -24,6 +24,7 @@ import pluto
 from pluto.api import make_compat_start_v1
 from pluto.init import _resolve_fork_run_id
 from pluto.sets import Settings
+from pluto.util import deep_merge
 from tests.utils import get_task_name
 
 try:
@@ -394,4 +395,82 @@ def test_fork_metadata_properties_default_none():
     run = pluto.init(project=TESTING_PROJECT_NAME, name=get_task_name(), config={})
     assert run.fork_run_id is None
     assert run.fork_step is None
+    run.finish()
+
+
+# ---------------------------------------------------------------------------
+# deep_merge tests (pure unit tests, no server needed)
+# ---------------------------------------------------------------------------
+
+
+def test_deep_merge_flat():
+    """Flat dicts behave like shallow merge."""
+    base = {'a': 1, 'b': 2}
+    override = {'b': 3, 'c': 4}
+    assert deep_merge(base, override) == {'a': 1, 'b': 3, 'c': 4}
+
+
+def test_deep_merge_nested():
+    """Nested dicts are merged recursively, not replaced."""
+    base = {'optimizer': {'type': 'adam', 'lr': 0.001, 'weight_decay': 0.01}}
+    override = {'optimizer': {'lr': 0.01}}
+    result = deep_merge(base, override)
+    assert result == {'optimizer': {'type': 'adam', 'lr': 0.01, 'weight_decay': 0.01}}
+
+
+def test_deep_merge_deeply_nested():
+    """Merge works at arbitrary depth."""
+    base = {'a': {'b': {'c': 1, 'd': 2}, 'e': 3}}
+    override = {'a': {'b': {'c': 10, 'f': 4}}}
+    result = deep_merge(base, override)
+    assert result == {'a': {'b': {'c': 10, 'd': 2, 'f': 4}, 'e': 3}}
+
+
+def test_deep_merge_override_dict_with_scalar():
+    """Scalar in override replaces a dict in base."""
+    base = {'model': {'name': 'resnet', 'layers': 50}}
+    override = {'model': 'vit'}
+    assert deep_merge(base, override) == {'model': 'vit'}
+
+
+def test_deep_merge_override_scalar_with_dict():
+    """Dict in override replaces a scalar in base."""
+    base = {'model': 'resnet'}
+    override = {'model': {'name': 'vit', 'layers': 12}}
+    assert deep_merge(base, override) == {'model': {'name': 'vit', 'layers': 12}}
+
+
+def test_deep_merge_does_not_mutate_inputs():
+    """Neither base nor override is modified."""
+    base = {'a': {'b': 1}}
+    override = {'a': {'c': 2}}
+    result = deep_merge(base, override)
+    assert base == {'a': {'b': 1}}
+    assert override == {'a': {'c': 2}}
+    assert result == {'a': {'b': 1, 'c': 2}}
+
+
+def test_deep_merge_empty_override():
+    """Empty override returns a copy of base."""
+    base = {'a': 1, 'b': {'c': 2}}
+    assert deep_merge(base, {}) == base
+
+
+def test_deep_merge_empty_base():
+    """Empty base returns a copy of override."""
+    override = {'a': 1, 'b': {'c': 2}}
+    assert deep_merge({}, override) == override
+
+
+def test_update_config_deep_merge():
+    """update_config does a deep merge on nested config."""
+    run = pluto.init(
+        project=TESTING_PROJECT_NAME,
+        name=get_task_name(),
+        config={'optimizer': {'type': 'adam', 'lr': 0.001, 'weight_decay': 0.01}},
+    )
+    run.update_config({'optimizer': {'lr': 0.01}})
+    assert run.config['optimizer']['type'] == 'adam'
+    assert run.config['optimizer']['lr'] == 0.01
+    assert run.config['optimizer']['weight_decay'] == 0.01
     run.finish()

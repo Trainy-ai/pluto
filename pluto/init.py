@@ -7,7 +7,7 @@ import pluto
 from . import sentry as _sentry
 from .op import Op
 from .sets import Settings, _classify_run_id, _is_display_id, setup
-from .util import gen_id, get_char
+from .util import deep_merge, gen_id, get_char
 
 logger = logging.getLogger(f'{__name__.split(".")[0]}')
 tag = 'Init'
@@ -193,6 +193,31 @@ def init(
         settings._inherit_config = inherit_config
     if inherit_tags is not None:
         settings._inherit_tags = inherit_tags
+
+    # Deep-merge inherited parent config with user config (client-side).
+    # The server only does a shallow merge, so we fetch the parent config,
+    # deep-merge locally, and disable server-side inheritance.
+    if (
+        settings._fork_run_id is not None
+        and isinstance(config, dict)
+        and settings._inherit_config is not False
+    ):
+        try:
+            import pluto.query as pq
+
+            parent_run = pq.get_run(settings.project, settings._fork_run_id)
+            parent_config = parent_run.get('config')
+            if isinstance(parent_config, dict) and parent_config:
+                config = deep_merge(parent_config, config)
+                # Tell the server not to do its own (shallow) merge
+                settings._inherit_config = False
+        except Exception as e:
+            logger.warning(
+                '%s: could not fetch parent config for deep merge: %s. '
+                'Falling back to server-side shallow merge.',
+                tag,
+                e,
+            )
 
     try:
         op_init = OpInit(config=config, tags=normalized_tags or None, resume=resume)

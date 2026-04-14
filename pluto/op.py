@@ -32,7 +32,7 @@ from .store import DataStore
 from .sync import SyncProcessManager
 from .sync.store import HEALTH_METRIC_KEYS
 from .sys import System
-from .util import get_char, get_val, print_url, to_json
+from .util import deep_merge, get_char, get_val, print_url, to_json
 
 logger = logging.getLogger(f'{__name__.split(".")[0]}')
 tag = 'Operation'
@@ -826,7 +826,7 @@ class Op:
         """
         if self.config is None:
             self.config = {}
-        self.config.update(config)
+        self.config = deep_merge(self.config, config)
 
         logger.debug(f'{tag}: updated config: {config}')
 
