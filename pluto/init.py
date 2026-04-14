@@ -208,7 +208,12 @@ def init(
                 # Tell the server not to do its own (shallow) merge
                 settings._inherit_config = False
         except Exception as e:
-            logger.debug('%s: could not fetch parent config for deep merge: %s', tag, e)
+            logger.warning(
+                '%s: could not fetch parent config for deep merge: %s. '
+                'Falling back to server-side shallow merge.',
+                tag,
+                e,
+            )
 
     try:
         op_init = OpInit(config=config, tags=normalized_tags or None, resume=resume)
