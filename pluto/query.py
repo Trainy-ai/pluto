@@ -296,7 +296,12 @@ class Client:
         Returns:
             Dict with per-run statistics and a ``bestRun`` recommendation.
         """
-        resolved = [self._resolve_run_id(project, r) for r in run_ids[:100]]
+        cache: Dict[Union[int, str], int] = {}
+        resolved: List[int] = []
+        for r in run_ids[:100]:
+            if r not in cache:
+                cache[r] = self._resolve_run_id(project, r)
+            resolved.append(cache[r])
         params: Dict[str, Any] = {
             'runIds': ','.join(str(r) for r in resolved),
             'projectName': project,

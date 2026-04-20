@@ -364,6 +364,18 @@ class TestCompareRuns:
         params = client._client.get.call_args_list[-1][1]['params']
         assert params['runIds'] == '1,7'
 
+    def test_duplicate_display_ids_resolved_once(self, client, mock_response):
+        client._client.get.side_effect = [
+            mock_response(200, {'id': 7, 'displayId': 'MMP-1'}),
+            mock_response(200, {'id': 9, 'displayId': 'MMP-2'}),
+            mock_response(200, {'runs': [], 'bestRun': None}),
+        ]
+        client.compare_runs('proj', ['MMP-1', 'MMP-2', 'MMP-1', 'MMP-2'], 'loss')
+        # 2 get_run lookups + 1 compare = 3 calls (not 5)
+        assert client._client.get.call_count == 3
+        params = client._client.get.call_args_list[-1][1]['params']
+        assert params['runIds'] == '7,9,7,9'
+
 
 # ---------------------------------------------------------------------------
 # leaderboard
