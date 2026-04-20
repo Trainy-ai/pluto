@@ -198,7 +198,7 @@ class Client:
     def get_metrics(
         self,
         project: str,
-        run_id: int,
+        run_id: Union[int, str],
         metric_names: Optional[List[str]] = None,
         limit: int = 10000,
     ) -> Any:
@@ -213,7 +213,8 @@ class Client:
 
         Args:
             project: Project name.
-            run_id: Numeric server ID.
+            run_id: Numeric server ID (``int``) or display ID string
+                (e.g. ``"MMP-1"``).
             metric_names: Metric names to fetch. ``None`` fetches all.
             limit: Max data points per metric (max 10 000).
 
@@ -221,7 +222,7 @@ class Client:
             ``pandas.DataFrame`` or ``list[dict]``.
         """
         params: Dict[str, Any] = {
-            'runId': run_id,
+            'runId': self._resolve_run_id(project, run_id),
             'projectName': project,
             'limit': min(limit, 10000),
         }
@@ -253,7 +254,7 @@ class Client:
     def get_statistics(
         self,
         project: str,
-        run_id: int,
+        run_id: Union[int, str],
         metric_names: Optional[List[str]] = None,
     ) -> Any:
         """Compute statistics for run metrics.
@@ -263,13 +264,17 @@ class Client:
 
         Args:
             project: Project name.
-            run_id: Numeric server ID.
+            run_id: Numeric server ID (``int``) or display ID string
+                (e.g. ``"MMP-1"``).
             metric_names: Restrict to these metrics.
 
         Returns:
             Server response dict.
         """
-        params: Dict[str, Any] = {'runId': run_id, 'projectName': project}
+        params: Dict[str, Any] = {
+            'runId': self._resolve_run_id(project, run_id),
+            'projectName': project,
+        }
         if metric_names is not None and len(metric_names) == 1:
             params['logName'] = metric_names[0]
         return self._get('/api/runs/statistics', params=params)
@@ -277,21 +282,23 @@ class Client:
     def compare_runs(
         self,
         project: str,
-        run_ids: List[int],
+        run_ids: List[Union[int, str]],
         metric_name: str,
     ) -> Dict[str, Any]:
         """Compare a metric across multiple runs.
 
         Args:
             project: Project name.
-            run_ids: List of numeric run IDs (max 100).
+            run_ids: List of run IDs (max 100). Each entry may be a numeric
+                server ID or a display ID string (e.g. ``"MMP-1"``).
             metric_name: The metric to compare.
 
         Returns:
             Dict with per-run statistics and a ``bestRun`` recommendation.
         """
+        resolved = [self._resolve_run_id(project, r) for r in run_ids[:100]]
         params: Dict[str, Any] = {
-            'runIds': ','.join(str(r) for r in run_ids[:100]),
+            'runIds': ','.join(str(r) for r in resolved),
             'projectName': project,
             'logName': metric_name,
         }
@@ -337,21 +344,25 @@ class Client:
     def get_files(
         self,
         project: str,
-        run_id: int,
+        run_id: Union[int, str],
         file_name: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """Get file metadata with presigned download URLs.
 
         Args:
             project: Project name.
-            run_id: Numeric server ID.
+            run_id: Numeric server ID (``int``) or display ID string
+                (e.g. ``"MMP-1"``).
             file_name: Filter by log name / file name.
 
         Returns:
             List of file dicts with keys: ``fileName``, ``fileType``,
             ``fileSize``, ``step``, ``time``, ``downloadUrl``.
         """
-        params: Dict[str, Any] = {'runId': run_id, 'projectName': project}
+        params: Dict[str, Any] = {
+            'runId': self._resolve_run_id(project, run_id),
+            'projectName': project,
+        }
         if file_name is not None:
             params['logName'] = file_name
         return self._get('/api/runs/files', params=params)['files']
@@ -359,7 +370,7 @@ class Client:
     def download_file(
         self,
         project: str,
-        run_id: int,
+        run_id: Union[int, str],
         file_name: str,
         destination: Union[str, Path] = '.',
     ) -> Path:
@@ -367,7 +378,8 @@ class Client:
 
         Args:
             project: Project name.
-            run_id: Numeric server ID.
+            run_id: Numeric server ID (``int``) or display ID string
+                (e.g. ``"MMP-1"``).
             file_name: Log name of the file to download.
             destination: Directory or file path.
 
@@ -403,7 +415,7 @@ class Client:
     def get_logs(
         self,
         project: str,
-        run_id: int,
+        run_id: Union[int, str],
         log_type: Optional[str] = None,
         limit: int = 10000,
         offset: int = 0,
@@ -412,7 +424,8 @@ class Client:
 
         Args:
             project: Project name.
-            run_id: Numeric server ID.
+            run_id: Numeric server ID (``int``) or display ID string
+                (e.g. ``"MMP-1"``).
             log_type: Filter by type: ``"info"``, ``"error"``, ``"warning"``,
                 ``"debug"``, ``"print"``.
             limit: Max lines (max 10 000).
@@ -423,7 +436,7 @@ class Client:
             ``lineNumber``, ``step``.
         """
         params: Dict[str, Any] = {
-            'runId': run_id,
+            'runId': self._resolve_run_id(project, run_id),
             'projectName': project,
             'limit': min(limit, 10000),
             'offset': offset,
@@ -433,8 +446,21 @@ class Client:
         return self._get('/api/runs/logs', params=params)['logs']
 
     # ------------------------------------------------------------------
-    # Internal HTTP helpers
+    # Internal helpers
     # ------------------------------------------------------------------
+
+    def _resolve_run_id(self, project: str, run_id: Union[int, str]) -> int:
+        """Resolve a run ID argument to a numeric server ID.
+
+        Accepts an ``int`` (returned as-is) or a display ID string like
+        ``"MMP-1"`` (looked up via :meth:`get_run`). Numeric strings are
+        treated as server IDs.
+        """
+        if isinstance(run_id, int):
+            return run_id
+        if isinstance(run_id, str) and run_id.isdigit():
+            return int(run_id)
+        return int(self.get_run(project, run_id)['id'])
 
     def _get(
         self,
@@ -545,7 +571,7 @@ def get_metric_names(
 
 def get_metrics(
     project: str,
-    run_id: int,
+    run_id: Union[int, str],
     metric_names: Optional[List[str]] = None,
     limit: int = 10000,
 ) -> Any:
@@ -560,7 +586,7 @@ def get_metrics(
 
 def get_statistics(
     project: str,
-    run_id: int,
+    run_id: Union[int, str],
     metric_names: Optional[List[str]] = None,
 ) -> Any:
     """Compute metric statistics. See :meth:`Client.get_statistics`."""
@@ -569,7 +595,7 @@ def get_statistics(
 
 def compare_runs(
     project: str,
-    run_ids: List[int],
+    run_ids: List[Union[int, str]],
     metric_name: str,
 ) -> Dict[str, Any]:
     """Compare runs by metric. See :meth:`Client.compare_runs`."""
@@ -597,7 +623,7 @@ def leaderboard(
 
 def get_files(
     project: str,
-    run_id: int,
+    run_id: Union[int, str],
     file_name: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     """Get file metadata. See :meth:`Client.get_files`."""
@@ -606,7 +632,7 @@ def get_files(
 
 def download_file(
     project: str,
-    run_id: int,
+    run_id: Union[int, str],
     file_name: str,
     destination: Union[str, Path] = '.',
 ) -> Path:
@@ -616,7 +642,7 @@ def download_file(
 
 def get_logs(
     project: str,
-    run_id: int,
+    run_id: Union[int, str],
     log_type: Optional[str] = None,
     limit: int = 10000,
     offset: int = 0,

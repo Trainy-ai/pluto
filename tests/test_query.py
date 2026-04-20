@@ -306,6 +306,27 @@ class TestGetMetrics:
         except ImportError:
             assert result == []
 
+    def test_display_id_resolves_to_numeric(self, client, mock_response):
+        client._client.get.side_effect = [
+            mock_response(200, {'id': 99, 'displayId': 'MMP-1'}),
+            mock_response(200, {'metrics': []}),
+        ]
+        client.get_metrics('proj', 'MMP-1', metric_names=['loss'])
+        # First call: get_run by display ID
+        first_url = client._client.get.call_args_list[0][0][0]
+        assert 'by-display-id/MMP-1' in first_url
+        # Second call: /api/runs/metrics with resolved numeric ID
+        second_params = client._client.get.call_args_list[1][1]['params']
+        assert second_params['runId'] == 99
+
+    def test_numeric_string_is_treated_as_server_id(self, client, mock_response):
+        client._client.get.return_value = mock_response(200, {'metrics': []})
+        client.get_metrics('proj', '42')
+        # Only one call — no get_run lookup for numeric strings
+        assert client._client.get.call_count == 1
+        params = client._client.get.call_args[1]['params']
+        assert params['runId'] == 42
+
 
 # ---------------------------------------------------------------------------
 # get_statistics
@@ -333,6 +354,15 @@ class TestCompareRuns:
         params = client._client.get.call_args[1]['params']
         assert params['runIds'] == '1,2,3'
         assert params['logName'] == 'loss'
+
+    def test_mixed_display_and_numeric_ids(self, client, mock_response):
+        client._client.get.side_effect = [
+            mock_response(200, {'id': 7, 'displayId': 'MMP-1'}),
+            mock_response(200, {'runs': [], 'bestRun': None}),
+        ]
+        client.compare_runs('proj', [1, 'MMP-1'], 'loss')
+        params = client._client.get.call_args_list[-1][1]['params']
+        assert params['runIds'] == '1,7'
 
 
 # ---------------------------------------------------------------------------
