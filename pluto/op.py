@@ -682,13 +682,6 @@ class Op:
                 return
             self._finished = True
 
-        # Prevent the atexit-registered finish() from marking the run complete
-        # on interpreter shutdown after the caller has released this op.
-        try:
-            atexit.unregister(self.finish)
-        except Exception:
-            pass
-
         self._teardown(code, update_status=False)
 
     def _teardown(self, code: Union[int, None], update_status: bool) -> None:
@@ -699,6 +692,16 @@ class Op:
         raises). When False, the run's server-side status is left untouched
         and local errors are merely logged.
         """
+        # Once teardown is underway, the atexit-registered finish() is no
+        # longer needed. Unregistering here centralises the cleanup so both
+        # finish() and close() self-unregister; it also prevents the atexit
+        # hook from firing an idempotent (but wasteful) second finish() at
+        # interpreter shutdown after close() has already detached the op.
+        try:
+            atexit.unregister(self.finish)
+        except Exception:
+            pass
+
         # In DDP/distributed, don't block waiting for sync - it causes deadlocks
         # because all ranks must progress together for collective operations
         is_distributed = _is_distributed_environment()

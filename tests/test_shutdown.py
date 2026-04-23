@@ -787,21 +787,18 @@ class TestClose:
     def test_close_unregisters_atexit_hook(self):
         """close() must unregister the atexit-registered finish() so interpreter
         shutdown doesn't implicitly mark the run complete."""
-        import atexit
-
         op = self._make_op()
-        # Verify the hook is registered before close()
-        # (can't assert directly on atexit state portably, so we verify via
-        # unregister return, which is no-op-safe)
-        op.close()
-        # A second unregister call returns silently on 3.x — we assert that
-        # status was not updated by the close path, and that finish() having
-        # been unregistered means we don't double-call it.
-        op._iface.update_status.assert_not_called()
-        # Calling atexit.unregister again must be a no-op — this asserts that
-        # close() already removed the handler (otherwise we'd see a second
-        # handler fire during interpreter shutdown).
-        atexit.unregister(op.finish)  # no-op; just verifies no exception
+        with patch('atexit.unregister') as mock_unregister:
+            op.close()
+            mock_unregister.assert_called_with(op.finish)
+
+    def test_finish_unregisters_atexit_hook(self):
+        """finish() also self-unregisters so the atexit hook doesn't fire a
+        redundant (idempotent) second call at interpreter shutdown."""
+        op = self._make_op()
+        with patch('atexit.unregister') as mock_unregister:
+            op.finish()
+            mock_unregister.assert_called_with(op.finish)
 
     def test_close_thread_safe(self):
         """Concurrent close() calls must only tear down once."""
