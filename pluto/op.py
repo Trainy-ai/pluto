@@ -641,14 +641,64 @@ class Op:
             )
 
     def finish(self, code: Union[int, None] = None) -> None:
-        """Finish logging"""
-        # Make finish() idempotent - can be called multiple times safely
-        # (e.g., from atexit and explicit finish() call)
+        """Finish logging and mark the run as a terminal status on the server.
+
+        Flushes pending metrics, tears down local resources, and calls
+        ``update_status`` on the server so the run transitions out of the
+        active state. Idempotent and registered via ``atexit`` in
+        ``__init__``.
+
+        Callers attaching to an already-active run from a short-lived process
+        (e.g., writing eval metrics to an ongoing training run) should prefer
+        :meth:`close`, which performs the same local teardown without
+        changing the server-side run status.
+        """
         with self._finish_lock:
             if self._finished:
                 return
             self._finished = True
 
+        self._teardown(code, update_status=True)
+
+    def close(self, code: Union[int, None] = None) -> None:
+        """Release local resources without changing the server-side run status.
+
+        Performs the same local cleanup as :meth:`finish` (stops the monitor,
+        drains the sync manager, closes HTTP clients) but does **not** call
+        ``update_status`` on the server — the run stays in its current state
+        (typically "running") rather than being marked as a terminal status.
+
+        Also unregisters the ``atexit``-registered ``finish`` hook so
+        interpreter shutdown won't implicitly mark the run complete after
+        the caller has released the op.
+
+        Useful when a short-lived process resumes an active run just to
+        append data (e.g., an eval job writing metrics to an ongoing
+        training run) and must not interfere with its lifecycle.
+        Idempotent.
+        """
+        with self._finish_lock:
+            if self._finished:
+                return
+            self._finished = True
+
+        # Prevent the atexit-registered finish() from marking the run complete
+        # on interpreter shutdown after the caller has released this op.
+        try:
+            atexit.unregister(self.finish)
+        except Exception:
+            pass
+
+        self._teardown(code, update_status=False)
+
+    def _teardown(self, code: Union[int, None], update_status: bool) -> None:
+        """Shared teardown used by :meth:`finish` and :meth:`close`.
+
+        When ``update_status`` is True, notifies the server that the run has
+        reached a terminal state (and marks it FAILED if teardown itself
+        raises). When False, the run's server-side status is left untouched
+        and local errors are merely logged.
+        """
         # In DDP/distributed, don't block waiting for sync - it causes deadlocks
         # because all ranks must progress together for collective operations
         is_distributed = _is_distributed_environment()
@@ -684,8 +734,8 @@ class Op:
                 self._sync_manager.close()
                 self._sync_manager = None
 
-            # Update run status on server
-            if self._iface:
+            # Update run status on server (only when finishing)
+            if update_status and self._iface:
                 self._iface.update_status()
 
             # Clean up data store if used (legacy mode)
@@ -696,32 +746,36 @@ class Op:
             if self._iface:
                 self._iface.close()
 
-            # Print URL where users can view the completed run
-            logger.info(f'{tag}: View run at {print_url(self.settings.url_view)}')
+            if update_status:
+                # Print URL where users can view the completed run
+                logger.info(f'{tag}: View run at {print_url(self.settings.url_view)}')
+            else:
+                logger.debug(f'{tag}: closed (run status unchanged)')
         except (Exception, KeyboardInterrupt) as e:
             _sentry.capture_exception(e)
-            self.settings._op_status = signal.SIGINT.value
-            if self._iface:
-                self._iface._update_status(
-                    self.settings,
-                    trace={
-                        'type': e.__class__.__name__,
-                        'message': str(e),
-                        'frames': [
-                            {
-                                'filename': frame.filename,
-                                'lineno': frame.lineno,
-                                'name': frame.name,
-                                'line': frame.line,
-                            }
-                            for frame in traceback.extract_tb(e.__traceback__)
-                        ],
-                        'trace': traceback.format_exc(),
-                    },
-                )
+            if update_status:
+                self.settings._op_status = signal.SIGINT.value
+                if self._iface:
+                    self._iface._update_status(
+                        self.settings,
+                        trace={
+                            'type': e.__class__.__name__,
+                            'message': str(e),
+                            'frames': [
+                                {
+                                    'filename': frame.filename,
+                                    'lineno': frame.lineno,
+                                    'name': frame.name,
+                                    'line': frame.line,
+                                }
+                                for frame in traceback.extract_tb(e.__traceback__)
+                            ],
+                            'trace': traceback.format_exc(),
+                        },
+                    )
             logger.critical('%s: interrupted %s', tag, e)
         _sentry.flush()
-        logger.debug(f'{tag}: finished')
+        logger.debug(f'{tag}: finished' if update_status else f'{tag}: closed')
         teardown_logger(logger, console=logging.getLogger('console'))
 
         self.settings.meta = []
