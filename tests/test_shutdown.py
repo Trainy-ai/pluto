@@ -729,6 +729,99 @@ class TestFinishIdempotency:
         assert finish_count['count'] == 1
 
 
+class TestClose:
+    """Test Op.close() releases local resources without marking the run complete."""
+
+    def _make_op(self):
+        from pluto.op import Op
+        from pluto.sets import Settings
+
+        settings = Settings()
+        settings.mode = 'noop'  # disables network iface during start()
+        op = Op(config={}, settings=settings)
+        op.start()
+        # Inject a mock iface AFTER start() — noop mode leaves _iface as None,
+        # which would hide the update_status assertion. Injecting before start()
+        # breaks start() because it expects a real _sys accessor.
+        op._iface = MagicMock()
+        return op
+
+    def test_close_does_not_update_status(self):
+        """close() must NOT call update_status() on the server interface."""
+        op = self._make_op()
+        op.close()
+        op._iface.update_status.assert_not_called()
+        assert op._finished is True
+
+    def test_finish_still_updates_status(self):
+        """finish() must still call update_status() (regression guard)."""
+        op = self._make_op()
+        op.finish()
+        op._iface.update_status.assert_called_once()
+        assert op._finished is True
+
+    def test_close_is_idempotent(self):
+        """Second close() call is a no-op — no duplicate teardown."""
+        op = self._make_op()
+        original_monitor_stop = op._monitor.stop
+        call_count = {'n': 0}
+
+        def counting_stop(code=None):
+            call_count['n'] += 1
+            return original_monitor_stop(code)
+
+        op._monitor.stop = counting_stop
+
+        op.close()
+        op.close()  # second call must be a no-op
+        assert call_count['n'] == 1
+
+    def test_close_blocks_subsequent_finish(self):
+        """After close(), a later finish() call must not update status."""
+        op = self._make_op()
+        op.close()
+        op._iface.update_status.reset_mock()
+        op.finish()  # should early-return via _finished flag
+        op._iface.update_status.assert_not_called()
+
+    def test_close_unregisters_atexit_hook(self):
+        """close() must unregister the atexit-registered finish() so interpreter
+        shutdown doesn't implicitly mark the run complete."""
+        op = self._make_op()
+        with patch('atexit.unregister') as mock_unregister:
+            op.close()
+            mock_unregister.assert_called_with(op.finish)
+
+    def test_finish_unregisters_atexit_hook(self):
+        """finish() also self-unregisters so the atexit hook doesn't fire a
+        redundant (idempotent) second call at interpreter shutdown."""
+        op = self._make_op()
+        with patch('atexit.unregister') as mock_unregister:
+            op.finish()
+            mock_unregister.assert_called_with(op.finish)
+
+    def test_close_thread_safe(self):
+        """Concurrent close() calls must only tear down once."""
+        op = self._make_op()
+        call_count = {'n': 0}
+        original_monitor_stop = op._monitor.stop
+
+        def counting_stop(code=None):
+            call_count['n'] += 1
+            return original_monitor_stop(code)
+
+        op._monitor.stop = counting_stop
+
+        threads = [threading.Thread(target=op.close) for _ in range(5)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert call_count['n'] == 1
+        op._iface.update_status.assert_not_called()
+
+
 # Helper scripts used by integration tests below.  Spawned as subprocesses
 # so we can send real signals and assert the process exits in time.
 _TRAINING_SCRIPT = textwrap.dedent("""\
