@@ -1,0 +1,85 @@
+---
+sidebar_position: 3
+---
+
+:::warning Experimental
+The wandb compatibility shim is **experimental**. The API surface, env-var names, and activation mechanism may change in future releases. Please [open an issue](https://github.com/Trainy-ai/pluto/issues) if you hit a wandb feature that isn't dual-logged — we're actively expanding coverage.
+:::
+
+# wandb compatibility
+
+Pluto ships with a zero-code-change shim that mirrors `wandb.log()` calls into Pluto. Existing training scripts that use wandb keep working unchanged — set two env vars and Pluto becomes a second destination for metrics, media, and artifacts.
+
+:::info Tested against
+The shim is tested against **`wandb=={{TODO: fill in tested version}}`**. Other recent versions are expected to work — the shim patches public `wandb.init`/`wandb.log`/`wandb.save`/`run.log_artifact` surfaces and uses `__getattr__` passthrough for everything else — but only the tested version is verified end-to-end.
+:::
+
+## Activation
+
+```bash
+pip install pluto-ml
+export PLUTO_API_KEY=mlpi_xxx        # opt-in signal — without this the shim never activates
+export PLUTO_PROJECT=my-project      # optional; falls back to $WANDB_PROJECT
+
+python train.py                      # unchanged
+```
+
+The shim is wired up via a `.pth` file installed into `site-packages`. Python processes `.pth` files alphabetically at interpreter startup, so it sorts last (`zzzz_pluto_wandb_hook.pth`) and registers a `sys.meta_path` import hook. When user code runs `import wandb`, the hook loads real wandb, then monkey-patches `wandb.init()` to return a wrapper that dual-logs to Pluto.
+
+### Modes
+
+| Mode | Env vars | Behavior |
+|---|---|---|
+| **Dual-log** (default) | `PLUTO_API_KEY` + `PLUTO_PROJECT` (or `WANDB_PROJECT`) | Every `wandb.log()` goes to both wandb and Pluto. |
+| **Pluto-only** | above + `DISABLE_WANDB_LOGGING=true` | wandb runs but does not upload; Pluto receives all data. |
+| **Migration shortcut** | `WANDB_API_KEY=mlpi_xxx` + `WANDB_PROJECT=…` + `DISABLE_WANDB_LOGGING=true` | Reuse existing `WANDB_*` vars with a Pluto token. No `PLUTO_*` vars needed. |
+
+## Supported out of the box
+
+| wandb feature | Pluto dual-log | Notes |
+|---|---|---|
+| `wandb.log()` — numeric metrics | Yes | Same step alignment as wandb. |
+| `wandb.log()` — `wandb.Image` | Yes | Converted to Pluto image artifact (`png`). |
+| `wandb.log()` — `wandb.Histogram` | Yes | Sent as Pluto `DATA` records. |
+| `wandb.log()` — `wandb.Audio` | Yes | `wav`. |
+| `wandb.log()` — `wandb.Video` | Yes | `mp4`. |
+| `wandb.log()` — **list** of media (`{"gens": [Image(...), Image(...)]}`) | Yes | Each element uploaded separately with step preserved. |
+| `wandb.init(config=...)` | Yes | Captured at init. |
+| `wandb.init(fork_from=...)` | Yes | Translated to Pluto's native `fork_run_id` + `fork_step`. |
+| `wandb.finish()` | Yes | Flushes Pluto with a timeout; longer drain in distributed runs. |
+| `run.alert(...)` | Yes | |
+| `run.tags = [...]` | Yes | Synced on assignment. |
+| `wandb.save(path_or_glob)` | Yes | Matched files uploaded as Pluto artifacts under `save/{basename}`. |
+| `run.log_artifact(wandb.Artifact(...))` | Yes | Local entries uploaded under `artifacts/{name}/{entry_path}`. Reference entries (S3, HTTP) are skipped; no version/alias translation. |
+| `WANDB_NAME` env var | Yes | → Pluto run name. |
+| `WANDB_TAGS` env var | Yes | → Pluto run tags (comma-separated). |
+| `WANDB_NOTES` env var | Yes | Stashed in config as `_wandb_notes`. |
+| `WANDB_RUN_GROUP` env var | Yes | Added as tag `group:<value>`. |
+| `WANDB_JOB_TYPE` env var | Yes | Added as tag `job_type:<value>`. |
+
+## Not currently supported
+
+- `run.config.update()` after init (config is captured only at init time)
+- `run.watch()` gradient tracking
+- `wandb.log_model()` / model registry
+- `wandb.log_code()`
+- `define_metric()`, `mark_preempting()`, sweeps
+
+These call paths still work on wandb (via `__getattr__` passthrough) — they just don't dual-log to Pluto.
+
+## Safety guarantees
+
+- `wandb.init()` completes before any Pluto code runs.
+- `wandb.log()` calls wandb first, then Pluto inside `try/except`; wandb's return value is always preserved.
+- `pluto.init()` has a 10s timeout; if Pluto is unreachable the run continues as wandb-only.
+- `pluto.finish()` has a 5s timeout (30s in distributed mode, with an explicit sync-manager drain to avoid dropping tail records).
+- The `data` dict passed to `wandb.log()` is never mutated.
+- Any Pluto-side exception is swallowed — worst case is Pluto silently doesn't log; wandb is never affected.
+
+## Verified environments
+
+- Single-GPU and 2-GPU FSDP on Llama-3.1-8B (overhead vs. wandb-only: **+0.36%**, bitwise-identical loss/grad_norm)
+- 2-node / 4-rank FSDP2 across physical VMs (100/100 steps end-to-end in Pluto)
+- HuggingFace `Trainer` with `report_to="wandb"`
+- torchtitan `WandBLogger`
+- Graceful fallback verified during a real Pluto maintenance window (server 500s → wandb-only, training uninterrupted)
