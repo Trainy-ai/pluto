@@ -66,6 +66,26 @@ def _poll_metric_names(
     )
 
 
+def _poll_run(
+    project: str,
+    run_id: int,
+    check: Callable[[dict], bool],
+    timeout: float = _POLL_TIMEOUT,
+) -> dict:
+    """Poll ``pq.get_run`` until *check* on the snapshot is truthy.
+
+    Config and tag updates pushed via ``run.update_config`` /
+    ``run.add_tags`` are flushed by ``run.finish()`` but the server
+    applies them asynchronously, so a get_run() called immediately after
+    finish can return a stale snapshot.
+    """
+    return _poll(
+        fn=lambda: pq.get_run(project, run_id),
+        check=check,
+        timeout=timeout,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Run metadata
 # ---------------------------------------------------------------------------
@@ -131,7 +151,12 @@ def test_e2e_update_config():
     run.update_config({'epochs': 100, 'lr': 0.01})
     run.finish()
 
-    server_config = pq.get_run(TESTING_PROJECT_NAME, run_id).get('config', {})
+    server_run = _poll_run(
+        TESTING_PROJECT_NAME,
+        run_id,
+        check=lambda r: r.get('config', {}).get('lr') == 0.01,
+    )
+    server_config = server_run.get('config', {})
     assert (
         server_config['lr'] == 0.01
     ), f'Server has lr={server_config.get("lr")}, expected 0.01'
@@ -560,7 +585,17 @@ def test_e2e_full_lifecycle():
     run.finish()
 
     # --- Query everything back ---
-    server_run = pq.get_run(TESTING_PROJECT_NAME, run_id)
+    # Poll until config update AND tag mutations have applied server-side;
+    # both are pushed by finish() but reflected asynchronously.
+    server_run = _poll_run(
+        TESTING_PROJECT_NAME,
+        run_id,
+        check=lambda r: (
+            r.get('config', {}).get('lr') == 0.01
+            and 'validated' in r.get('tags', [])
+            and 'lifecycle' not in r.get('tags', [])
+        ),
+    )
 
     # Metadata
     assert server_run['name'] == task_name
