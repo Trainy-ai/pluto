@@ -490,9 +490,14 @@ def test_e2e_system_metrics_collected():
 def test_e2e_system_metrics_multiple_timesteps():
     """Verify sys/* metrics are sampled at multiple timesteps over an extended run.
 
-    Uses a 2-second sampling interval and runs for ~10 seconds, so we expect
+    Uses a 2-second sampling interval and runs for ~20 seconds, so we expect
     at least 3 distinct data points per system metric.  This catches bugs where
     system metrics are only emitted once (e.g. only at init or finish).
+
+    The wall-time budget is generous on purpose: the trigger HTTP call inside
+    the monitor loop slows sample cadence under GH Actions xdist contention,
+    so a tight 10s window flakes (seen on CI run 25193895688 — 2 samples).
+    20s leaves headroom even with ~2x slowdown.
     """
     run = pluto.init(
         project=TESTING_PROJECT_NAME,
@@ -502,8 +507,8 @@ def test_e2e_system_metrics_multiple_timesteps():
     )
     run_id = run.settings._op_id
 
-    # Keep the run alive for ~10 seconds so the monitor thread fires multiple times.
-    for i in range(10):
+    # Keep the run alive for ~20 seconds so the monitor thread fires multiple times.
+    for i in range(20):
         run.log({'keepalive': i})
         time.sleep(1)
     run.finish()
