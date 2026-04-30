@@ -1317,6 +1317,78 @@ class TestNeptuneCompatCleanup:
             ), f'Pluto finish called {finish_call_count} times, should be 1'
 
 
+class TestPlutoNotReleasedFromCloseOrExit:
+    """close() and __exit__ leave the pluto run alive.
+
+    Some Neptune callers — notably Lightning's NeptuneLogger.finalize —
+    invoke close() from inside Trainer's exception path (e.g. on a CUDA
+    OOM). Tearing pluto down there would lose any output emitted during
+    framework cleanup, including the traceback that triggered finalize.
+    The pluto run is finalised by terminate() or by the atexit handler
+    instead; sys.excepthook (set in Op.__init__) marks status FAILED
+    before atexit runs when an exception propagates.
+    """
+
+    @pytest.fixture
+    def pluto_config_env(self, clean_env):
+        os.environ['PLUTO_PROJECT'] = 'release-test'
+        yield
+
+    def test_close_does_not_finish_pluto(self, mock_neptune_backend, pluto_config_env):
+        mock_pluto_run = mock.MagicMock()
+        mock_pluto_run.config = {}
+        mock_pluto_run.finish = mock.MagicMock()
+
+        with mock.patch('pluto.init', return_value=mock_pluto_run):
+            from neptune_scale import Run
+
+            run = Run(experiment_name='close-noop-test')
+            run.close()
+
+            mock_pluto_run.finish.assert_not_called()
+
+    def test_exit_does_not_finish_pluto(self, mock_neptune_backend, pluto_config_env):
+        mock_pluto_run = mock.MagicMock()
+        mock_pluto_run.config = {}
+        mock_pluto_run.finish = mock.MagicMock()
+
+        with mock.patch('pluto.init', return_value=mock_pluto_run):
+            from neptune_scale import Run
+
+            with Run(experiment_name='exit-noop-test'):
+                pass
+
+            mock_pluto_run.finish.assert_not_called()
+
+    def test_terminate_finishes_pluto(self, mock_neptune_backend, pluto_config_env):
+        """terminate() is the explicit force-quit path and finalises pluto."""
+        mock_pluto_run = mock.MagicMock()
+        mock_pluto_run.config = {}
+        mock_pluto_run.finish = mock.MagicMock()
+
+        with mock.patch('pluto.init', return_value=mock_pluto_run):
+            from neptune_scale import Run
+
+            run = Run(experiment_name='terminate-finish-test')
+            run.terminate()
+
+            mock_pluto_run.finish.assert_called_once()
+
+    def test_atexit_finishes_pluto(self, mock_neptune_backend, pluto_config_env):
+        """The atexit handler is the canonical clean-shutdown path."""
+        mock_pluto_run = mock.MagicMock()
+        mock_pluto_run.config = {}
+        mock_pluto_run.finish = mock.MagicMock()
+
+        with mock.patch('pluto.init', return_value=mock_pluto_run):
+            from neptune_scale import Run
+
+            run = Run(experiment_name='atexit-finish-test')
+            run._atexit_cleanup_pluto()
+
+            mock_pluto_run.finish.assert_called_once()
+
+
 class TestNeptuneSeededRandom:
     """Test that Neptune compat layer isolates random state from user seeding."""
 
