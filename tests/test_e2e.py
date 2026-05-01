@@ -29,11 +29,12 @@ TESTING_PROJECT_NAME = 'testing-ci'
 HAS_TORCH = importlib.util.find_spec('torch') is not None
 
 # Max seconds to wait for data to appear on the server after finish().
-# 30s absorbs occasional server-side propagation lag for config/tag updates
-# seen on GH Actions (CI run 25195677398: lifecycle test still saw lr=0.001
-# after 15s polling). Successful polls exit on first check match, so this
-# only affects worst-case latency, not happy-path test runtime.
-_POLL_TIMEOUT = 30
+# 60s is large enough to absorb tail-latency on the server's config/tag
+# update propagation seen on GH Actions: CI run 25195677398 hit the limit
+# at 15s; CI run 25196590153 hit it again at 30s. Successful polls exit
+# on first check match, so this only widens the worst-case window —
+# happy-path test runtime is unchanged.
+_POLL_TIMEOUT = 60
 _POLL_INTERVAL = 2
 
 T = TypeVar('T')
