@@ -777,17 +777,24 @@ class Op:
                         },
                     )
             logger.critical('%s: interrupted %s', tag, e)
-        _sentry.flush()
-        logger.debug(f'{tag}: finished' if update_status else f'{tag}: closed')
-        teardown_logger(logger, console=logging.getLogger('console'))
+            # Re-raise user-initiated termination so the process actually
+            # exits as the user expects. Post-cleanup (sentry flush,
+            # teardown_logger, pluto.ops mutation) still runs via the
+            # finally block below.
+            if isinstance(e, KeyboardInterrupt):
+                raise
+        finally:
+            _sentry.flush()
+            logger.debug(f'{tag}: finished' if update_status else f'{tag}: closed')
+            teardown_logger(logger, console=logging.getLogger('console'))
 
-        self.settings.meta = []
-        if pluto.ops is not None:
-            pluto.ops = [
-                op for op in pluto.ops if op.settings._op_id != self.settings._op_id
-            ]  # TODO: make more efficient
-            if not pluto.ops:
-                _unregister_excepthook()
+            self.settings.meta = []
+            if pluto.ops is not None:
+                pluto.ops = [
+                    op for op in pluto.ops if op.settings._op_id != self.settings._op_id
+                ]  # TODO: make more efficient
+                if not pluto.ops:
+                    _unregister_excepthook()
 
     def watch(self, module, **kwargs):
         from .compat.torch import _watch_torch

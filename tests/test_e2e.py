@@ -66,6 +66,26 @@ def _poll_metric_names(
     )
 
 
+def _poll_run(
+    project: str,
+    run_id: int,
+    check: Callable[[dict], bool],
+    timeout: float = _POLL_TIMEOUT,
+) -> dict:
+    """Poll ``pq.get_run`` until *check* on the snapshot is truthy.
+
+    Config and tag updates pushed via ``run.update_config`` /
+    ``run.add_tags`` are flushed by ``run.finish()`` but the server
+    applies them asynchronously, so a get_run() called immediately after
+    finish can return a stale snapshot.
+    """
+    return _poll(
+        fn=lambda: pq.get_run(project, run_id),
+        check=check,
+        timeout=timeout,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Run metadata
 # ---------------------------------------------------------------------------
@@ -131,7 +151,12 @@ def test_e2e_update_config():
     run.update_config({'epochs': 100, 'lr': 0.01})
     run.finish()
 
-    server_config = pq.get_run(TESTING_PROJECT_NAME, run_id).get('config', {})
+    server_run = _poll_run(
+        TESTING_PROJECT_NAME,
+        run_id,
+        check=lambda r: r.get('config', {}).get('lr') == 0.01,
+    )
+    server_config = server_run.get('config', {})
     assert (
         server_config['lr'] == 0.01
     ), f'Server has lr={server_config.get("lr")}, expected 0.01'
@@ -465,9 +490,14 @@ def test_e2e_system_metrics_collected():
 def test_e2e_system_metrics_multiple_timesteps():
     """Verify sys/* metrics are sampled at multiple timesteps over an extended run.
 
-    Uses a 2-second sampling interval and runs for ~10 seconds, so we expect
+    Uses a 2-second sampling interval and runs for ~20 seconds, so we expect
     at least 3 distinct data points per system metric.  This catches bugs where
     system metrics are only emitted once (e.g. only at init or finish).
+
+    The wall-time budget is generous on purpose: the trigger HTTP call inside
+    the monitor loop slows sample cadence under GH Actions xdist contention,
+    so a tight 10s window flakes (seen on CI run 25193895688 — 2 samples).
+    20s leaves headroom even with ~2x slowdown.
     """
     run = pluto.init(
         project=TESTING_PROJECT_NAME,
@@ -477,8 +507,8 @@ def test_e2e_system_metrics_multiple_timesteps():
     )
     run_id = run.settings._op_id
 
-    # Keep the run alive for ~10 seconds so the monitor thread fires multiple times.
-    for i in range(10):
+    # Keep the run alive for ~20 seconds so the monitor thread fires multiple times.
+    for i in range(20):
         run.log({'keepalive': i})
         time.sleep(1)
     run.finish()
@@ -560,7 +590,17 @@ def test_e2e_full_lifecycle():
     run.finish()
 
     # --- Query everything back ---
-    server_run = pq.get_run(TESTING_PROJECT_NAME, run_id)
+    # Poll until config update AND tag mutations have applied server-side;
+    # both are pushed by finish() but reflected asynchronously.
+    server_run = _poll_run(
+        TESTING_PROJECT_NAME,
+        run_id,
+        check=lambda r: (
+            r.get('config', {}).get('lr') == 0.01
+            and 'validated' in r.get('tags', [])
+            and 'lifecycle' not in r.get('tags', [])
+        ),
+    )
 
     # Metadata
     assert server_run['name'] == task_name
