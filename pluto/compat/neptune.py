@@ -708,10 +708,19 @@ class NeptuneRunWrapper:
 
     def close(self, **kwargs):
         """
-        Close both Neptune and pluto runs.
+        Close the Neptune run. Pluto is left running.
 
-        Pluto cleanup uses a timeout to ensure it never blocks Neptune's close.
-        Neptune's close() is always called, preserving exact Neptune behavior.
+        Some Neptune callers — notably Lightning's ``NeptuneLogger.finalize`` —
+        invoke ``close()`` from inside Trainer's exception path (e.g. on a CUDA
+        OOM). Tearing pluto down here would lose any output emitted during
+        framework cleanup, including the traceback that triggered finalize in
+        the first place. We instead leave the pluto run alive; it is finalised
+        by:
+            * ``terminate()`` — explicit force-quit by the caller
+            * ``_atexit_cleanup_pluto`` — interpreter shutdown (with timeout)
+        ``sys.excepthook`` (registered in ``Op.__init__``) marks the run
+        FAILED before atexit fires when an exception propagates, so the
+        eventual status is correct without the close path doing it.
         """
         with self._close_lock:
             if self._closed:
@@ -721,8 +730,7 @@ class NeptuneRunWrapper:
                 return None
             self._closed = True
 
-        # Close pluto first with timeout (non-blocking, silent failure)
-        self._finish_pluto_with_timeout(timeout=self._PLUTO_CLEANUP_TIMEOUT_SECONDS)
+        # Deliberately do NOT touch pluto here — see docstring.
 
         # Close Neptune (unless disabled) - this is the critical path
         if not self._neptune_disabled:
@@ -877,14 +885,13 @@ class NeptuneRunWrapper:
         """
         Support context manager protocol.
 
-        Pluto cleanup uses a timeout to ensure it never blocks Neptune's __exit__.
-        Neptune's __exit__ is always called, preserving exact Neptune behavior.
+        Same rationale as :meth:`close`: pluto is left alive and finalised
+        via the atexit/excepthook path, not here.
         """
         with self._close_lock:
             self._closed = True
 
-        # Finish pluto with timeout (non-blocking, silent failure)
-        self._finish_pluto_with_timeout(timeout=self._PLUTO_CLEANUP_TIMEOUT_SECONDS)
+        # Deliberately do NOT touch pluto here — see close() docstring.
 
         if self._neptune_disabled:
             return False

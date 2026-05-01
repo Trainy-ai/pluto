@@ -1107,7 +1107,11 @@ class TestSignalTerminationIntegration:
         script_path.write_text(_TORCHRUN_SHM_SCRIPT)
 
         fill_path = '/dev/shm/_pluto_test_fill_torchrun'
-        torchrun_deadline = 30  # generous; normal case finishes in ~10-20 s
+        # Deadline picks the gap between healthy exit (~10-20s locally) and
+        # the SIGTERM-swallow hang signature (~40s+, dominated by torchrun's
+        # 30s grace SIGKILL). 45s preserves the regression signal while
+        # absorbing GH Actions xdist contention overhead.
+        torchrun_deadline = 45
 
         proc = subprocess.Popen(
             [
