@@ -16,9 +16,12 @@ Configuration:
     - PLUTO_API_KEY: Pluto API token (always required). In
       DISABLE_WANDB_LOGGING=true mode, WANDB_API_KEY may be reused
       instead.
-    - A project name: PLUTO_PROJECT if set, otherwise WANDB_PROJECT
-      is used as a fallback. This means if you already have
-      WANDB_PROJECT set for wandb, you don't need to set
+    - A project name: PLUTO_PROJECT if set, otherwise (in order)
+      the `project` kwarg to wandb.init(), the WANDB_PROJECT env
+      var, or the project attribute on the resolved wandb run.
+      This means if you already pass project= to wandb.init() (or
+      via a framework wrapper like Lightning's WandbLogger), or
+      have WANDB_PROJECT set for wandb, you don't need to set
       PLUTO_PROJECT separately.
 
     Optional:
@@ -622,19 +625,26 @@ def _make_patched_init(original_init, wandb_module):
         pluto_config = _get_pluto_config_from_env()
 
         # Project name fallback (works in ALL modes): if PLUTO_PROJECT
-        # isn't set, use WANDB_PROJECT. This makes PLUTO_PROJECT fully
-        # optional — users who already have WANDB_PROJECT from their
-        # existing wandb setup don't have to duplicate it.
+        # isn't set, fall back to (in order): the explicit `project`
+        # kwarg passed to wandb.init(), the `WANDB_PROJECT` env var,
+        # or finally the project attribute on the resolved wandb run.
+        # This makes PLUTO_PROJECT fully optional — frameworks like
+        # Lightning's WandbLogger pass project as a kwarg and may never
+        # set WANDB_PROJECT, so kwargs must be consulted too.
         #
         # If pluto_config is None here, it means PLUTO_PROJECT wasn't set
         # (that's the only reason _get_pluto_config_from_env returns None).
-        # We build a fresh config from WANDB_PROJECT and re-read the
-        # other PLUTO_* env vars (api key, urls) since the helper bailed
-        # before reading them.
+        # We build a fresh config from the resolved project and re-read
+        # the other PLUTO_* env vars (api key, urls) since the helper
+        # bailed before reading them.
         if pluto_config is None:
-            wandb_project = os.environ.get('WANDB_PROJECT')
-            if wandb_project:
-                pluto_config = {'project': wandb_project}
+            resolved_project = (
+                kwargs.get('project')
+                or os.environ.get('WANDB_PROJECT')
+                or getattr(wandb_run, 'project', None)
+            )
+            if resolved_project:
+                pluto_config = {'project': resolved_project}
                 if api_key := os.environ.get('PLUTO_API_KEY'):
                     pluto_config['api_key'] = api_key
                 for env_var, cfg_key in (
@@ -645,8 +655,8 @@ def _make_patched_init(original_init, wandb_module):
                     if v := os.environ.get(env_var):
                         pluto_config[cfg_key] = v
                 logger.info(
-                    'pluto.compat.wandb: using WANDB_PROJECT as Pluto project '
-                    '(PLUTO_PROJECT not set)'
+                    f'pluto.compat.wandb: using "{resolved_project}" as Pluto '
+                    f'project (PLUTO_PROJECT not set)'
                 )
 
         # Migration shortcut (disabled-mode only): in DISABLE_WANDB_LOGGING
