@@ -1,1 +1,1 @@
-import os; _dw=os.environ.get('DISABLE_WANDB_LOGGING','').lower() in ('true','1','yes'); _k=os.environ.get('PLUTO_API_KEY') or (_dw and os.environ.get('WANDB_API_KEY')); _p=os.environ.get('PLUTO_PROJECT') or os.environ.get('WANDB_PROJECT'); _k and _p and __import__('pluto._wandb_hook')._wandb_hook.install()
+import pluto._wandb_hook; pluto._wandb_hook.install()

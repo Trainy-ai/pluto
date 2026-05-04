@@ -17,6 +17,11 @@ pip install -e ".[dev,full]"
 
 # Or using poetry
 poetry install --with dev --extras full
+
+# Deploy the wandb auto-activation .pth into site-packages.
+# poetry-core's editable install doesn't copy data files, so the wandb
+# import hook never fires in dev without this. Run once after install.
+bash dev-install.sh
 ```
 
 ### Testing

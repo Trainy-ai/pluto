@@ -4,25 +4,28 @@ Wandb-to-Pluto compatibility layer for seamless dual-logging.
 This module monkey-patches wandb.init() so that every wandb Run also logs
 to Pluto. It can be activated in two ways:
 
-1. Automatic (zero code changes): Set PLUTO_PROJECT + PLUTO_API_KEY env vars
-   and pip install pluto-ml. The .pth file triggers the import hook which
-   calls apply_wandb_patches().
+1. Automatic (zero code changes): pip install pluto-ml. The .pth file
+   triggers the import hook which calls apply_wandb_patches() once Pluto
+   credentials are available (see Configuration below).
 
 2. Explicit import: `import pluto.compat.wandb` at the top of your script.
    This patches wandb directly (like the Neptune compat layer).
 
 Configuration:
-    Required:
-    - PLUTO_API_KEY: Pluto API token (always required). In
-      DISABLE_WANDB_LOGGING=true mode, WANDB_API_KEY may be reused
-      instead.
-    - A project name: PLUTO_PROJECT if set, otherwise (in order)
-      the `project` kwarg to wandb.init(), the WANDB_PROJECT env
-      var, or the project attribute on the resolved wandb run.
-      This means if you already pass project= to wandb.init() (or
-      via a framework wrapper like Lightning's WandbLogger), or
-      have WANDB_PROJECT set for wandb, you don't need to set
-      PLUTO_PROJECT separately.
+    Authentication (one of the following):
+    - Run `pluto login` to store a token in the system keyring.
+    - Set PLUTO_API_KEY (Pluto API token).
+    - In DISABLE_WANDB_LOGGING=true mode only, WANDB_API_KEY may be
+      reused as the Pluto token (migration shortcut).
+
+    Project name (one of the following, checked in order):
+    - PLUTO_PROJECT env var
+    - the `project` kwarg passed to wandb.init()
+    - WANDB_PROJECT env var
+    - the project attribute on the resolved wandb run
+    If you already pass project= to wandb.init() (or via a framework
+    wrapper like Lightning's WandbLogger) or have WANDB_PROJECT set,
+    you don't need to set PLUTO_PROJECT separately.
 
     Optional:
     - PLUTO_URL_APP: Pluto app URL (for self-hosted)
@@ -32,7 +35,8 @@ Configuration:
 
 Hard Requirements:
     - MUST NOT break existing wandb functionality under ANY condition
-    - If Pluto is down/misconfigured, silently continue with wandb only
+    - If Pluto is down/misconfigured, log a warning and continue with
+      wandb only — never raise.
     - Zero impact on wandb's behavior, return values, or exceptions
 """
 
@@ -672,10 +676,11 @@ def _make_patched_init(original_init, wandb_module):
                 )
 
         if pluto_config is None:
-            logger.info(
-                'pluto.compat.wandb: no project name available '
-                '(set PLUTO_PROJECT or WANDB_PROJECT), '
-                'continuing with wandb-only logging'
+            logger.warning(
+                'pluto.compat.wandb: cannot dual-log to Pluto — no project '
+                'name resolvable (none of: PLUTO_PROJECT, project= kwarg, '
+                'WANDB_PROJECT, wandb run project). Continuing with wandb-'
+                'only logging.'
             )
             return wandb_run
 
