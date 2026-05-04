@@ -14,7 +14,7 @@ permissions:
 
 jobs:
   release-build-pypi:
-    runs-on: ubuntu-latest
+    runs-on: ubicloud-standard-2
     steps:
       - uses: actions/checkout@v4
         with:

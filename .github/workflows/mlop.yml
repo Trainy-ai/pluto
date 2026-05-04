@@ -13,7 +13,7 @@ jobs:
   build:
     # TODO: set to trigger
     if: github.actor == 'none'
-    runs-on: ubuntu-latest
+    runs-on: ubicloud-standard-4
 
     steps:
     - uses: actions/checkout@v4
