@@ -11,7 +11,10 @@
 set -eo pipefail
 
 SRC="$(cd "$(dirname "$0")" && pwd)/zzzz_pluto_wandb_hook.pth"
-SITE=$(poetry run python -c "import site; print(site.getsitepackages()[0])")
+# sysconfig.get_path('purelib') is more reliable than site.getsitepackages()[0]
+# — the latter's first entry isn't guaranteed to be the active install target
+# on all platforms (e.g. user-site or sometimes Windows/conda layouts).
+SITE=$(poetry run python -c "import sysconfig; print(sysconfig.get_path('purelib'))")
 DEST="$SITE/zzzz_pluto_wandb_hook.pth"
 
 ln -sf "$SRC" "$DEST"

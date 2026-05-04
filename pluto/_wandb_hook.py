@@ -35,22 +35,32 @@ _hint_emitted = False
 # Mirrors pluto.auth.LOGIN_MARKER_PATH. Duplicated as a literal here so this
 # module stays import-free of the rest of pluto at .pth load time.
 _LOGIN_MARKER_PATH = os.path.expanduser('~/.pluto/.login_ok')
-# keyrings.alt.file.PlaintextKeyring storage path (Linux/Windows fallback when
-# no system keyring is available). The file is shared across services, so we
-# parse it as INI to confirm a [pluto] section exists. macOS uses Keychain;
-# the marker file above covers macOS and post-upgrade Linux users.
-_KEYRING_CFG_PATH = os.path.expanduser('~/.local/share/python_keyring/keyring_pass.cfg')
+
+
+def _keyring_cfg_path() -> str:
+    """
+    keyrings.alt.file.PlaintextKeyring storage location, mirrored from
+    keyring.util.platform_ so we don't have to import keyring at .pth load
+    time. macOS uses Keychain by default (the marker above covers Mac); this
+    only matters for Linux/Windows users on the file-based fallback.
+    """
+    if sys.platform == 'win32':
+        root = os.environ.get('LOCALAPPDATA') or os.environ.get('ProgramData') or '.'
+        return os.path.join(root, 'Python Keyring', 'keyring_pass.cfg')
+    base = os.environ.get('XDG_DATA_HOME') or os.path.expanduser('~/.local/share')
+    return os.path.join(base, 'python_keyring', 'keyring_pass.cfg')
 
 
 def _keyring_cfg_has_pluto() -> bool:
     """Backward compat: detect a `pluto login` done before the marker existed."""
-    if not os.path.exists(_KEYRING_CFG_PATH):
+    path = _keyring_cfg_path()
+    if not os.path.exists(path):
         return False
     try:
         import configparser
 
         cp = configparser.RawConfigParser()
-        cp.read(_KEYRING_CFG_PATH, encoding='utf-8')
+        cp.read(path, encoding='utf-8')
         return cp.has_section('pluto')
     except Exception:
         return False

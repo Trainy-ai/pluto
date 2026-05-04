@@ -18,6 +18,7 @@ import os
 import site
 import subprocess
 import sys
+import sysconfig
 import textwrap
 
 import pytest
@@ -29,10 +30,12 @@ _CHECK_PATCHED = (
 
 
 def _pth_deployed() -> bool:
-    for d in site.getsitepackages():
-        if os.path.exists(os.path.join(d, 'zzzz_pluto_wandb_hook.pth')):
-            return True
-    return False
+    # Check both sysconfig.purelib (where dev-install.sh deploys it) and
+    # site.getsitepackages() (defensively, in case of unusual layouts).
+    candidates = [sysconfig.get_path('purelib'), *site.getsitepackages()]
+    return any(
+        os.path.exists(os.path.join(d, 'zzzz_pluto_wandb_hook.pth')) for d in candidates
+    )
 
 
 pytestmark = pytest.mark.skipif(
