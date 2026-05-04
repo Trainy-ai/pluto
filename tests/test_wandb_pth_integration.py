@@ -134,21 +134,27 @@ def test_import_wandb_emits_discoverability_hint_with_no_credentials(
     fake_wandb, empty_home
 ):
     """No credentials at all → WARNING hint, wandb left unpatched."""
+    # Diagnostic pings around `import wandb` so a CI failure tells us whether
+    # stderr capture itself is broken or whether the logger output is dropped.
     code = (
-        'import logging; '
+        'import logging, sys; '
         'logging.basicConfig(level=logging.WARNING); '
-        'import wandb; ' + _CHECK_PATCHED
+        'sys.stderr.write("DIAG-PRE\\n"); sys.stderr.flush(); '
+        'import wandb; '
+        'sys.stderr.write("DIAG-POST\\n"); sys.stderr.flush(); '
+        + _CHECK_PATCHED
     )
     result = _run_subprocess(
         code,
         {'HOME': empty_home, 'PYTHONPATH': fake_wandb},
     )
-    assert (
-        'NOT_PATCHED' in result.stdout
-    ), f'wandb should not be patched. stdout={result.stdout!r}'
-    assert (
-        'no Pluto credentials found' in result.stderr
-    ), f'discoverability hint missing. stderr={result.stderr!r}'
+    assert 'NOT_PATCHED' in result.stdout, (
+        f'wandb should not be patched. stdout={result.stdout!r} '
+        f'stderr={result.stderr!r}'
+    )
+    assert 'no Pluto credentials found' in result.stderr, (
+        f'discoverability hint missing. stderr={result.stderr!r}'
+    )
     assert 'pluto login' in result.stderr
 
 
