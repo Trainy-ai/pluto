@@ -72,11 +72,18 @@ def empty_home(tmp_path):
 
 
 def _run_subprocess(code: str, env_overrides: dict) -> subprocess.CompletedProcess:
-    """Run `python -c code` with PLUTO_*/WANDB_* stripped, then overrides applied."""
+    """Run `python -c code` in a clean env with overrides applied.
+
+    Strips PLUTO_*/WANDB_* (test isolation) and COVERAGE_*/PYTEST_* (so the
+    subprocess isn't a pytest-cov-instrumented child — that injection has
+    been observed to swallow logger output to the captured stderr pipe on
+    Python 3.12 in CI).
+    """
+    skip_prefixes = ('PLUTO_', 'WANDB_', 'COVERAGE_', 'PYTEST_')
     env = {
         k: v
         for k, v in os.environ.items()
-        if not k.startswith(('PLUTO_', 'WANDB_')) and k != 'DISABLE_WANDB_LOGGING'
+        if not k.startswith(skip_prefixes) and k != 'DISABLE_WANDB_LOGGING'
     }
     # Preserve any inherited PYTHONPATH so pluto/site-packages still resolves
     if 'PYTHONPATH' in env_overrides and 'PYTHONPATH' in os.environ:
