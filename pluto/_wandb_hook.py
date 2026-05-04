@@ -104,17 +104,24 @@ def _emit_discoverability_hint() -> None:
         return
     _hint_emitted = True
     if _has_partial_pluto_signal():
-        logger.warning(
+        msg = (
             'pluto.compat.wandb: Pluto config detected but no API key found. '
             'Run `pluto login` (or set PLUTO_API_KEY) to enable dual-logging '
             'to Pluto. Continuing with wandb-only logging.'
         )
     else:
-        logger.warning(
+        msg = (
             'pluto.compat.wandb: pluto-ml is installed but no Pluto credentials '
             'found. Run `pluto login` (or set PLUTO_API_KEY) to enable '
             'dual-logging to Pluto. Continuing with wandb-only logging.'
         )
+    # logger.warning lets structured-logging consumers (Sentry etc.) capture it,
+    # but the hint also goes through plain stderr so it's never lost to a
+    # misconfigured logging setup or a test framework that intercepts the
+    # logging stream (Python 3.12 was observed to drop the logger output in
+    # subprocess-pytest contexts on CI).
+    logger.warning(msg)
+    print(msg, file=sys.stderr, flush=True)
 
 
 class _PlutoWandbFinder:
