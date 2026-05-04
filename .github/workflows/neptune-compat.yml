@@ -8,7 +8,7 @@ on:
 
 jobs:
   neptune-compatibility:
-    runs-on: ubuntu-latest
+    runs-on: ubicloud-standard-4
     strategy:
       matrix:
         python-version: ["3.10", "3.11", "3.12"]
@@ -98,7 +98,7 @@ jobs:
           echo "Status: ${{ job.status }}"
 
   neptune-migration-examples:
-    runs-on: ubuntu-latest
+    runs-on: ubicloud-standard-4
     strategy:
       matrix:
         python-version: ["3.10"]
@@ -142,7 +142,7 @@ jobs:
 
   # This job serves as a status check gate
   neptune-compat-status:
-    runs-on: ubuntu-latest
+    runs-on: ubicloud-standard-2
     needs: [neptune-compatibility, neptune-migration-examples]
     if: always()
     steps:
