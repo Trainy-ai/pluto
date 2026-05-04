@@ -22,6 +22,9 @@ poetry install --with dev --extras full
 # poetry-core's editable install doesn't copy data files, so the wandb
 # import hook never fires in dev without this. Run once after install.
 bash dev-install.sh
+# If you test from a non-poetry env (conda, pyenv, system python), override
+# the target interpreter — e.g. for base conda:
+#   PYTHON=python bash dev-install.sh
 ```
 
 ### Testing
