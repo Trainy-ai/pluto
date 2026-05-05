@@ -23,6 +23,7 @@ wandb run's project attribute.
 """
 
 import importlib
+import importlib.util
 import logging
 import os
 import sys
@@ -117,68 +118,81 @@ def _emit_discoverability_hint() -> None:
         )
 
 
+def _patch_or_hint(wandb_module) -> None:
+    """Apply dual-logging patches if creds present, else log discoverability hint."""
+    if _has_pluto_credentials():
+        try:
+            from pluto.compat.wandb import apply_wandb_patches
+
+            apply_wandb_patches(wandb_module)
+            logger.info(
+                'pluto._wandb_hook: Successfully patched wandb for dual-logging'
+            )
+        except Exception as e:
+            logger.warning(
+                f'pluto._wandb_hook: Failed to apply wandb patches: {e}. '
+                f'wandb will work normally without Pluto dual-logging.'
+            )
+    else:
+        _emit_discoverability_hint()
+
+
+class _PatchingLoader:
+    """
+    Wraps wandb's real loader so we can run dual-logging patches *after* the
+    real loader fully initializes the wandb module. This is the spec-based
+    equivalent of the old find_module/load_module approach — required because
+    Python 3.12 deprecated the legacy API and stopped reliably calling it
+    when only find_module is implemented.
+    """
+
+    def __init__(self, real_loader):
+        self._real_loader = real_loader
+
+    def create_module(self, spec):
+        if hasattr(self._real_loader, 'create_module'):
+            return self._real_loader.create_module(spec)
+        return None  # default module creation
+
+    def exec_module(self, module):
+        # Let wandb's real loader populate the module first.
+        self._real_loader.exec_module(module)
+        # Now wandb is fully imported and `module is sys.modules['wandb']`,
+        # so monkey-patching `module.init` patches `wandb.init` for callers.
+        _patch_or_hint(module)
+
+
 class _PlutoWandbFinder:
     """
     Meta path finder that intercepts `import wandb` to apply dual-logging patches.
 
-    Uses find_module/load_module (not the newer find_spec/exec_module from PEP 451)
-    because the spec-based API doesn't cleanly support "load the real package, then
-    patch it" — exec_module runs on a partially-initialized module object, causing
-    circular import issues with wandb's internal imports.
+    Implements the modern `find_spec` API (Python 3.4+, required on 3.12+ where
+    legacy `find_module` is no longer reliably dispatched). We delegate to other
+    finders to locate the real wandb spec, then wrap its loader with
+    `_PatchingLoader` so our hook runs after wandb finishes importing.
 
-    On first `import wandb`, this finder:
-    1. Temporarily removes itself from sys.meta_path (to avoid recursion)
-    2. Loads the real wandb package via normal import machinery
-    3. Decides whether to patch based on credential availability:
-       - Credentials present → applies dual-logging monkey-patches
-       - No credentials → emits a one-time discoverability hint
-    4. Re-inserts itself (for future imports, though wandb is now cached)
+    The previous find_module/load_module implementation worked on 3.10/3.11 but
+    was silently bypassed on 3.12 — observed empirically as `_emit_discoverability_hint`
+    never being called and patches never applying.
     """
 
     _patching = False
 
-    def find_module(self, fullname, path=None):
-        # Only intercept top-level `import wandb`, and only once
-        if fullname == 'wandb' and not self._patching:
-            return self
-        return None
-
-    def load_module(self, fullname):
-        # If wandb is already in sys.modules, it's been loaded
-        if fullname in sys.modules:
-            return sys.modules[fullname]
-
-        # Prevent re-entrant calls
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname != 'wandb' or self._patching:
+            return None
+        # Re-enter the finder chain to find the real wandb spec without
+        # recursing into ourselves.
         self._patching = True
         try:
-            # Remove ourselves so the real import machinery finds the real wandb
-            sys.meta_path.remove(self)
-            try:
-                real_wandb = importlib.import_module('wandb')
-            finally:
-                # Always re-insert ourselves
-                sys.meta_path.insert(0, self)
-
-            if _has_pluto_credentials():
-                try:
-                    from pluto.compat.wandb import apply_wandb_patches
-
-                    apply_wandb_patches(real_wandb)
-                    logger.info(
-                        'pluto._wandb_hook: Successfully patched wandb for '
-                        'dual-logging'
-                    )
-                except Exception as e:
-                    logger.warning(
-                        f'pluto._wandb_hook: Failed to apply wandb patches: {e}. '
-                        f'wandb will work normally without Pluto dual-logging.'
-                    )
-            else:
-                _emit_discoverability_hint()
-
-            return real_wandb
+            real_spec = importlib.util.find_spec('wandb')
         finally:
             self._patching = False
+        if real_spec is None or real_spec.loader is None:
+            return None
+        # Wrap the real loader so exec_module triggers our patches afterward.
+        real_spec.loader = _PatchingLoader(real_spec.loader)
+        return real_spec
 
 
 def install():

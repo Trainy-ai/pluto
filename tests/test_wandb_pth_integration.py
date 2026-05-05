@@ -116,25 +116,7 @@ def test_pth_registers_finder_at_startup(empty_home):
 
 def test_import_wandb_patches_when_credentials_present(fake_wandb, empty_home):
     """PLUTO_API_KEY in env satisfies _has_pluto_credentials → patches apply."""
-    # Same diagnostic prelude as the no-creds test so we can A/B compare:
-    # if this test gets _hint_emitted=False AND patches still apply, it
-    # means load_module isn't being called and patches happen via some
-    # other path (install() in-place patching, etc.).
-    code = textwrap.dedent("""
-        import logging, sys
-        logging.basicConfig(level=logging.WARNING)
-        import wandb
-        from pluto import _wandb_hook as _wh
-        # write to stdout so the diag shows even when the test passes
-        print(
-            f'DIAG-CREDS-POST: '
-            f'finder_in_meta={any("PlutoWandb" in type(f).__name__ for f in sys.meta_path)} '
-            f'hint_emitted={_wh._hint_emitted} '
-            f'hook_installed={_wh._hook_installed} '
-            f'has_creds={_wh._has_pluto_credentials()} '
-            f'wandb_init_qualname={wandb.init.__qualname__!r}'
-        )
-    """).strip() + '\n' + _CHECK_PATCHED
+    code = 'import wandb; ' + _CHECK_PATCHED
     result = _run_subprocess(
         code,
         {
@@ -143,50 +125,30 @@ def test_import_wandb_patches_when_credentials_present(fake_wandb, empty_home):
             'PLUTO_API_KEY': 'fake-test-key',
         },
     )
-    # Force failure so we always see the diag in CI logs
-    assert False, (
-        f'(forced) DIAG capture: stdout={result.stdout!r} stderr={result.stderr!r}'
-    )
+    assert (
+        'PATCHED' in result.stdout
+    ), f'wandb not patched. stdout={result.stdout!r} stderr={result.stderr!r}'
 
 
 def test_import_wandb_emits_discoverability_hint_with_no_credentials(
     fake_wandb, empty_home
 ):
     """No credentials at all → WARNING hint, wandb left unpatched."""
-    # Diagnostic dump around `import wandb` so a CI failure tells us
-    # whether stderr identity changed, whether root logger has unexpected
-    # handlers, and whether the _hint_emitted flag was already set
-    # (meaning the hint already fired during .pth execution).
-    code = textwrap.dedent("""
-        import logging, sys
-        logging.basicConfig(level=logging.WARNING)
-        sys.stderr.write(f'DIAG-PRE: stderr_id={id(sys.stderr)} '
-                         f'handlers={logging.getLogger().handlers!r}\\n')
-        sys.stderr.flush()
-        import wandb
-        from pluto import _wandb_hook as _wh
-        sys.stderr.write(
-            f'DIAG-POST: stderr_id={id(sys.stderr)} '
-            f'root_handlers={logging.getLogger().handlers!r} '
-            f'pluto_handlers={logging.getLogger("pluto").handlers!r} '
-            f'wh_handlers={logging.getLogger("pluto._wandb_hook").handlers!r} '
-            f'hint_emitted={_wh._hint_emitted} '
-            f'has_creds={_wh._has_pluto_credentials()} '
-            f'has_partial={_wh._has_partial_pluto_signal()}\\n'
-        )
-        sys.stderr.flush()
-    """).strip() + '\n' + _CHECK_PATCHED
+    code = (
+        'import logging; '
+        'logging.basicConfig(level=logging.WARNING); '
+        'import wandb; ' + _CHECK_PATCHED
+    )
     result = _run_subprocess(
         code,
         {'HOME': empty_home, 'PYTHONPATH': fake_wandb},
     )
-    assert 'NOT_PATCHED' in result.stdout, (
-        f'wandb should not be patched. stdout={result.stdout!r} '
-        f'stderr={result.stderr!r}'
-    )
-    assert 'no Pluto credentials found' in result.stderr, (
-        f'discoverability hint missing. stderr={result.stderr!r}'
-    )
+    assert (
+        'NOT_PATCHED' in result.stdout
+    ), f'wandb should not be patched. stdout={result.stdout!r}'
+    assert (
+        'no Pluto credentials found' in result.stderr
+    ), f'discoverability hint missing. stderr={result.stderr!r}'
     assert 'pluto login' in result.stderr
 
 
