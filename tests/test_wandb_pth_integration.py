@@ -116,7 +116,25 @@ def test_pth_registers_finder_at_startup(empty_home):
 
 def test_import_wandb_patches_when_credentials_present(fake_wandb, empty_home):
     """PLUTO_API_KEY in env satisfies _has_pluto_credentials → patches apply."""
-    code = 'import wandb; ' + _CHECK_PATCHED
+    # Same diagnostic prelude as the no-creds test so we can A/B compare:
+    # if this test gets _hint_emitted=False AND patches still apply, it
+    # means load_module isn't being called and patches happen via some
+    # other path (install() in-place patching, etc.).
+    code = textwrap.dedent("""
+        import logging, sys
+        logging.basicConfig(level=logging.WARNING)
+        import wandb
+        from pluto import _wandb_hook as _wh
+        # write to stdout so the diag shows even when the test passes
+        print(
+            f'DIAG-CREDS-POST: '
+            f'finder_in_meta={any("PlutoWandb" in type(f).__name__ for f in sys.meta_path)} '
+            f'hint_emitted={_wh._hint_emitted} '
+            f'hook_installed={_wh._hook_installed} '
+            f'has_creds={_wh._has_pluto_credentials()} '
+            f'wandb_init_qualname={wandb.init.__qualname__!r}'
+        )
+    """).strip() + '\n' + _CHECK_PATCHED
     result = _run_subprocess(
         code,
         {
@@ -125,9 +143,10 @@ def test_import_wandb_patches_when_credentials_present(fake_wandb, empty_home):
             'PLUTO_API_KEY': 'fake-test-key',
         },
     )
-    assert (
-        'PATCHED' in result.stdout
-    ), f'wandb not patched. stdout={result.stdout!r} stderr={result.stderr!r}'
+    # Force failure so we always see the diag in CI logs
+    assert False, (
+        f'(forced) DIAG capture: stdout={result.stdout!r} stderr={result.stderr!r}'
+    )
 
 
 def test_import_wandb_emits_discoverability_hint_with_no_credentials(
