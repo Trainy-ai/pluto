@@ -74,12 +74,11 @@ def empty_home(tmp_path):
 def _run_subprocess(code: str, env_overrides: dict) -> subprocess.CompletedProcess:
     """Run `python -c code` in a clean env with overrides applied.
 
-    Strips PLUTO_*/WANDB_* (test isolation) and COVERAGE_*/PYTEST_* (so the
-    subprocess isn't a pytest-cov-instrumented child — that injection has
-    been observed to swallow logger output to the captured stderr pipe on
-    Python 3.12 in CI).
+    Strips PLUTO_*/WANDB_* for test isolation. COVERAGE_*/PYTEST_* are
+    preserved so pytest-cov instruments the subprocess and the .pth →
+    install() → _PlutoWandbFinder paths show up in coverage reports.
     """
-    skip_prefixes = ('PLUTO_', 'WANDB_', 'COVERAGE_', 'PYTEST_')
+    skip_prefixes = ('PLUTO_', 'WANDB_')
     env = {
         k: v
         for k, v in os.environ.items()
