@@ -134,16 +134,29 @@ def test_import_wandb_emits_discoverability_hint_with_no_credentials(
     fake_wandb, empty_home
 ):
     """No credentials at all → WARNING hint, wandb left unpatched."""
-    # Diagnostic pings around `import wandb` so a CI failure tells us whether
-    # stderr capture itself is broken or whether the logger output is dropped.
-    code = (
-        'import logging, sys; '
-        'logging.basicConfig(level=logging.WARNING); '
-        'sys.stderr.write("DIAG-PRE\\n"); sys.stderr.flush(); '
-        'import wandb; '
-        'sys.stderr.write("DIAG-POST\\n"); sys.stderr.flush(); '
-        + _CHECK_PATCHED
-    )
+    # Diagnostic dump around `import wandb` so a CI failure tells us
+    # whether stderr identity changed, whether root logger has unexpected
+    # handlers, and whether the _hint_emitted flag was already set
+    # (meaning the hint already fired during .pth execution).
+    code = textwrap.dedent("""
+        import logging, sys
+        logging.basicConfig(level=logging.WARNING)
+        sys.stderr.write(f'DIAG-PRE: stderr_id={id(sys.stderr)} '
+                         f'handlers={logging.getLogger().handlers!r}\\n')
+        sys.stderr.flush()
+        import wandb
+        from pluto import _wandb_hook as _wh
+        sys.stderr.write(
+            f'DIAG-POST: stderr_id={id(sys.stderr)} '
+            f'root_handlers={logging.getLogger().handlers!r} '
+            f'pluto_handlers={logging.getLogger("pluto").handlers!r} '
+            f'wh_handlers={logging.getLogger("pluto._wandb_hook").handlers!r} '
+            f'hint_emitted={_wh._hint_emitted} '
+            f'has_creds={_wh._has_pluto_credentials()} '
+            f'has_partial={_wh._has_partial_pluto_signal()}\\n'
+        )
+        sys.stderr.flush()
+    """).strip() + '\n' + _CHECK_PATCHED
     result = _run_subprocess(
         code,
         {'HOME': empty_home, 'PYTHONPATH': fake_wandb},
