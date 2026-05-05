@@ -65,6 +65,11 @@ class ConsoleHandler:
         self.sanitizer = sanitizer
         self._log_buffer: list = []
         self._last_flush = 0.0
+        # Carry-over for partial writes that don't end at a line boundary.
+        # Python's traceback printer (and rich) call write() with chunks
+        # like just whitespace or a single character, so treating each
+        # call as a complete line shreds tracebacks into one-char "lines".
+        self._partial_line: str = ''
 
     def _flush_log_buffer(self) -> None:
         """Flush buffered console log lines to the sync store in one batch."""
@@ -78,30 +83,50 @@ class ConsoleHandler:
         self._log_buffer.clear()
         self._last_flush = time.time()
 
+    def _emit_line(self, line: str) -> None:
+        """Log one complete line through the sync buffer + the python logger."""
+        if not line:  # do not log empty lines
+            return
+        self.count += 1
+        timestamp_ms = int(time.time() * 1000)
+        if self.sync_manager is not None:
+            sanitized_line = self.sanitizer.sanitize(line) if self.sanitizer else line
+            log_type = logging._levelToName.get(self.level, 'INFO')
+            self._log_buffer.append(
+                (sanitized_line, log_type, timestamp_ms, self.count)
+            )
+        self.logger.log(self.level, line)
+
     def write(self, buf: str) -> None:
-        for line in buf.splitlines():
-            if line:  # do not log empty lines
-                self.count += 1
-                timestamp_ms = int(time.time() * 1000)
-                if self.sync_manager is not None:
-                    sanitized_line = (
-                        self.sanitizer.sanitize(line) if self.sanitizer else line
-                    )
-                    log_type = logging._levelToName.get(self.level, 'INFO')
-                    self._log_buffer.append(
-                        (sanitized_line, log_type, timestamp_ms, self.count)
-                    )
-                self.logger.log(self.level, line)
+        # Pass-through to the real stream first so terminal output is not
+        # delayed by our line buffering.
+        self.stream.write(buf)
+        self.stream.flush()
+
+        # Accumulate partial writes and only emit on real '\n' boundaries.
+        # Splitting on '\n' specifically (not splitlines()) avoids breaking
+        # on \v, \f, \x1c-\x1e, \x85, U+2028, U+2029 — chars that rich and
+        # other styled-output libs use as internal segment separators.
+        self._partial_line += buf
+        if '\n' not in self._partial_line:
+            return
+        *complete, self._partial_line = self._partial_line.split('\n')
+        for line in complete:
+            self._emit_line(line)
         # Flush the buffer if it's large enough or old enough
         if self._log_buffer and (
             len(self._log_buffer) >= self._FLUSH_SIZE
             or time.time() - self._last_flush >= self._FLUSH_INTERVAL
         ):
             self._flush_log_buffer()
-        self.stream.write(buf)
-        self.stream.flush()
 
     def flush(self):
+        # Emit any trailing partial line so we don't drop output that
+        # never got a terminating newline (e.g. a final print(..., end='')
+        # before interpreter shutdown).
+        if self._partial_line:
+            self._emit_line(self._partial_line)
+            self._partial_line = ''
         self._flush_log_buffer()
         self.stream.flush()
 
