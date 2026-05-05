@@ -37,6 +37,9 @@ jobs:
           poetry install --with dev --extras full
           pip install -e ".[dev,full]"
           poetry run pip install pytest-cov
+          # Deploy the wandb auto-activation .pth — poetry-core's editable
+          # install doesn't copy it into site-packages on its own.
+          bash dev-install.sh
           pluto login ${{ secrets.MLOP_API_TOKEN }}
 
       - name: Run pytest smoke tests
