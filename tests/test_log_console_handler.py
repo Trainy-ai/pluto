@@ -194,6 +194,90 @@ class TestSanitizerStillRuns:
         assert _emitted_lines(sync_manager) == ['api_key=*** here']
 
 
+class TestRankPrefix:
+    """When RANK env is set (torchrun), captured lines get a [rankN] prefix.
+
+    Pluto's stdout capture sits inside the child process before lines
+    reach the OS pipe that torchrun reads, so the [defaultN]: prefix
+    torchrun adds in the parent never makes it to the SyncStore. Reading
+    RANK directly from the child's env gives every captured line a tag
+    so DDP runs aren't a confusing single stream of unattributed lines
+    in the Pluto UI. The pass-through to the underlying stream stays
+    unprefixed so torchrun's own prefixing isn't doubled in the
+    terminal.
+    """
+
+    def _build_handler(self, sync_manager, stream):
+        log = logging.getLogger('test_console_handler_rank')
+        log.handlers.clear()
+        log.setLevel(logging.DEBUG)
+        return ConsoleHandler(
+            logger=log,
+            sync_manager=sync_manager,
+            level=logging.INFO,
+            stream=stream,
+            type='stdout',
+        )
+
+    def _capturing_sync_manager(self):
+        sync_manager = mock.MagicMock()
+        enqueued: list[list[tuple]] = []
+        sync_manager.enqueue_console_batch = mock.MagicMock(
+            side_effect=lambda batch: enqueued.append(list(batch))
+        )
+        sync_manager._enqueued = enqueued
+        return sync_manager
+
+    def test_rank_env_var_prefixes_captured_lines(self, monkeypatch):
+        monkeypatch.setenv('RANK', '1')
+        sync_manager = self._capturing_sync_manager()
+        underlying = io.StringIO()
+        handler = self._build_handler(sync_manager, underlying)
+        handler.write('starting fit\n')
+        handler.flush()
+        assert _emitted_lines(sync_manager) == ['[rank1] starting fit']
+
+    def test_no_rank_env_var_means_no_prefix(self, monkeypatch):
+        """Single-process runs (or anything not under torchrun) keep their format."""
+        monkeypatch.delenv('RANK', raising=False)
+        sync_manager = self._capturing_sync_manager()
+        underlying = io.StringIO()
+        handler = self._build_handler(sync_manager, underlying)
+        handler.write('hello\n')
+        handler.flush()
+        assert _emitted_lines(sync_manager) == ['hello']
+
+    def test_underlying_stream_is_not_prefixed(self, monkeypatch):
+        """The pass-through to terminal/OS-pipe must stay unprefixed.
+
+        torchrun reads from the OS pipe and adds its own [defaultN]:
+        prefix in the parent. If we prefixed the underlying stream too,
+        the terminal would show [default0]: [rank0] ... — double tag.
+        """
+        monkeypatch.setenv('RANK', '0')
+        sync_manager = self._capturing_sync_manager()
+        underlying = io.StringIO()
+        handler = self._build_handler(sync_manager, underlying)
+        handler.write('hello\n')
+        handler.flush()
+        assert underlying.getvalue() == 'hello\n'  # exactly the input, no prefix
+        assert _emitted_lines(sync_manager) == ['[rank0] hello']
+
+    def test_prefix_applied_per_line_not_per_write(self, monkeypatch):
+        """Multiple lines in one write each get their own prefix."""
+        monkeypatch.setenv('RANK', '2')
+        sync_manager = self._capturing_sync_manager()
+        underlying = io.StringIO()
+        handler = self._build_handler(sync_manager, underlying)
+        handler.write('one\ntwo\nthree\n')
+        handler.flush()
+        assert _emitted_lines(sync_manager) == [
+            '[rank2] one',
+            '[rank2] two',
+            '[rank2] three',
+        ]
+
+
 class _ListHandler(logging.Handler):
     def __init__(self, sink):
         super().__init__()

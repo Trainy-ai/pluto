@@ -1,5 +1,6 @@
 import builtins
 import logging
+import os
 import sys
 import time
 
@@ -70,6 +71,16 @@ class ConsoleHandler:
         # like just whitespace or a single character, so treating each
         # call as a complete line shreds tracebacks into one-char "lines".
         self._partial_line: str = ''
+        # When running under torchrun, prepend the rank to captured lines
+        # so the Pluto UI can distinguish rank N from rank M without the
+        # user having to wrap every print() themselves. RANK is set by
+        # torchrun in every child process; absent → no prefix (so single-
+        # process and non-torch jobs keep their existing log format).
+        # Note: only the captured copy is prefixed, not the pass-through
+        # to self.stream — that lets torchrun add its own [defaultN]:
+        # prefix to the terminal stream without double-prefixing.
+        rank = os.environ.get('RANK')
+        self._rank_prefix = f'[rank{rank}] ' if rank is not None else ''
 
     def _flush_log_buffer(self) -> None:
         """Flush buffered console log lines to the sync store in one batch."""
@@ -89,6 +100,8 @@ class ConsoleHandler:
             return
         self.count += 1
         timestamp_ms = int(time.time() * 1000)
+        if self._rank_prefix:
+            line = self._rank_prefix + line
         if self.sync_manager is not None:
             sanitized_line = self.sanitizer.sanitize(line) if self.sanitizer else line
             log_type = logging._levelToName.get(self.level, 'INFO')
