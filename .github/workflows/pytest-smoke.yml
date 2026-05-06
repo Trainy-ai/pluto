@@ -14,6 +14,13 @@ on:
 jobs:
   test:
     strategy:
+      # Run every Python version even if one fails. The smoke tests hit the
+      # production Pluto server and intermittently flake on cold-start /
+      # transient connectivity (ConnectionError, RemoteProtocolError). With
+      # fail-fast: true (the default) one flaky version cancels all others
+      # and forces a re-run that may flake on a different version, costing
+      # multiple cycles to get every version green simultaneously.
+      fail-fast: false
       matrix:
         python-version: ["3.10", "3.11", "3.12", "3.13"]
         poetry-version: ["2.1.1"]
