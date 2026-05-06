@@ -812,6 +812,134 @@ class TestNeptuneCompatFallbackBehavior:
             assert url == 'neptune://disabled'
 
 
+class TestNeptuneCompatPlutoRunIdResume:
+    """Regression: PLUTO_RUN_ID env var must trigger resume=True for DDP coordination.
+
+    When PLUTO_RUN_ID is set across ranks (the documented coordination
+    mechanism for multi-rank jobs to share a single Pluto run), every rank
+    calls pluto.init with the same externalId. Rank 0 creates the run;
+    rank 1+ should resume it. Without resume=True, op.py raises
+    "Run with externalId X already exists" because the user did not
+    explicitly opt into resume — the broad except in NeptuneRunWrapper
+    swallows the error and sets self._pluto_run = None, so rank 1+ never
+    install console capture and only rank 0's logs reach the run.
+
+    The user-visible symptom is "logs from rank 1+ missing in the UI"
+    with no obvious error in stdout.
+    """
+
+    @pytest.fixture
+    def pluto_config_env(self, clean_env):
+        os.environ['PLUTO_PROJECT'] = 'ddp-test'
+        # PLUTO_RUN_ID is the cross-rank coordination signal.
+        os.environ['PLUTO_RUN_ID'] = 'ddp-shared-run-id-001'
+        yield
+        os.environ.pop('PLUTO_RUN_ID', None)
+
+    def test_pluto_run_id_env_var_passes_resume_true(
+        self, mock_neptune_backend, pluto_config_env
+    ):
+        """PLUTO_RUN_ID set → pluto.init called with resume=True.
+
+        Pre-fix: pluto_resume = bool(explicit_kwarg_run_id) only — env
+        var doesn't count → resume=False → rank 1+ raise on duplicate
+        create.
+        """
+        captured_kwargs: list[dict] = []
+
+        def _capture(**kwargs):
+            captured_kwargs.append(kwargs)
+            return mock.MagicMock(config={})
+
+        with mock.patch('pluto.init', side_effect=_capture):
+            from neptune_scale import Run
+
+            run = Run(experiment_name='ddp-rank-test')
+            run.close()
+
+        assert captured_kwargs, 'pluto.init was not called'
+        kw = captured_kwargs[0]
+        assert kw.get('run_id') == 'ddp-shared-run-id-001', (
+            f'PLUTO_RUN_ID should win the precedence chain. '
+            f'Got run_id={kw.get("run_id")!r}'
+        )
+        assert kw.get('resume') is True, (
+            f'PLUTO_RUN_ID is the DDP cross-rank coordination signal, so '
+            f'resume must be True or rank 1+ blow up. Got resume={kw.get("resume")!r}'
+        )
+        assert run._pluto_run is not None, (
+            'rank-1 simulation: when pluto.init succeeds the wrapper must '
+            'retain a non-None _pluto_run so console capture stays wired'
+        )
+
+    def test_two_ranks_both_succeed_with_pluto_run_id(
+        self, mock_neptune_backend, pluto_config_env
+    ):
+        """Simulate two ranks: both NeptuneRunWrapper instances must succeed.
+
+        Mocks pluto.init to behave like the server: the first call returns
+        a fresh run, the second call (same externalId without resume=True)
+        would raise per op.py:362-369. With the fix, rank 1's call carries
+        resume=True so pluto.init does not raise and rank 1's wrapper has
+        a working _pluto_run.
+        """
+        call_count = {'n': 0}
+
+        def _server_simulation(**kwargs):
+            call_count['n'] += 1
+            # The actual op.py raises this exact pattern when resumed=True
+            # comes back from the server but the caller did not opt in.
+            if call_count['n'] >= 2 and not kwargs.get('resume'):
+                raise RuntimeError(
+                    f"Run with externalId '{kwargs.get('run_id')}' already exists. "
+                    'Pass resume=True to pluto.init() to intentionally reattach.'
+                )
+            return mock.MagicMock(config={})
+
+        with mock.patch('pluto.init', side_effect=_server_simulation):
+            from neptune_scale import Run
+
+            rank0 = Run(experiment_name='ddp-rank-test')
+            rank1 = Run(experiment_name='ddp-rank-test')
+
+        assert rank0._pluto_run is not None, 'rank 0 should always succeed'
+        assert rank1._pluto_run is not None, (
+            'rank 1 must also have a working pluto run. If this is None it '
+            'means the compat layer let pluto.init raise and silently '
+            'caught the exception, leaving rank 1 with no console capture.'
+        )
+
+    def test_no_pluto_run_id_keeps_old_resume_behavior(
+        self, mock_neptune_backend, clean_env
+    ):
+        """Without PLUTO_RUN_ID, resume should remain False unless explicitly requested.
+
+        Guards against the fix accidentally turning every Neptune-only
+        run into a resume attempt. resume=False is the correct default
+        for fresh single-rank runs.
+        """
+        os.environ['PLUTO_PROJECT'] = 'single-rank-test'
+        os.environ.pop('PLUTO_RUN_ID', None)
+        captured_kwargs: list[dict] = []
+
+        def _capture(**kwargs):
+            captured_kwargs.append(kwargs)
+            return mock.MagicMock(config={})
+
+        with mock.patch('pluto.init', side_effect=_capture):
+            from neptune_scale import Run
+
+            run = Run(experiment_name='single-rank')
+            run.close()
+
+        assert captured_kwargs, 'pluto.init was not called'
+        kw = captured_kwargs[0]
+        assert kw.get('resume') is False, (
+            f'No PLUTO_RUN_ID and no explicit run_id kwarg → resume must '
+            f'stay False. Got resume={kw.get("resume")!r}'
+        )
+
+
 class TestNeptuneCompatAPIForwarding:
     """Test that unknown Neptune API methods are forwarded correctly."""
 
