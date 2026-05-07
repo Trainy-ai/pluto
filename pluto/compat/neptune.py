@@ -305,8 +305,18 @@ class NeptuneRunWrapper:
                 else None
             )
 
-            # Determine if this is an intentional resume (explicit run_id kwarg)
-            pluto_resume = bool(explicit_kwarg_run_id)
+            # Determine if this is an intentional resume.
+            # - explicit kwarg run_id: user-provided, e.g. for restarting a run.
+            # - PLUTO_RUN_ID env var: cross-rank coordination signal for DDP.
+            #   Without resume=True for the env-var path, ranks 1+ call
+            #   pluto.init with the same externalId, the server returns
+            #   resumed=True, and op.py raises "Run with externalId X already
+            #   exists". The exception is caught by our broad except below
+            #   and silently sets self._pluto_run = None — so only rank 0
+            #   installs the console-capture ConsoleHandler and only rank 0
+            #   logs ever reach the run. The user sees "all rank 1+ logs
+            #   missing in the UI" with no obvious error in stdout.
+            pluto_resume = bool(explicit_kwarg_run_id) or bool(env_run_id)
 
             # Apply precedence: PLUTO_RUN_ID > explicit kwarg > Neptune auto
             run_id = env_run_id or explicit_kwarg_run_id or neptune_run_id

@@ -64,10 +64,25 @@ def _cmd_sync(args: argparse.Namespace) -> None:
         )
         sys.exit(1)
 
-    # Build settings dict with URLs
+    # Build settings dict with URLs.
+    # Settings.to_dict() only iterates __annotations__, so the URLs
+    # populated by update_url() (url_num, url_message, url_file, ...) are
+    # NOT included. Without this every uploader call no-ops on
+    # `if not self.url_X: return`, the records get marked SUCCESS in the
+    # local DB, and nothing reaches the server. Restore them explicitly.
     settings = Settings()
     settings.update_host()
     settings_dict = settings.to_dict()
+    settings_dict.update(
+        {
+            'url_num': settings.url_num,
+            'url_data': settings.url_data,
+            'url_file': settings.url_file,
+            'url_message': settings.url_message,
+            'url_update_config': settings.url_update_config,
+            'url_update_tags': settings.url_update_tags,
+        }
+    )
     settings_dict['_auth'] = auth
 
     # Read run info from each database and populate settings

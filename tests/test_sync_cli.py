@@ -484,13 +484,25 @@ class TestCmdSync:
         assert 'failed to sync' in captured.out.lower()
 
     def _mock_settings(self):
-        """Create a mock Settings whose to_dict() returns JSON-serializable data."""
+        """Create a mock Settings whose to_dict() returns JSON-serializable data.
+
+        Also stub the url_* attributes accessed by _cmd_sync after to_dict()
+        as plain strings, so subsequent json.dumps(settings_dict) does not
+        choke on MagicMock instances when --background mode serialises the
+        dict for the subprocess.
+        """
         mock_settings = MagicMock()
         mock_settings.to_dict.return_value = {
             'tag': 'pluto',
             'project': 'pluto',
             'host': 'https://pluto.trainy.ai',
         }
+        mock_settings.url_num = 'https://example/ingest/metrics'
+        mock_settings.url_data = 'https://example/ingest/data'
+        mock_settings.url_file = 'https://example/files'
+        mock_settings.url_message = 'https://example/ingest/logs'
+        mock_settings.url_update_config = 'https://example/api/runs/config/update'
+        mock_settings.url_update_tags = 'https://example/api/runs/tags/update'
         return mock_settings
 
     def test_background_mode_spawns_subprocess(self, tmp_path, capsys):
@@ -568,6 +580,197 @@ class TestCmdSync:
 
         captured = capsys.readouterr()
         assert 'Warning' in captured.err or 'No pending records' in captured.out
+
+
+# ---------------------------------------------------------------------------
+# Tests: end-to-end `pluto sync` actually POSTs to the right ingest URLs.
+#
+# Pre-existing tests in TestCmdSync mock retry_sync and never observe what
+# URL the uploader actually posts to. That left a silent-data-loss bug
+# uncaught: Settings.to_dict() only iterates __annotations__, so the URL
+# fields populated by update_url() (url_message, url_num, url_data,
+# url_file, url_update_config, url_update_tags) were missing from the
+# settings_dict the CLI handed to retry_sync. _SyncUploader then
+# defaulted self.url_console / self.url_num / etc. to '' and every
+# upload_*_batch method returned early on `if not self.url_X: return`.
+# The local DB recorded SUCCESS for records that never left the host.
+#
+# These tests exercise the full _cmd_sync → retry_sync → uploader
+# stack against a fake httpx.Client that records every POST, so any
+# regression where a URL silently goes empty causes an assertion
+# failure rather than a fake-success.
+# ---------------------------------------------------------------------------
+
+
+class _FakeHttpResponse:
+    def __init__(self, status_code: int = 200):
+        self.status_code = status_code
+        self.text = ''
+        self.headers: dict = {}
+
+    def raise_for_status(self) -> None:
+        if self.status_code >= 400:
+            raise RuntimeError(f'HTTP {self.status_code}')
+
+
+class _RecordingHttpClient:
+    """Stand-in for httpx.Client that records every POST it receives.
+
+    Each call appends (url, body, headers) to .posts. Always returns 200.
+    """
+
+    def __init__(self, *_args, **_kwargs):
+        self.posts: list[tuple[str, bytes, dict]] = []
+
+    def post(self, url, content=None, data=None, headers=None, **_kwargs):
+        body = content if content is not None else data
+        self.posts.append((url, body, dict(headers or {})))
+        return _FakeHttpResponse(200)
+
+    def close(self) -> None:
+        pass
+
+
+class TestCmdSyncEndToEndUploads:
+    """End-to-end: _cmd_sync should actually POST records to the ingest service."""
+
+    def _make_args(self, **kwargs):
+        defaults = {
+            'path': None,
+            'dir': None,
+            'background': False,
+            'timeout': 60.0,
+            'verbose': False,
+        }
+        defaults.update(kwargs)
+        return argparse.Namespace(**defaults)
+
+    def _make_db_with_mixed_records(self, tmp_path):
+        """Sync DB with one CONSOLE record and one METRIC record pending."""
+        pluto_dir = tmp_path / '.pluto' / 'project-x' / 'run-x'
+        pluto_dir.mkdir(parents=True)
+        db_path = pluto_dir / 'sync.db'
+        s = SyncStore(str(db_path))
+        s.register_run('run-x', 'project-x', op_id=137383)
+        ts = int(time.time() * 1000)
+        s.enqueue(
+            'run-x',
+            RecordType.CONSOLE,
+            {'message': 'hello world', 'logType': 'INFO', 'lineNumber': 1},
+            ts,
+        )
+        s.enqueue(
+            'run-x',
+            RecordType.METRIC,
+            {'loss': 0.5},
+            ts,
+            step=1,
+        )
+        s.close()
+        return str(db_path)
+
+    def test_console_records_actually_posted_to_ingest_logs_url(self, tmp_path):
+        """Regression: pluto sync used to silently no-op CONSOLE uploads.
+
+        Settings.to_dict() returned a dict missing url_message, so
+        _SyncUploader.url_console was '' and upload_console_batch
+        returned early without sending anything. Local DB still marked
+        the records SUCCESS — the records were lost without an error.
+
+        Assert: a POST goes to the configured /ingest/logs URL with
+        the console record in the NDJSON body.
+        """
+        from pluto.__main__ import _cmd_sync
+
+        db_path = self._make_db_with_mixed_records(tmp_path)
+        args = self._make_args(path=db_path)
+        recording_client = _RecordingHttpClient()
+
+        with (
+            patch('pluto.__main__._get_auth_token', return_value='tok'),
+            patch('httpx.Client', return_value=recording_client),
+        ):
+            _cmd_sync(args)
+
+        log_posts = [
+            (url, body)
+            for (url, body, _hdr) in recording_client.posts
+            if url.endswith('/ingest/logs')
+        ]
+        assert log_posts, (
+            'pluto sync did not POST any console records to /ingest/logs. '
+            'urls actually posted to: '
+            f'{[u for (u, _b, _h) in recording_client.posts]}'
+        )
+        assert b'hello world' in log_posts[0][1]
+
+    def test_all_url_fields_present_in_settings_passed_to_uploader(self, tmp_path):
+        """Regression for Settings.to_dict() __annotations__ gap.
+
+        If any of url_num / url_data / url_file / url_message /
+        url_update_config / url_update_tags is missing from the
+        settings_dict passed to retry_sync, the corresponding
+        uploader.url_X attribute defaults to '' and that record type's
+        upload silently no-ops.
+        """
+        from pluto.__main__ import _cmd_sync
+
+        db_path = self._make_db_with_mixed_records(tmp_path)
+        args = self._make_args(path=db_path)
+        captured: dict = {}
+
+        def _capture(**kwargs):
+            captured.update(kwargs)
+            return True
+
+        with (
+            patch('pluto.__main__._get_auth_token', return_value='tok'),
+            patch('pluto.sync.process.retry_sync', side_effect=_capture),
+        ):
+            _cmd_sync(args)
+
+        sd = captured['settings_dict']
+        for key in (
+            'url_num',
+            'url_data',
+            'url_file',
+            'url_message',
+            'url_update_config',
+            'url_update_tags',
+        ):
+            assert sd.get(key), (
+                f'{key!r} missing or empty in settings_dict passed to '
+                f'retry_sync — corresponding uploads will silently no-op. '
+                f'Got: {sd.get(key)!r}'
+            )
+
+    def test_run_id_header_uses_numeric_op_id(self, tmp_path):
+        """X-Run-Id must be the numeric op_id (137383), not the string run_id.
+
+        ingest's LogEnrichment::from_headers does
+        header.parse::<u64>().unwrap_or(0), so a non-numeric value
+        would silently land all records under runId=0 in ClickHouse —
+        invisible to any later query.
+        """
+        from pluto.__main__ import _cmd_sync
+
+        db_path = self._make_db_with_mixed_records(tmp_path)
+        args = self._make_args(path=db_path)
+        recording_client = _RecordingHttpClient()
+
+        with (
+            patch('pluto.__main__._get_auth_token', return_value='tok'),
+            patch('httpx.Client', return_value=recording_client),
+        ):
+            _cmd_sync(args)
+
+        assert recording_client.posts, 'no posts recorded'
+        for _url, _body, headers in recording_client.posts:
+            run_id_hdr = headers.get('X-Run-Id') or headers.get('x-run-id')
+            assert run_id_hdr == '137383', (
+                f'X-Run-Id must be the numeric op_id; got {run_id_hdr!r}. '
+                'A non-numeric value would parse to 0 server-side.'
+            )
 
 
 # ---------------------------------------------------------------------------

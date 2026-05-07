@@ -567,6 +567,20 @@ def _sync_main(
     except Exception as e:
         log.error(f'Sync process error: {e}', exc_info=True)
     finally:
+        # If we exited the loop because of SIGTERM/SIGINT (vs an exception),
+        # drain pending records before tearing down. torchrun gives ~30s
+        # before SIGKILL and pluto's shutdown_timeout defaults to 30s, so
+        # we have time — without this any records still in SQLite are left
+        # behind and require a manual `pluto sync` to recover.
+        if shutdown_requested['value']:
+            log.info(
+                f'Shutdown signal received, draining pending records '
+                f'(up to {shutdown_timeout}s)'
+            )
+            try:
+                _flush_remaining(store, uploader, log, shutdown_timeout, max_retries)
+            except Exception as drain_err:
+                log.warning(f'Drain on shutdown failed: {drain_err}')
         uploader.close()
         store.close()
         log.info('Sync process exiting')

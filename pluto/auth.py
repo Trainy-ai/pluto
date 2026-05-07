@@ -1,5 +1,6 @@
 import getpass
 import logging
+import os
 import sys
 import webbrowser
 
@@ -12,6 +13,30 @@ from .util import ANSI, import_lib, print_url
 
 tlogger = logging.getLogger('auth')
 tag = 'Authentication'
+
+# Marker file written after a successful `pluto login`. The wandb compat
+# layer's import hook (pluto/_wandb_hook.py) checks for this so a user who
+# has only run `pluto login` (no PLUTO_API_KEY env var) still gets dual-
+# logging activated. Stat-only check; never read.
+LOGIN_MARKER_PATH = os.path.expanduser('~/.pluto/.login_ok')
+
+
+def _write_login_marker() -> None:
+    try:
+        os.makedirs(os.path.dirname(LOGIN_MARKER_PATH), exist_ok=True)
+        with open(LOGIN_MARKER_PATH, 'w'):
+            pass
+    except OSError as e:
+        tlogger.debug('%s: failed to write login marker: %s', tag, e)
+
+
+def _remove_login_marker() -> None:
+    try:
+        os.remove(LOGIN_MARKER_PATH)
+    except FileNotFoundError:
+        pass
+    except OSError as e:
+        tlogger.debug('%s: failed to remove login marker: %s', tag, e)
 
 
 def login(settings=None, retry=False):
@@ -56,6 +81,7 @@ def login(settings=None, retry=False):
         body = r.json()
         tlogger.info(f'{tag}: logged in as {body["organization"]["slug"]}')
         keyring.set_password(f'{settings.tag}', f'{settings.tag}', f'{settings._auth}')
+        _write_login_marker()
         teardown_logger(tlogger)
     except Exception as e:
         # If _auth was already provided (e.g. via env var or keyring), don't
@@ -103,6 +129,7 @@ def login(settings=None, retry=False):
             keyring.set_password(
                 f'{settings.tag}', f'{settings.tag}', f'{settings._auth}'
             )
+            _write_login_marker()
         except Exception as e:
             tlogger.critical(
                 '%s: failed to save key to system keyring service: %s', tag, e
@@ -124,5 +151,6 @@ def logout(settings=None):
         tlogger.warning(
             '%s: failed to delete key from system keyring service: %s', tag, e
         )
+    _remove_login_marker()
     tlogger.info(f'{tag}: logged out')
     teardown_logger(tlogger)
