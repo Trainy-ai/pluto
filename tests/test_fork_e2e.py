@@ -55,6 +55,26 @@ def _poll_metric_names(
     )
 
 
+def _poll_metric_present(
+    project: str,
+    run_id: int,
+    metric_name: str,
+    timeout: float = _POLL_TIMEOUT,
+) -> None:
+    """Poll until *metric_name* has at least one raw write for the run.
+
+    Reads ``mlop_metrics`` directly via ``pq.get_raw_metrics``, bypassing
+    the ``mlop_metric_summaries_v2`` refreshable MV (5-minute interval)
+    that backs ``pq.get_metric_names``.
+    """
+    rows = _poll(
+        fn=lambda: pq.get_raw_metrics(project, run_id, metric_name, limit=100),
+        check=lambda r: len(r) > 0,
+        timeout=timeout,
+    )
+    assert len(rows) > 0, f"'{metric_name}' has no rows on server for run {run_id}"
+
+
 def _poll_max_step(
     project: str,
     run_id: int,
@@ -260,8 +280,7 @@ def test_fork_e2e_log_metrics(parent_run):
         run.log({'fork/loss': 0.5 - step * 0.1})
     run.finish()
 
-    metric_names = _poll_metric_names(FORK_PROJECT, run_id, ['fork/loss'])
-    assert 'fork/loss' in metric_names
+    _poll_metric_present(FORK_PROJECT, run_id, 'fork/loss')
 
     metrics = pq.get_metrics(FORK_PROJECT, run_id, metric_names=['fork/loss'])
     if hasattr(metrics, 'to_dict'):
