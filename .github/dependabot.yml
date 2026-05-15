@@ -1,0 +1,36 @@
+# Dependabot config: https://docs.github.com/code-security/dependabot
+#
+# Keeps GitHub Actions pinned to SHAs (in .github/workflows/*.yml) fresh.
+# Dependabot rewrites the `uses:` SHA and updates the trailing `# vX.Y.Z`
+# comment when a new release ships. PR review by CODEOWNERS is the gate.
+#
+# We do NOT enable the pip ecosystem here — Poetry-managed deps live in
+# pyproject.toml / poetry.lock and Dependabot's pip support doesn't drive
+# poetry. Revisit if/when GitHub adds first-class Poetry support.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "09:00"
+      timezone: America/Los_Angeles
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - github-actions
+    commit-message:
+      prefix: "ci"
+      include: scope
+    groups:
+      # One PR per week bundling all minor/patch bumps for first-party
+      # actions (the actions/* org). Majors still get their own PR so they
+      # can be reviewed individually for breaking changes.
+      actions-minor:
+        applies-to: version-updates
+        patterns:
+          - "actions/*"
+        update-types:
+          - minor
+          - patch
