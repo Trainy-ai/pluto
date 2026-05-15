@@ -1,0 +1,24 @@
+# CODEOWNERS for pluto
+#
+# Owners listed here are automatically requested for review when matching
+# files change. Combined with a branch ruleset that requires CODEOWNERS
+# approval, this enforces a second pair of eyes on CI/CD-sensitive paths.
+#
+# Syntax: https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-security/customizing-your-repository/about-code-owners
+# Last matching rule wins.
+
+# CI/CD: GitHub Actions workflows and any other .github config
+/.github/                       @asaiacai @ryanhayame
+/.github/workflows/             @asaiacai @ryanhayame
+
+# Release/deployment scripts
+/scripts/docs-pub.sh            @asaiacai @ryanhayame
+/scripts/lib-pub.sh             @asaiacai @ryanhayame
+/dev-install.sh                 @asaiacai @ryanhayame
+
+# Packaging / release surface
+/pyproject.toml                 @asaiacai @ryanhayame
+/poetry.lock                    @asaiacai @ryanhayame
+
+# CODEOWNERS itself
+/.github/CODEOWNERS             @asaiacai @ryanhayame

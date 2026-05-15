@@ -6,8 +6,12 @@ name: Neptune Compatibility Tests (disabled - Neptune sunset March 2025)
 on:
   workflow_dispatch:  # manual trigger only, if ever needed
 
+permissions: {}
+
 jobs:
   neptune-compatibility:
+    permissions:
+      contents: read
     runs-on: ubicloud-standard-4
     strategy:
       matrix:
@@ -98,6 +102,8 @@ jobs:
           echo "Status: ${{ job.status }}"
 
   neptune-migration-examples:
+    permissions:
+      contents: read
     runs-on: ubicloud-standard-4
     strategy:
       matrix:
@@ -142,6 +148,7 @@ jobs:
 
   # This job serves as a status check gate
   neptune-compat-status:
+    permissions: {}
     runs-on: ubicloud-standard-2
     needs: [neptune-compatibility, neptune-migration-examples]
     if: always()

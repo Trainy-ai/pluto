@@ -11,8 +11,12 @@ on:
       - 'releases/**'
   workflow_dispatch:
 
+permissions: {}
+
 jobs:
   k8s-multinode-test:
+    permissions:
+      contents: read
     # Use ubicloud runner for better performance and cost
     runs-on: ubicloud-standard-8
     timeout-minutes: 20

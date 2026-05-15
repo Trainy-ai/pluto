@@ -6,11 +6,12 @@ on:
   pull_request:
     branches: [ "main" ]
 
-permissions:
-  contents: read
+permissions: {}
 
 jobs:
   build:
+    permissions:
+      contents: read
     # TODO: set to trigger
     if: github.actor == 'none'
     runs-on: ubicloud-standard-4

@@ -11,8 +11,12 @@ on:
             - 'releases/**'
     workflow_dispatch:
 
+permissions: {}
+
 jobs:
   mypy:
+    permissions:
+      contents: read
     runs-on: ubicloud-standard-2
     steps:
       - name: Checkout code

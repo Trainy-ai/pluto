@@ -9,11 +9,12 @@ on:
         description: 'Version to publish (e.g. 0.1.0). Required for manual trigger.'
         required: true
 
-permissions:
-  contents: write
+permissions: {}
 
 jobs:
   release-build-pypi:
+    permissions:
+      contents: write  # commits version bump back to main
     runs-on: ubicloud-standard-2
     steps:
       - uses: actions/checkout@v4

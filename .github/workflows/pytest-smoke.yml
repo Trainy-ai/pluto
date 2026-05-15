@@ -11,8 +11,12 @@ on:
             - 'releases/**'
     workflow_dispatch:
 
+permissions: {}
+
 jobs:
   test:
+    permissions:
+      contents: read
     strategy:
       # Run every Python version even if one fails. The smoke tests hit the
       # production Pluto server and intermittently flake on cold-start /
@@ -69,6 +73,8 @@ jobs:
 
   fork-e2e:
     needs: test
+    permissions:
+      contents: read
     runs-on: ubicloud-standard-4
     strategy:
       matrix:
@@ -130,6 +136,8 @@ jobs:
 
   distributed-tests:
     needs: test
+    permissions:
+      contents: read
     runs-on: ubicloud-standard-4
     strategy:
       matrix:
