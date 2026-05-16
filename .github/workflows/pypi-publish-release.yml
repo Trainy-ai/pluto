@@ -9,10 +9,9 @@ on:
         description: 'Version to publish (e.g. 0.1.0). Required for manual trigger.'
         required: true
 
-# Minimal token scope: the job only checks out code and publishes via
-# PYPI_TOKEN. contents:read is all that's needed; everything else off.
-permissions:
-  contents: read
+# pluto is a public repo, so checkout needs no token scope and the job
+# publishes via PYPI_TOKEN. Deny the GITHUB_TOKEN everything.
+permissions: {}
 
 jobs:
   release-build-pypi:
