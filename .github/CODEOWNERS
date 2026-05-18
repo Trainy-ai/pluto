@@ -7,9 +7,8 @@
 # Syntax: https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-security/customizing-your-repository/about-code-owners
 # Last matching rule wins.
 
-# CI/CD: GitHub Actions workflows and any other .github config
+# CI/CD: GitHub Actions workflows, CODEOWNERS, and any other .github config
 /.github/                       @asaiacai @ryanhayame
-/.github/workflows/             @asaiacai @ryanhayame
 
 # Release/deployment scripts
 /scripts/docs-pub.sh            @asaiacai @ryanhayame
@@ -20,5 +19,5 @@
 /pyproject.toml                 @asaiacai @ryanhayame
 /poetry.lock                    @asaiacai @ryanhayame
 
-# CODEOWNERS itself
-/.github/CODEOWNERS             @asaiacai @ryanhayame
+# .pth file: executes code on Python startup, so treat as security-sensitive
+/zzzz_pluto_wandb_hook.pth      @asaiacai @ryanhayame
