@@ -15,6 +15,9 @@ permissions: {}
 
 jobs:
   test:
+    # Runs integration tests against the live Pluto server; the API token
+    # (MLOP_API_TOKEN) is scoped to the "integration" environment.
+    environment: integration
     permissions:
       contents: read
     strategy:
@@ -73,6 +76,8 @@ jobs:
 
   fork-e2e:
     needs: test
+    # Needs MLOP_API_TOKEN — scoped to the "integration" environment.
+    environment: integration
     permissions:
       contents: read
     runs-on: ubicloud-standard-4
@@ -136,6 +141,8 @@ jobs:
 
   distributed-tests:
     needs: test
+    # Needs MLOP_API_TOKEN — scoped to the "integration" environment.
+    environment: integration
     permissions:
       contents: read
     runs-on: ubicloud-standard-4

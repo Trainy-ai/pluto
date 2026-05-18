@@ -15,6 +15,9 @@ permissions: {}
 
 jobs:
   k8s-multinode-test:
+    # E2E test authenticates to the live Pluto server; the API token
+    # (MLOP_API_TOKEN) is scoped to the "integration" environment.
+    environment: integration
     permissions:
       contents: read
     # Use ubicloud runner for better performance and cost

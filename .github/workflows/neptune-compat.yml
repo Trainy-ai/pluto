@@ -10,6 +10,9 @@ permissions: {}
 
 jobs:
   neptune-compatibility:
+    # Dual-logging tests authenticate to the live Pluto server; the API
+    # token (MLOP_API_TOKEN) is scoped to the "integration" environment.
+    environment: integration
     permissions:
       contents: read
     runs-on: ubicloud-standard-4
