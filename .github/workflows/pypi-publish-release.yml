@@ -13,6 +13,10 @@ permissions: {}
 
 jobs:
   release-build-pypi:
+    # Isolate PyPI publishing from secrets on other branches. The "build"
+    # environment can be restricted (via repo settings) to protected branches
+    # so rogue workflows on feature branches can't reach its secrets/OIDC.
+    environment: build
     permissions:
       contents: write  # commits version bump back to main
       id-token: write  # OIDC for PyPI Trusted Publishing
