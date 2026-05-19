@@ -38,11 +38,13 @@ jobs:
     steps:
       - name: Clone repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
-      - name: "Setup Python, Poetry and Dependencies"
-        uses: packetcoders/action-setup-cache-python-poetry@0d0be5577b30d85f3fa2d93a4beeda149520f120  # v1.2.0
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
         with:
           python-version: "3.10"
-          poetry-version: "2.1.1"
+
+      - name: Install Poetry
+        run: pip install poetry==2.1.1
       - name: Set release version
         run: |
           # Extract the version number from pyproject.toml using awk
