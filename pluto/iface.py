@@ -299,7 +299,11 @@ class ServerInterface:
             status_code = r.status_code if r else 'N/A'
             target = len(drained) if drained else 'request'
             response = r.text if r else 'N/A'
-            logger.warning(
+            # High-frequency endpoints (the trigger/heartbeat that fires
+            # every ~4 s) set suppress_httpx_logs; route their non-200
+            # responses to DEBUG so a flaky server doesn't spam WARNING.
+            log_response = logger.debug if suppress_httpx_logs else logger.warning
+            log_response(
                 '%s: %s: attempt %s/%s: response code %s for %s from %s: %s',
                 tag,
                 name,

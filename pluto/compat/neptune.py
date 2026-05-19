@@ -575,7 +575,7 @@ class NeptuneRunWrapper:
                         )
                         pluto_files[key] = pluto_file
                         pluto_type = type(pluto_file).__name__
-                        logger.info(
+                        logger.debug(
                             f'pluto.compat.neptune: Converted file {key} '
                             f'to {pluto_type}'
                         )
@@ -586,7 +586,7 @@ class NeptuneRunWrapper:
 
                 if pluto_files:
                     self._pluto_run.log(pluto_files)
-                    logger.info(
+                    logger.debug(
                         f'pluto.compat.neptune: Logged {len(pluto_files)} files '
                         f'to pluto'
                     )
@@ -619,7 +619,7 @@ class NeptuneRunWrapper:
                         )
                         pluto_files[key] = pluto_file
                         pluto_type = type(pluto_file).__name__
-                        logger.info(
+                        logger.debug(
                             f'pluto.compat.neptune: Converted {key} at step '
                             f'{step} to {pluto_type}'
                         )
@@ -630,7 +630,7 @@ class NeptuneRunWrapper:
 
                 if pluto_files:
                     self._pluto_run.log(pluto_files, step=step)
-                    logger.info(
+                    logger.debug(
                         f'pluto.compat.neptune: Logged {len(pluto_files)} files '
                         f'to pluto at step {step}'
                     )

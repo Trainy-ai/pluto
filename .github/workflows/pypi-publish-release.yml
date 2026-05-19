@@ -18,7 +18,7 @@ jobs:
     # so rogue workflows on feature branches can't reach its secrets/OIDC.
     environment: build
     permissions:
-      contents: write  # commits version bump back to main
+      contents: read
       id-token: write  # OIDC for PyPI Trusted Publishing
     runs-on: ubicloud-standard-2
     steps:
@@ -45,15 +45,13 @@ jobs:
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "Resolved version: $VERSION"
 
-      - name: Bump version in source files
+      # Version bumps are committed manually before tagging a release.
+      # This only sets the version in the runner checkout so the built
+      # artifact matches the release tag; nothing is pushed back.
+      - name: Set version and commit SHA for build
         run: |
           VERSION=${{ steps.version.outputs.version }}
           sed -i "0,/version = \".*\"/s//version = \"${VERSION}\"/" pyproject.toml
-          sed -i "s/__version__ = '.*'/__version__ = '${VERSION}'/g" pluto/__init__.py
-
-      - name: Update version placeholders for build
-        run: |
-          VERSION=${{ steps.version.outputs.version }}
           sed -i "s/{{PLUTO_COMMIT_SHA}}/${{ github.sha }}/g" pluto/__init__.py
           sed -i "s/__version__ = '.*'/__version__ = '${VERSION}'/g" pluto/__init__.py
 
