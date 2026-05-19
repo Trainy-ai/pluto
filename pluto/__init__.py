@@ -41,7 +41,7 @@ __all__ = (
     'generate_run_id',
 )
 
-__version__ = '0.0.21'
+__version__ = '0.0.22'
 
 
 # Replaced with the current commit when building the wheels.
