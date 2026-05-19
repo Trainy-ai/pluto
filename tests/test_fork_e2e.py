@@ -41,15 +41,29 @@ def _poll(
     return last
 
 
+def _run_metric_names(project: str, run_id: int) -> List[str]:
+    """Distinct metric names for a run, derived from the metrics endpoint.
+
+    The dedicated ``/api/runs/metric-names`` endpoint is backed by a
+    ClickHouse aggregation that lags ~4-5 min behind ingest — far longer
+    than ``_POLL_TIMEOUT``. ``get_metrics`` reads the raw series and is
+    queryable within seconds of ``finish()``, so names are derived from it.
+    """
+    metrics = pq.get_metrics(project, run_id)
+    if hasattr(metrics, 'columns'):  # pandas DataFrame
+        return list(metrics['metric'].unique())
+    return sorted({m['metric'] for m in metrics})
+
+
 def _poll_metric_names(
     project: str,
     run_id: int,
     expected: List[str],
     timeout: float = _POLL_TIMEOUT,
 ) -> List[str]:
-    """Poll until all *expected* metric names are present on the server."""
+    """Poll until all *expected* metric names are queryable on the server."""
     return _poll(
-        fn=lambda: pq.get_metric_names(project, run_ids=[run_id]),
+        fn=lambda: _run_metric_names(project, run_id),
         check=lambda names: all(e in names for e in expected),
         timeout=timeout,
     )
