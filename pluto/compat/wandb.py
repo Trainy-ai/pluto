@@ -284,7 +284,7 @@ class WandbRunWrapper:
 
                 if pluto_files:
                     self._pluto_run.log(pluto_files)
-                    logger.info(
+                    logger.debug(
                         f'pluto.compat.wandb: save() forwarded '
                         f'{len(pluto_files)} file(s) to Pluto'
                     )
@@ -364,7 +364,7 @@ class WandbRunWrapper:
 
                 if pluto_files:
                     self._pluto_run.log(pluto_files)
-                    logger.info(
+                    logger.debug(
                         f'pluto.compat.wandb: log_artifact() forwarded '
                         f'{len(pluto_files)} file(s) to Pluto'
                     )
