@@ -24,9 +24,7 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
         with:
-          # Fetch full history so we can push the version bump commit back
           ref: main
-          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Set up Python
         uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
@@ -52,15 +50,6 @@ jobs:
           VERSION=${{ steps.version.outputs.version }}
           sed -i "0,/version = \".*\"/s//version = \"${VERSION}\"/" pyproject.toml
           sed -i "s/__version__ = '.*'/__version__ = '${VERSION}'/g" pluto/__init__.py
-
-      - name: Commit version bump to main
-        run: |
-          VERSION=${{ steps.version.outputs.version }}
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add pyproject.toml pluto/__init__.py
-          git diff --cached --quiet && echo "No version changes needed" || \
-            (git commit -m "Bump version to ${VERSION}" && git push origin main)
 
       - name: Update version placeholders for build
         run: |
