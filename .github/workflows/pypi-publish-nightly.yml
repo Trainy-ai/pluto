@@ -4,14 +4,18 @@ on:
     - cron: '35 10 * * *' # 10:35am UTC, 2:35am PST, 5:35am EST
   workflow_dispatch:
 
+permissions: {}
+
 jobs:
   # nightly release check from https://stackoverflow.com/a/67527144
   check-date:
+    permissions:
+      contents: read
     runs-on: ubicloud-standard-2
     outputs:
       should_run: ${{ steps.should_run.outputs.should_run }}
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
       - name: print latest_commit
         run: echo ${{ github.sha }}
       - id: should_run
@@ -21,14 +25,21 @@ jobs:
         run: test -z $(git rev-list  --after="24 hours"  ${{ github.sha }}) && echo "::set-output name=should_run::false"
 
   nightly-build-pypi:
+    # Isolate PyPI publishing from secrets on other branches. The "build"
+    # environment can be restricted (via repo settings) to protected branches
+    # so rogue workflows on feature branches can't reach its secrets/OIDC.
+    environment: build
+    permissions:
+      contents: read
+      id-token: write  # OIDC for PyPI Trusted Publishing
     runs-on: ubicloud-standard-2
     needs: check-date
     if: ${{ needs.check_date.outputs.should_run != 'false' }}
     steps:
       - name: Clone repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
       - name: "Setup Python, Poetry and Dependencies"
-        uses: packetcoders/action-setup-cache-python-poetry@v1.2.0
+        uses: packetcoders/action-setup-cache-python-poetry@0d0be5577b30d85f3fa2d93a4beeda149520f120  # v1.2.0
         with:
           python-version: "3.10"
           poetry-version: "2.1.1"
@@ -44,14 +55,9 @@ jobs:
           sed -i 's/name = "pluto-ml"/name = "pluto-ml-nightly"/g' pyproject.toml
           cat pyproject.toml
           cat pluto/__init__.py
-          
-      - name: Configure poetry
-        env:
-          PYPI_TOKEN: ${{ secrets.PYPI_TOKEN }}
-        run: poetry config pypi-token.pypi "$PYPI_TOKEN"
-  
+
       - name: Build the Python package
         run: poetry build
-  
+
       - name: Publish the package to PyPI
-        run: poetry publish
+        uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b  # v1.14.0

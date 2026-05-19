@@ -11,15 +11,19 @@ on:
             - 'releases/**'
     workflow_dispatch:
 
+permissions: {}
+
 jobs:
   format:
+    permissions:
+      contents: read
     runs-on: ubicloud-standard-2
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
 
       - name: "Setup Python, Poetry and Dependencies"
-        uses: packetcoders/action-setup-cache-python-poetry@v1.2.0
+        uses: packetcoders/action-setup-cache-python-poetry@0d0be5577b30d85f3fa2d93a4beeda149520f120  # v1.2.0
         with:
           python-version: "3.10"
           poetry-version: "2.1.1"
