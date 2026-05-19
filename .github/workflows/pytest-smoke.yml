@@ -11,8 +11,15 @@ on:
             - 'releases/**'
     workflow_dispatch:
 
+permissions: {}
+
 jobs:
   test:
+    # Runs integration tests against the live Pluto server; the API token
+    # (MLOP_API_TOKEN) is scoped to the "integration" environment.
+    environment: integration
+    permissions:
+      contents: read
     strategy:
       # Run every Python version even if one fails. The smoke tests hit the
       # production Pluto server and intermittently flake on cold-start /
@@ -27,10 +34,10 @@ jobs:
     runs-on: ubicloud-standard-4
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
 
       - name: "Setup Python, Poetry and Dependencies"
-        uses: packetcoders/action-setup-cache-python-poetry@v1.2.0
+        uses: packetcoders/action-setup-cache-python-poetry@0d0be5577b30d85f3fa2d93a4beeda149520f120  # v1.2.0
         with:
           python-version: ${{matrix.python-version}}
           poetry-version: ${{matrix.poetry-version}}
@@ -62,13 +69,17 @@ jobs:
 
       - name: Upload coverage to Coveralls
         if: matrix.python-version == '3.11'
-        uses: coverallsapp/github-action@v2
+        uses: coverallsapp/github-action@648a8eb78e6d50909eff900e4ec85cab4524a45b  # v2.3.6
         with:
           github-token: ${{ secrets.COVERALLS_REPO_TOKEN }}
           file: coverage.lcov
 
   fork-e2e:
     needs: test
+    # Needs MLOP_API_TOKEN — scoped to the "integration" environment.
+    environment: integration
+    permissions:
+      contents: read
     runs-on: ubicloud-standard-4
     strategy:
       matrix:
@@ -76,10 +87,10 @@ jobs:
         poetry-version: ["2.1.1"]
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
 
       - name: "Setup Python, Poetry and Dependencies"
-        uses: packetcoders/action-setup-cache-python-poetry@v1.2.0
+        uses: packetcoders/action-setup-cache-python-poetry@0d0be5577b30d85f3fa2d93a4beeda149520f120  # v1.2.0
         with:
           python-version: ${{matrix.python-version}}
           poetry-version: ${{matrix.poetry-version}}
@@ -119,7 +130,7 @@ jobs:
 
       - name: Upload fork logs
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: fork-e2e-logs
           path: |
@@ -130,6 +141,10 @@ jobs:
 
   distributed-tests:
     needs: test
+    # Needs MLOP_API_TOKEN — scoped to the "integration" environment.
+    environment: integration
+    permissions:
+      contents: read
     runs-on: ubicloud-standard-4
     strategy:
       matrix:
@@ -137,10 +152,10 @@ jobs:
         poetry-version: ["2.1.1"]
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
 
       - name: "Setup Python, Poetry and Dependencies"
-        uses: packetcoders/action-setup-cache-python-poetry@v1.2.0
+        uses: packetcoders/action-setup-cache-python-poetry@0d0be5577b30d85f3fa2d93a4beeda149520f120  # v1.2.0
         with:
           python-version: ${{matrix.python-version}}
           poetry-version: ${{matrix.poetry-version}}
@@ -167,7 +182,7 @@ jobs:
 
       - name: Upload DDP test logs
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: ddp-test-logs
           path: ddp_test.log
@@ -183,7 +198,7 @@ jobs:
 
       - name: Upload multinode test logs
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: multinode-test-logs
           path: multinode_test.log
