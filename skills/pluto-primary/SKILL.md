@@ -7,7 +7,7 @@ description: "Primary skill for working with Pluto (Trainy's experiment-tracking
 
 This skill teaches agents how to (1) **instrument** ML training code with the Pluto Python SDK and (2) **query/analyze** existing runs through the Pluto MCP server. Reach for it whenever a task touches Pluto runs or experiment-tracking patterns.
 
-Scope note: this skill covers only the **documented, supported** SDK surface (`init` / `log` / `finish`). The codebase contains additional integrations (Lightning logger, HF callback, `watch()`, media types, dynamic tag mutation) but those are **not part of the documented public API** — do not generate code that relies on them unless the user explicitly asks and accepts they may change.
+Scope note: this skill covers the core SDK surface — `init` / `log` / `finish` plus the logged data types (`Image`, `Audio`, `Video`, `Text`, `Artifact`, `Histogram`, `Table`, `Graph`). The codebase also contains framework integrations (Lightning logger, HF callback, `watch()`) and dynamic tag mutation, but those are **not part of the supported public API** — do not generate code that relies on them unless the user explicitly asks and accepts they may change.
 
 ## Environment Defaults
 
@@ -23,6 +23,8 @@ Scope note: this skill covers only the **documented, supported** SDK surface (`i
 | Goal | Use |
 |------|-----|
 | Add tracking to a training script | Python SDK (`pluto.init` / `pluto.log` / `pluto.finish`) |
+| Log images / audio / video / files | SDK data types (`pluto.Image`, `pluto.Audio`, `pluto.Video`, `pluto.Artifact`) |
+| Log distributions / tables / graphs | SDK data types (`pluto.Histogram`, `pluto.Table`, `pluto.Graph`) |
 | Migrate from Neptune | Neptune compat module — https://docs.trainy.ai/pluto/neptune-migration |
 | "What runs are in project X?" | MCP: `list_runs` |
 | "Show me run R's metrics" | MCP: `get_run` → `query_metrics` |
@@ -94,6 +96,28 @@ for lr, wd in itertools.product(*grid.values()):
 
 Use a shared init-time tag (e.g. `grid-v1`) so the MCP side can pull the whole sweep with `list_runs`.
 
+### R4. Logging media & structured data
+
+Pass a Pluto data type as a value to `pluto.log()`:
+
+```python
+import pluto
+
+# Media (data accepts a file path, bytes, numpy array, PIL image, or torch tensor)
+pluto.log({"sample": pluto.Image(img, caption="epoch 3")})
+pluto.log({"clip": pluto.Audio(waveform, rate=16000)})        # note: rate=, not sample_rate
+pluto.log({"rollout": pluto.Video("rollout.mp4")})
+pluto.log({"prompt": pluto.Text("a photo of a cat")})
+pluto.log({"ckpt": pluto.Artifact("checkpoint.pt", metadata={"epoch": 3})})
+
+# Structured data
+pluto.log({"loss_dist": pluto.Histogram(losses, bins=64)})
+pluto.log({"preds": pluto.Table(rows, columns=["id", "label", "pred"])})  # also accepts a DataFrame
+pluto.log({"arch": pluto.Graph(graph_dict)})
+```
+
+Constructor signatures: `Image(data, caption=None)`, `Audio(data, rate=48000, caption=None)`, `Video(data, rate=30, caption=None, format=None)`, `Text(data, caption=None)`, `Artifact(data=None, caption=None, metadata=None)`, `Histogram(data, bins=64)`, `Table(data=None, columns=..., rows=...)` (or pass a pandas `DataFrame`), `Graph(data={})`.
+
 ## Fast Recipes — MCP
 
 The Pluto MCP server exposes the tools below for read/analysis tasks. **Tool argument names below are illustrative** — confirm the exact parameters against the installed server's tool schema (an installed server may also prefix the tool names).
@@ -142,9 +166,9 @@ update_notes(...)
 
 1. **Always call `pluto.finish()`.** Without it the run never reaches a terminal state and buffered data may not flush. Use `try/finally`.
 2. **Keep `log()` keys stable.** Don't rename a metric between steps — downstream tooling relies on consistent series.
-3. **Numeric values for `log()`.** Stick to int/float for the documented surface.
+3. **`log()` values are int/float or a Pluto data type** (`Image`, `Audio`, `Video`, `Text`, `Artifact`, `Histogram`, `Table`, `Graph`). Plain strings/None aren't valid metric values — use `pluto.Text(...)` for text.
 4. **Server-side filtering in MCP.** Prefer `list_runs(tags=...)` over fetching all runs and filtering client-side — projects can have many runs.
-5. **Don't invent SDK features.** Lightning logger, HF callback, `pluto.watch`, media types (`Image`/`Audio`/`Table`/...), and dynamic `add_tags`/`remove_tags` exist in the source but are **not documented/supported**. Don't emit code using them unless the user explicitly opts in.
+5. **Don't invent unsupported SDK features.** The Lightning logger, HF callback, `pluto.watch`, and dynamic `add_tags`/`remove_tags` exist in the source but are **not part of the supported public API**. Don't emit code using them unless the user explicitly opts in. (The data types in R4 *are* supported.)
 
 ## Gotchas
 
