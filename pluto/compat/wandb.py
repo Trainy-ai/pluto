@@ -851,7 +851,9 @@ def _make_patched_init(original_init, wandb_module):
                 f'wandb will continue to work normally, but NO DATA will be '
                 f'sent to Pluto. To fix, resolve the error above and retry.'
             )
-            logger.error(_msg)
+            # exc_info=True attaches the traceback so the log points at the
+            # raise site (e.g. the failing json.dumps), not just this handler.
+            logger.error(_msg, exc_info=True)
             # Also print to stderr so it shows up even if logging is not configured
             import sys
 

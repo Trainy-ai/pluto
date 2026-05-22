@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "pluto-ml"
-version = "0.0.22"
+version = "0.0.23"
 description = "Pluto ML - Machine Learning Operations Framework"
 packages = [
     {include = "pluto"},
@@ -48,6 +48,7 @@ matplotlib = "^3.10"
 torchvision = "*"
 imageio = "^2.37.0"
 moviepy = "^1.0.3"
+omegaconf = "^2.3"
 
 
 [tool.poetry.extras]
