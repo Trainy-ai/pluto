@@ -36,6 +36,10 @@ _RETRY_MAX = 4
 _RETRY_WAIT_MIN = 0.5
 _RETRY_WAIT_MAX = 4.0
 
+# Server-side cap for ``GET /api/runs/metrics/raw``. Mirrors
+# RAW_METRICS_MAX_LIMIT in web/server/routes/runs-openapi.ts.
+_RAW_METRICS_MAX = 50000
+
 
 class QueryError(Exception):
     """Raised when a query to the Pluto server fails."""
@@ -246,6 +250,83 @@ class Client:
                 row['metric'] = row.pop('logName')
 
         return _to_dataframe(raw)
+
+    def get_raw_metrics(
+        self,
+        project: str,
+        run_id: Union[int, str],
+        metric_name: str,
+        step_min: Optional[int] = None,
+        step_max: Optional[int] = None,
+        limit: int = _RAW_METRICS_MAX,
+    ) -> Any:
+        """Fetch every raw write for a single metric (un-deduped).
+
+        Reads from ClickHouse's ``mlop_metrics`` directly — no FINAL,
+        no reservoir sampling — so callers see every row that landed
+        for the given ``(run, metric)``, including duplicates from
+        resumed runs, re-logs, or manual corrections. Use this for
+        audit and cleanup; use :meth:`get_metrics` for analysis or
+        chart rendering.
+
+        Each row carries the original write ``time``, which
+        disambiguates writes that share a step, plus a
+        ``nonFiniteFlags`` bitmask: ``bit0=NaN``, ``bit1=+Inf``,
+        ``bit2=-Inf``. When any flag is set, ``value`` is ``0`` and
+        the flag is the source of truth — JSON serializes non-finite
+        floats as null, so the bitmask is the only reliable signal
+        once the payload leaves ClickHouse.
+
+        The server caps responses at 50 000 rows. When the cap is
+        hit a :class:`UserWarning` is emitted; narrow ``step_min`` /
+        ``step_max`` to page.
+
+        Args:
+            project: Project name.
+            run_id: Numeric server ID (``int``) or display ID string
+                (e.g. ``"MMP-1"``).
+            metric_name: Metric name (e.g. ``"train/loss"``). Required —
+                scoping every raw scan to a single metric keeps
+                payloads bounded.
+            step_min: Minimum step number (inclusive).
+            step_max: Maximum step number (inclusive).
+            limit: Max rows to return (max 50 000).
+
+        Returns:
+            ``pandas.DataFrame`` with columns ``logGroup``, ``step``,
+            ``time``, ``value``, ``nonFiniteFlags``. If pandas is not
+            installed, ``list[dict]`` with the same keys.
+        """
+        params: Dict[str, Any] = {
+            'runId': self._resolve_run_id(project, run_id),
+            'projectName': project,
+            'logName': metric_name,
+            'limit': min(limit, _RAW_METRICS_MAX),
+        }
+        if step_min is not None:
+            params['stepMin'] = step_min
+        if step_max is not None:
+            params['stepMax'] = step_max
+
+        resp = self._get('/api/runs/metrics/raw', params=params)
+        rows = resp.get('rows', [])
+        if resp.get('truncated'):
+            warnings.warn(
+                f'get_raw_metrics: result truncated at {len(rows)} rows. '
+                f'Narrow step_min/step_max to retrieve more.',
+                stacklevel=2,
+            )
+
+        try:
+            import pandas as pd
+
+            if not rows:
+                return pd.DataFrame(
+                    columns=['logGroup', 'step', 'time', 'value', 'nonFiniteFlags']
+                )
+            return pd.DataFrame(rows)
+        except ImportError:
+            return rows
 
     # ------------------------------------------------------------------
     # Statistics / comparison
@@ -585,6 +666,25 @@ def get_metrics(
         project,
         run_id,
         metric_names=metric_names,
+        limit=limit,
+    )
+
+
+def get_raw_metrics(
+    project: str,
+    run_id: Union[int, str],
+    metric_name: str,
+    step_min: Optional[int] = None,
+    step_max: Optional[int] = None,
+    limit: int = _RAW_METRICS_MAX,
+) -> Any:
+    """Fetch raw metric writes. See :meth:`Client.get_raw_metrics`."""
+    return _get_client().get_raw_metrics(
+        project,
+        run_id,
+        metric_name,
+        step_min=step_min,
+        step_max=step_max,
         limit=limit,
     )
 
