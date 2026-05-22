@@ -7,7 +7,7 @@ import pluto
 from . import sentry as _sentry
 from .op import Op
 from .sets import Settings, _classify_run_id, _is_display_id, setup
-from .util import deep_merge, gen_id, get_char
+from .util import deep_merge, gen_id, get_char, to_native_config
 
 logger = logging.getLogger(f'{__name__.split(".")[0]}')
 tag = 'Init'
@@ -194,6 +194,12 @@ def init(
     if inherit_tags is not None:
         settings._inherit_tags = inherit_tags
 
+    # Normalize the config to JSON-native types up front (e.g. OmegaConf
+    # DictConfig -> dict, resolving interpolations). Done before the fork
+    # deep-merge below so its `isinstance(config, dict)` check works, and so
+    # everything downstream (storage, serialization) sees clean native data.
+    config = to_native_config(config)
+
     # Deep-merge inherited parent config with user config (client-side).
     # The server only does a shallow merge, so we fetch the parent config,
     # deep-merge locally, and disable server-side inheritance.
@@ -240,7 +246,7 @@ def init(
         return op
     except Exception as e:
         _sentry.capture_exception(e)
-        logger.critical('%s: failed, %s', tag, e)  # add early logger
+        logger.critical('%s: failed, %s', tag, e, exc_info=True)  # add early logger
         raise e
 
 

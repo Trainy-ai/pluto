@@ -32,7 +32,14 @@ from .store import DataStore
 from .sync import SyncProcessManager
 from .sync.store import HEALTH_METRIC_KEYS
 from .sys import System
-from .util import deep_merge, get_char, get_val, print_url, to_json
+from .util import (
+    deep_merge,
+    get_char,
+    get_val,
+    print_url,
+    to_json,
+    to_native_config,
+)
 
 logger = logging.getLogger(f'{__name__.split(".")[0]}')
 tag = 'Operation'
@@ -888,6 +895,7 @@ class Op:
             run.update_config({'epochs': 100})
             run.update_config({'lr': 0.01, 'model': 'resnet50'})
         """
+        config = to_native_config(config)
         if self.config is None:
             self.config = {}
         self.config = deep_merge(self.config, config)

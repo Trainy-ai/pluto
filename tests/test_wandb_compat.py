@@ -66,6 +66,33 @@ def _invoke_patched_init(wandb_run, fake_pluto, init_kwargs):
     return result, None
 
 
+def test_init_failure_logs_traceback(clean_env, monkeypatch, caplog):
+    """When pluto.init fails, the log record must carry the traceback.
+
+    Previously the shim logged only ``type(e).__name__: e``, so users saw
+    *what* broke but never *where*. The error must be logged with exc_info so
+    the traceback (and the raise-site line number) is surfaced.
+    """
+    import logging
+
+    monkeypatch.setenv('PLUTO_PROJECT', 'p')
+
+    fake_pluto = MagicMock()
+    fake_pluto.init.side_effect = TypeError('boom')
+    wandb_run = _make_fake_wandb_run()
+
+    with caplog.at_level(logging.ERROR, logger='pluto.compat.wandb'):
+        result, _ = _invoke_patched_init(wandb_run, fake_pluto, {'project': 'p'})
+
+    # Dual-logging disabled => the real wandb run is returned unmodified.
+    assert result is wandb_run
+    records = [r for r in caplog.records if 'DUAL-LOGGING DISABLED' in r.getMessage()]
+    assert records, 'expected a DUAL-LOGGING DISABLED error log'
+    assert (
+        records[0].exc_info is not None
+    ), 'error must be logged with exc_info so the traceback is surfaced'
+
+
 def test_project_kwarg_is_used_when_no_env_vars_set(clean_env):
     """
     Lightning's `WandbLogger(project="my-project", ...)` forwards
@@ -164,3 +191,48 @@ def test_no_project_anywhere_skips_pluto_init(clean_env):
 
     assert forwarded is None
     assert result is wandb_run
+
+
+def test_omegaconf_config_flows_through_shim_and_serializes(clean_env, monkeypatch):
+    """End-to-end shape of the real report: a Hydra user calls
+    ``wandb.init(config=dict(OmegaConf.load(...)))``.
+
+    ``dict(cfg)`` yields a plain top-level dict with nested ``DictConfig``
+    values. Drive the real shim with that exact object and confirm (a) it
+    forwards the config to ``pluto.init`` and (b) the forwarded object
+    serializes through Pluto's real start-payload pipeline
+    (``to_native_config`` -> ``make_compat_start_v1``) — the path that used to
+    raise ``TypeError: Object of type DictConfig is not JSON serializable`` and
+    disable dual-logging.
+    """
+    import json
+
+    OmegaConf = pytest.importorskip('omegaconf').OmegaConf
+    monkeypatch.setenv('PLUTO_PROJECT', 'p')
+
+    cfg = OmegaConf.create(
+        {
+            'lr': 0.01,
+            'model': {'name': 'resnet', 'full_name': '${model.name}-v2'},
+        }
+    )
+    wandb_config = dict(cfg)  # top-level dict, nested DictConfig values
+
+    fake_pluto = MagicMock()
+    fake_pluto.init.return_value = MagicMock(id=1)
+    wandb_run = _make_fake_wandb_run()
+
+    _, forwarded = _invoke_patched_init(wandb_run, fake_pluto, {'config': wandb_config})
+
+    assert forwarded is not None, 'pluto.init should have been called'
+    assert 'model' in forwarded['config']
+
+    # Serialize exactly as pluto.init() would: normalize, then build payload.
+    from pluto.api import make_compat_start_v1
+    from pluto.sets import Settings
+    from pluto.util import to_native_config
+
+    native = to_native_config(forwarded['config'])
+    payload = make_compat_start_v1(native, Settings(), info=None)
+    inner = json.loads(json.loads(payload.decode())['config'])
+    assert inner['model']['full_name'] == 'resnet-v2'  # interpolation resolved
