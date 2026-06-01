@@ -374,6 +374,29 @@ def test_fork_parameters_omitted_when_none():
     assert 'inheritTags' not in payload
 
 
+def test_group_in_start_payload():
+    """A run group set on settings is forwarded as the `group` field."""
+    settings = Settings()
+    settings._group = 'my-sweep'
+
+    payload = json.loads(make_compat_start_v1({}, settings, None))
+
+    assert payload['group'] == 'my-sweep'
+
+
+def test_group_none_when_unset():
+    """No group set → `group` is None (existing runs keep working).
+
+    A bare Settings() never assigns _group, so this also exercises the
+    getattr(settings, '_group', None) fallback in make_compat_start_v1.
+    """
+    settings = Settings()
+
+    payload = json.loads(make_compat_start_v1({}, settings, None))
+
+    assert payload['group'] is None
+
+
 def test_fork_resolve_int():
     """Resolve fork_run_id passes through int unchanged."""
     assert _resolve_fork_run_id(12345, 'proj') == 12345

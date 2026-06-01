@@ -718,15 +718,13 @@ def _make_patched_init(original_init, wandb_module):
                 or os.environ.get('WANDB_NOTES')
                 or getattr(wandb_run, 'notes', None)
             )
-            # WANDB_RUN_GROUP and WANDB_JOB_TYPE: wandb-specific concepts
-            # with no direct Pluto equivalent. We surface them as tags so
-            # they're searchable in the Pluto UI. These are documented at
-            # https://docs.wandb.ai/guides/track/environment-variables
+            # WANDB_RUN_GROUP maps to Pluto's native run group (forwarded to
+            # pluto.init(group=...) below). WANDB_JOB_TYPE has no direct Pluto
+            # equivalent, so we surface it as a tag so it's searchable in the
+            # Pluto UI. https://docs.wandb.ai/guides/track/environment-variables
             wandb_group = kwargs.get('group') or os.environ.get('WANDB_RUN_GROUP')
             wandb_job_type = kwargs.get('job_type') or os.environ.get('WANDB_JOB_TYPE')
             extra_tags = []
-            if wandb_group:
-                extra_tags.append(f'group:{wandb_group}')
             if wandb_job_type:
                 extra_tags.append(f'job_type:{wandb_job_type}')
             if extra_tags:
@@ -768,6 +766,8 @@ def _make_patched_init(original_init, wandb_module):
                 pluto_init_kwargs['config']['_wandb_notes'] = notes
             if tags:
                 pluto_init_kwargs['tags'] = list(tags)
+            if wandb_group:
+                pluto_init_kwargs['group'] = wandb_group
             if run_id:
                 pluto_init_kwargs['run_id'] = run_id
 

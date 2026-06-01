@@ -65,6 +65,7 @@ def init(
     config: Union[dict, str, None] = None,
     settings: Union[Settings, Dict[str, Any], None] = None,
     tags: Union[str, list[str], None] = None,
+    group: Optional[str] = None,
     run_id: Optional[str] = None,
     resume: bool = False,
     fork_run_id: Optional[Union[int, str]] = None,
@@ -85,6 +86,9 @@ def init(
         config: Run configuration dict
         settings: Settings object or dict
         tags: Single tag or list of tags
+        group: Optional group name used to cluster related runs together in
+               the dashboard (e.g. all runs belonging to one sweep). Set once
+               at init; max 255 characters. Mirrors ``wandb.init(group=...)``.
         run_id: User-provided run ID for multi-node distributed training.
                 When multiple processes use the same run_id, they will all
                 log to the same run (Neptune-style resume). Can also be set
@@ -164,6 +168,10 @@ def init(
         get_char(name) if name else gen_id()
     )  # datetime.now().strftime("%Y%m%d"), str(int(time.time()))
     # settings._op_id = id if id else gen_id(seed=settings.project)
+
+    # Optional run group (wandb-style). Carried on settings into the
+    # create-run payload built by make_compat_start_v1.
+    settings._group = group
 
     # Classify run_id: display ID → resume, numeric → resume, other → externalId
     # Parameter takes precedence over environment variable (already handled in setup())

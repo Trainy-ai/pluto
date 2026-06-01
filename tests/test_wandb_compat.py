@@ -193,6 +193,67 @@ def test_no_project_anywhere_skips_pluto_init(clean_env):
     assert result is wandb_run
 
 
+def test_group_forwarded_natively(clean_env):
+    """wandb's group= maps to Pluto's native group= param, not a tag.
+
+    Before run groups existed in Pluto, the shim surfaced a wandb group as a
+    `group:<name>` tag. Now that pluto.init() has a real group parameter, the
+    group must be forwarded natively and must NOT leak back in as a tag.
+    """
+    fake_pluto = MagicMock()
+    fake_pluto.init.return_value = MagicMock(id=42)
+    wandb_run = _make_fake_wandb_run()
+
+    _, forwarded = _invoke_patched_init(
+        wandb_run, fake_pluto, {'project': 'p', 'group': 'my-sweep'}
+    )
+
+    assert forwarded is not None, 'pluto.init should have been called'
+    assert forwarded.get('group') == 'my-sweep'
+    assert 'group:my-sweep' not in (forwarded.get('tags') or [])
+
+
+def test_group_from_wandb_run_group_env(clean_env, monkeypatch):
+    """WANDB_RUN_GROUP maps to the native group= param when no kwarg is given."""
+    monkeypatch.setenv('WANDB_RUN_GROUP', 'env-sweep')
+
+    fake_pluto = MagicMock()
+    fake_pluto.init.return_value = MagicMock(id=42)
+    wandb_run = _make_fake_wandb_run()
+
+    _, forwarded = _invoke_patched_init(wandb_run, fake_pluto, {'project': 'p'})
+
+    assert forwarded is not None, 'pluto.init should have been called'
+    assert forwarded.get('group') == 'env-sweep'
+
+
+def test_job_type_stays_a_tag_and_is_not_a_group(clean_env):
+    """job_type has no Pluto equivalent → still a tag, never a group."""
+    fake_pluto = MagicMock()
+    fake_pluto.init.return_value = MagicMock(id=42)
+    wandb_run = _make_fake_wandb_run()
+
+    _, forwarded = _invoke_patched_init(
+        wandb_run, fake_pluto, {'project': 'p', 'job_type': 'eval'}
+    )
+
+    assert forwarded is not None, 'pluto.init should have been called'
+    assert 'job_type:eval' in (forwarded.get('tags') or [])
+    assert 'group' not in forwarded
+
+
+def test_no_group_means_no_group_kwarg(clean_env):
+    """When no group is given anywhere, group= is not forwarded to pluto.init."""
+    fake_pluto = MagicMock()
+    fake_pluto.init.return_value = MagicMock(id=42)
+    wandb_run = _make_fake_wandb_run()
+
+    _, forwarded = _invoke_patched_init(wandb_run, fake_pluto, {'project': 'p'})
+
+    assert forwarded is not None, 'pluto.init should have been called'
+    assert 'group' not in forwarded
+
+
 def test_omegaconf_config_flows_through_shim_and_serializes(clean_env, monkeypatch):
     """End-to-end shape of the real report: a Hydra user calls
     ``wandb.init(config=dict(OmegaConf.load(...)))``.
