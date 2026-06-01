@@ -56,6 +56,7 @@ class Settings:
     _fork_step: Optional[int] = None  # Step number to fork at
     _inherit_config: Optional[bool] = None  # Inherit parent config
     _inherit_tags: Optional[bool] = None  # Inherit parent tags (server default: False)
+    _group: Optional[str] = None  # wandb-style run group label (set at init)
 
     store_db: str = 'store.db'
     store_table_num: str = 'num'

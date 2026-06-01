@@ -387,8 +387,8 @@ def test_group_in_start_payload():
 def test_group_none_when_unset():
     """No group set → `group` is None (existing runs keep working).
 
-    A bare Settings() never assigns _group, so this also exercises the
-    getattr(settings, '_group', None) fallback in make_compat_start_v1.
+    A bare Settings() leaves _group at its class default of None, so the
+    payload's group field is None rather than absent.
     """
     settings = Settings()
 

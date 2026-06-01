@@ -46,7 +46,7 @@ def make_compat_start_v1(config, settings, info, tags=None):
         'loggerSettings': json.dumps(clean_dict(settings.to_dict())),
         'systemMetadata': json.dumps(info) if info is not None else None,
         'tags': tags if tags else None,
-        'group': getattr(settings, '_group', None) or None,
+        'group': settings._group or None,
         'createdAt': settings.compat.get('createdAt'),
         'updatedAt': settings.compat.get('updatedAt'),
     }
