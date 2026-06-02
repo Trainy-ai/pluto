@@ -304,6 +304,16 @@ def setup(settings: Union[Settings, Dict[str, Any], None] = None) -> Settings:
     if env_project is not None and 'project' not in settings_dict:
         new_settings.project = env_project
 
+    # Read PLUTO_DIR environment variable (with MLOP_DIR fallback)
+    # Controls where pluto stages local state, including the WAL-mode SQLite
+    # sync DB. Point this at node-local storage when the working directory is on
+    # a network filesystem (NFS/Lustre/SMB) — WAL locking is unreliable there
+    # and degrades into "locking protocol" retries (see pluto/sync/store.py).
+    # Only apply if not already set via function parameters.
+    env_dir = _get_env_with_deprecation('PLUTO_DIR', 'MLOP_DIR')
+    if env_dir is not None and 'dir' not in settings_dict:
+        new_settings.dir = os.path.abspath(os.path.expanduser(env_dir))
+
     # Read PLUTO_THREAD_JOIN_TIMEOUT_SECONDS environment variable
     # Only apply if not already set via function parameters
     env_timeout = _get_env_with_deprecation(

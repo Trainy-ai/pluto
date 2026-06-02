@@ -247,3 +247,44 @@ class TestPLUTOThreadJoinTimeout:
                 for warning in w
             )
         del os.environ['MLOP_THREAD_JOIN_TIMEOUT_SECONDS']
+
+
+class TestPLUTODir:
+    def test_pluto_dir_sets_staging_dir(self):
+        """PLUTO_DIR overrides the default staging dir."""
+        os.environ['PLUTO_DIR'] = '/tmp/pluto-staging'
+        try:
+            settings = setup()
+            assert settings.dir == '/tmp/pluto-staging'
+        finally:
+            del os.environ['PLUTO_DIR']
+
+    def test_pluto_dir_expands_user(self):
+        """PLUTO_DIR expands ~ and resolves to an absolute path."""
+        os.environ['PLUTO_DIR'] = '~/pluto-runs'
+        try:
+            settings = setup()
+            assert settings.dir == os.path.abspath(os.path.expanduser('~/pluto-runs'))
+        finally:
+            del os.environ['PLUTO_DIR']
+
+    def test_param_overrides_pluto_dir(self):
+        """An explicit 'dir' in settings wins over the env var."""
+        os.environ['PLUTO_DIR'] = '/tmp/from-env'
+        try:
+            settings = setup({'dir': '/tmp/from-param'})
+            assert settings.dir == '/tmp/from-param'
+        finally:
+            del os.environ['PLUTO_DIR']
+
+    def test_deprecated_mlop_dir(self):
+        """Deprecated MLOP_DIR still works with a deprecation warning."""
+        os.environ['MLOP_DIR'] = '/tmp/mlop-staging'
+        try:
+            with warnings.catch_warnings(record=True) as w:
+                warnings.simplefilter('always')
+                settings = setup()
+                assert settings.dir == '/tmp/mlop-staging'
+                assert any('MLOP_DIR' in str(warning.message) for warning in w)
+        finally:
+            del os.environ['MLOP_DIR']
