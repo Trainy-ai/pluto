@@ -66,9 +66,10 @@ def _warn_if_network_staging_dir(settings: Settings) -> None:
     "locking protocol" retries that throttle logging. Detection is best-effort
     and Linux-only; on other platforms this is a no-op (see pluto/_fs.py).
     """
-    # The sync DB lives under settings.dir unless explicitly overridden.
+    # The sync DB lives under the run dir (settings.get_dir()) unless an
+    # explicit path override is set.
     db_path = settings.sync_process_db_path
-    staging_dir = os.path.dirname(db_path) if db_path else settings.dir
+    staging_dir = os.path.dirname(db_path) if db_path else settings.get_dir()
     try:
         if not is_network_fs(staging_dir):
             return
@@ -189,12 +190,15 @@ def init(
 
     settings = setup(settings)
     settings.dir = dir if dir else settings.dir
-    _warn_if_network_staging_dir(settings)
     settings.project = get_char(project) if project else settings.project
     settings._op_name = (
         get_char(name) if name else gen_id()
     )  # datetime.now().strftime("%Y%m%d"), str(int(time.time()))
     # settings._op_id = id if id else gen_id(seed=settings.project)
+
+    # Warn (once) if the sync DB will live on a network filesystem. Done after
+    # project/_op_name are set so get_dir() resolves the real run directory.
+    _warn_if_network_staging_dir(settings)
 
     # Classify run_id: display ID → resume, numeric → resume, other → externalId
     # Parameter takes precedence over environment variable (already handled in setup())

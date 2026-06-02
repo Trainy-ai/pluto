@@ -16,7 +16,18 @@ rather than risk a false alarm.
 """
 
 import os
+import re
 from typing import Optional
+
+# /proc/self/mountinfo escapes space, tab, newline and backslash in paths and
+# fstypes as octal sequences (\040, \011, \012, \134). Decode them so prefix
+# matching works for mount points that contain such characters.
+_OCTAL_ESCAPE = re.compile(r'\\([0-7]{3})')
+
+
+def _unescape_mountinfo(field: str) -> str:
+    return _OCTAL_ESCAPE.sub(lambda m: chr(int(m.group(1), 8)), field)
+
 
 # Filesystem type prefixes (as reported in /proc/self/mountinfo) whose locking
 # semantics are unreliable for WAL-mode SQLite. Matched as prefixes so that
@@ -61,8 +72,8 @@ def get_fs_type(path: str) -> Optional[str]:
                 right_fields = right.split()
                 if len(left_fields) < 5 or not right_fields:
                     continue
-                mount_point = left_fields[4]
-                fstype = right_fields[0]
+                mount_point = _unescape_mountinfo(left_fields[4])
+                fstype = _unescape_mountinfo(right_fields[0])
                 # Longest mount point that is a path-prefix of target wins.
                 if target == mount_point or target.startswith(
                     mount_point.rstrip('/') + '/'

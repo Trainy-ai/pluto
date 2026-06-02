@@ -331,6 +331,7 @@ class SyncStore:
 
             self.conn.commit()
 
+    @_retry_on_locked
     def register_run(
         self,
         run_id: str,
@@ -371,6 +372,7 @@ class SyncStore:
             )
         self._record_write(start)
 
+    @_retry_on_locked
     def mark_run_finished(self, run_id: str) -> None:
         """Mark a run as finished (training complete, flush pending)."""
         with self._lock:
@@ -383,6 +385,7 @@ class SyncStore:
                 (time.time(), run_id),
             )
 
+    @_retry_on_locked
     def mark_run_synced(self, run_id: str) -> None:
         """Mark a run as fully synced (all data uploaded)."""
         with self._lock:
@@ -802,6 +805,7 @@ class SyncStore:
                 params,
             )
 
+    @_retry_on_locked
     def update_file_presigned_url(self, file_id: int, url: str) -> None:
         """Store presigned URL for a file."""
         with self._lock:

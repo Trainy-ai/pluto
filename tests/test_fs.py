@@ -39,6 +39,14 @@ class TestGetFsType:
         with patch('pluto._fs.open', side_effect=OSError):
             assert get_fs_type('/whatever') is None
 
+    def test_octal_escaped_mount_point(self):
+        # mountinfo escapes spaces as \040; a path with a space must still match.
+        mountinfo = (
+            '21 1 0:20 / / rw - ext4 /dev/root rw\n'
+            '47 21 0:42 / /mnt/my\\040share rw - nfs4 server:/export rw\n'
+        )
+        assert _patched('/mnt/my share/run', mountinfo) == 'nfs4'
+
 
 class TestIsNetworkFs:
     def test_local_is_not_network(self):
