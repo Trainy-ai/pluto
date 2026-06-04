@@ -46,6 +46,7 @@ class Settings:
     _op_name: Optional[str] = None
     _op_id: Optional[int] = None
     _op_status: int = -1
+    _display_id: Optional[str] = None  # Server display ID (e.g. "LV3-12")
     _external_id: Optional[str] = None  # User-provided run ID for multi-node
     _external_id_from_env: bool = False  # Whether _external_id was set from env var
     _resume_run_id: Optional[int] = None  # Numeric run ID for resuming

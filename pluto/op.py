@@ -348,6 +348,7 @@ class Op:
             response_data = r.json()
             self.settings.url_view = response_data['url']
             self.settings._op_id = response_data['runId']
+            self.settings._display_id = response_data.get('displayId')
             self._resumed = response_data.get('resumed', False)
             self._fork_run_id = response_data.get('forkedFromRunId')
             self._fork_step = response_data.get('forkStep')
@@ -375,6 +376,7 @@ class Op:
                         f'reattach, or use a unique run_id.'
                     )
                 logger.info(f'{tag}: resumed run {str(self.settings._op_id)}')
+                self._print_run_banner('resumed')
                 logger.warning(
                     f'{tag}: Run was resumed via run_id. The `name` parameter '
                     f'is ignored for resumed runs - the original run name is '
@@ -382,6 +384,7 @@ class Op:
                 )
             else:
                 logger.info(f'{tag}: started run {str(self.settings._op_id)}')
+                self._print_run_banner('started')
 
             os.makedirs(f'{self.settings.get_dir()}/files', exist_ok=True)
 
@@ -460,6 +463,29 @@ class Op:
             db_path=self.settings.sync_process_db_path,
         )
         logger.debug(f'{tag}: initialized sync process manager')
+
+    def _print_run_banner(self, verb: str) -> None:
+        """Print a stable, greppable run banner to stdout.
+
+        Emits one line in a fixed format so external tooling can reverse-look
+        up a run from a training process's stdout, e.g.::
+
+            pluto: run LV3-12 started (external_id=dhyecrvx)
+
+        The display ID (e.g. ``LV3-12``) comes from the server's create/resume
+        response; the ``external_id`` is the sqid slug (the last path segment
+        of the run URL). This is intentionally a plain ``print`` to stdout,
+        independent of the logging system, so it can't be suppressed by log
+        levels or console-capture settings and always lands on stdout.
+        """
+        display_id = self.settings._display_id
+        if not display_id:
+            return  # server didn't return a display ID; nothing stable to print
+        external_id = None
+        if self.settings.url_view:
+            external_id = self.settings.url_view.rstrip('/').rsplit('/', 1)[-1]
+        suffix = f' (external_id={external_id})' if external_id else ''
+        print(f'pluto: run {display_id} {verb}{suffix}', flush=True)
 
     def start(self) -> None:
         # Start sync process if enabled
