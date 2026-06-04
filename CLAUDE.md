@@ -304,9 +304,34 @@ Environment variables use the `PLUTO_*` prefix. The old `MLOP_*` prefix is suppo
 **Configuration:**
 - `PLUTO_DEBUG_LEVEL` - Log level (DEBUG, INFO, WARNING, ERROR, CRITICAL)
 - `PLUTO_URL_APP`, `PLUTO_URL_API`, `PLUTO_URL_INGEST`, `PLUTO_URL_PY` - Server URLs
+- `PLUTO_DIR` - Staging directory for local state, including the WAL-mode sync
+  SQLite DB (alternative to `pluto.init(dir="...")`). Point this at node-local
+  storage when the working directory is on a network filesystem — see
+  "Network filesystems" below.
 
 **Deprecated (still supported with warnings):**
-- `MLOP_API_TOKEN`, `MLOP_PROJECT`, `MLOP_DEBUG_LEVEL`, `MLOP_URL_*`
+- `MLOP_API_TOKEN`, `MLOP_PROJECT`, `MLOP_DEBUG_LEVEL`, `MLOP_URL_*`, `MLOP_DIR`
+
+### Network Filesystems (NFS/Lustre/SMB) and SQLite WAL
+
+The sync DB uses SQLite WAL mode (`pluto/sync/store.py`), which relies on POSIX
+byte-range locking plus a shared `-shm` mmap. These don't work reliably on
+network filesystems, where the lock handoff degrades into `SQLITE_PROTOCOL`
+("locking protocol") races — surfacing as repeated `Transient SQLite error
+(will retry): locking protocol` warnings and badly throttled logging.
+
+- **Fix:** put the staging dir on node-local disk via `pluto.init(dir=...)` or
+  `PLUTO_DIR` (e.g. `/tmp`, node-local NVMe). `init()` emits a one-time warning
+  (Linux-only, best-effort) when it detects the staging dir on a network mount;
+  detection lives in `pluto/_fs.py` (`is_network_fs` / `get_fs_type`, parsed
+  from `/proc/self/mountinfo`).
+- **Resilience:** `_retry_on_locked` (`pluto/sync/store.py`) treats `locked`,
+  `locking protocol`, and `busy` as transient and retries with bounded
+  exponential backoff *plus jitter* (jitter avoids the training and sync
+  processes backing off in lockstep). `busy_timeout` is kept short
+  (`DEFAULT_BUSY_TIMEOUT_MS`) on purpose: it sits *under* the app-level retry,
+  so a long timeout stacks per attempt and stalls writes (this stacking is what
+  caused a ~50s/batch regression).
 
 ### Testing Notes
 - Tests run against production server by default

@@ -9,6 +9,7 @@ SIGKILL, and other failure modes.
 import json
 import logging
 import os
+import random
 import sqlite3
 import threading
 import time
@@ -41,9 +42,30 @@ HEALTH_METRIC_KEYS = [
     'retry_failures',
 ]
 
-# Default number of retries for transient SQLite errors (database is locked)
-_SQLITE_RETRY_COUNT = 5
-_SQLITE_RETRY_BASE_DELAY = 0.1  # seconds
+# Bounded exponential backoff for transient SQLite errors under concurrent
+# access. Delays grow as base * 2**attempt but are capped at MAX_DELAY, and we
+# sleep a *jittered* fraction of that window ("full jitter"). Jitter matters
+# because the training process and the sync process retry independently against
+# the same DB — without it they back off in lockstep and keep colliding.
+_SQLITE_RETRY_COUNT = 6
+_SQLITE_RETRY_BASE_DELAY = 0.05  # seconds
+_SQLITE_RETRY_MAX_DELAY = 1.0  # cap on a single backoff sleep
+
+# Substrings (lowercased) that mark a sqlite3.OperationalError as transient and
+# therefore safe to retry rather than surface:
+#   "database is locked"        -> SQLITE_BUSY   (another connection holds a lock)
+#   "database table is locked"  -> SQLITE_LOCKED (table-level contention)
+#   "database is busy"          -> SQLITE_BUSY variants
+#   "locking protocol"          -> SQLITE_PROTOCOL (WAL lock-handoff race; shows
+#                                  up on slow/network filesystems like NFS where
+#                                  POSIX locking degrades). Previously this fell
+#                                  through the 'locked' check and was re-raised,
+#                                  dropping the record and logging on every hit.
+_TRANSIENT_SQLITE_SUBSTRINGS = (
+    'locked',
+    'locking protocol',
+    'database is busy',
+)
 
 # Global counters for observability — tracks cumulative retry/failure stats
 # across the process lifetime without any thread-safety overhead (GIL-protected).
@@ -53,8 +75,19 @@ _retry_stats = {
 }
 
 
+def _is_transient_sqlite_error(error: sqlite3.OperationalError) -> bool:
+    """True if the error is transient lock contention that's safe to retry."""
+    message = str(error).lower()
+    return any(sub in message for sub in _TRANSIENT_SQLITE_SUBSTRINGS)
+
+
 def _retry_on_locked(func: F) -> F:
-    """Retry a method on sqlite3.OperationalError (database is locked)."""
+    """Retry a method on transient sqlite3.OperationalError (lock contention).
+
+    Uses bounded exponential backoff with full jitter. Non-transient
+    OperationalErrors (e.g. malformed SQL, schema errors) are re-raised
+    immediately rather than retried.
+    """
 
     @wraps(func)
     def wrapper(*args: Any, **kwargs: Any) -> Any:
@@ -63,16 +96,20 @@ def _retry_on_locked(func: F) -> F:
             try:
                 return func(*args, **kwargs)
             except sqlite3.OperationalError as e:
-                if 'locked' not in str(e).lower():
+                if not _is_transient_sqlite_error(e):
                     raise
                 last_error = e
                 _retry_stats['total_retries'] += 1
-                delay = _SQLITE_RETRY_BASE_DELAY * (2**attempt)
+                window = min(
+                    _SQLITE_RETRY_MAX_DELAY, _SQLITE_RETRY_BASE_DELAY * (2**attempt)
+                )
+                delay = random.uniform(0, window)
                 logger.debug(
-                    '%s: %s retrying after "database is locked" '
-                    '(attempt %d/%d, wait %.1fs)',
+                    '%s: %s retrying after transient SQLite error "%s" '
+                    '(attempt %d/%d, wait %.3fs)',
                     tag,
                     func.__name__,
+                    e,
                     attempt + 1,
                     _SQLITE_RETRY_COUNT,
                     delay,
@@ -158,13 +195,23 @@ class SyncStore:
 
     SCHEMA_VERSION = 1
 
+    # SQLite's own busy handler wait. Kept deliberately short because we layer
+    # application-level exponential backoff (see _retry_on_locked) on top: a
+    # long busy_timeout stacks *under* every retry attempt, so e.g. a 30s
+    # timeout x N retries can stall a single write into tens of seconds. That
+    # stacking is what throttled training to ~50s/batch on NFS. With a short
+    # timeout, control returns to the jittered backoff loop quickly instead.
+    DEFAULT_BUSY_TIMEOUT_MS = 5000
+
     def __init__(
         self,
         db_path: str,
         parent_pid: Optional[int] = None,
+        busy_timeout_ms: int = DEFAULT_BUSY_TIMEOUT_MS,
     ) -> None:
         self.db_path = db_path
         self.parent_pid = parent_pid
+        self.busy_timeout_ms = busy_timeout_ms
         self._lock = threading.Lock()
 
         # Write latency tracking (running stats, no memory growth)
@@ -183,7 +230,7 @@ class SyncStore:
         )
         self.conn.execute('PRAGMA journal_mode=WAL')
         self.conn.execute('PRAGMA synchronous=NORMAL')  # Good balance of safety/speed
-        self.conn.execute('PRAGMA busy_timeout=30000')  # Wait up to 30s for locks
+        self.conn.execute(f'PRAGMA busy_timeout={int(self.busy_timeout_ms)}')
         self.conn.row_factory = sqlite3.Row
 
         self._init_schema()
@@ -284,6 +331,7 @@ class SyncStore:
 
             self.conn.commit()
 
+    @_retry_on_locked
     def register_run(
         self,
         run_id: str,
@@ -324,6 +372,7 @@ class SyncStore:
             )
         self._record_write(start)
 
+    @_retry_on_locked
     def mark_run_finished(self, run_id: str) -> None:
         """Mark a run as finished (training complete, flush pending)."""
         with self._lock:
@@ -336,6 +385,7 @@ class SyncStore:
                 (time.time(), run_id),
             )
 
+    @_retry_on_locked
     def mark_run_synced(self, run_id: str) -> None:
         """Mark a run as fully synced (all data uploaded)."""
         with self._lock:
@@ -755,6 +805,7 @@ class SyncStore:
                 params,
             )
 
+    @_retry_on_locked
     def update_file_presigned_url(self, file_id: int, url: str) -> None:
         """Store presigned URL for a file."""
         with self._lock:
