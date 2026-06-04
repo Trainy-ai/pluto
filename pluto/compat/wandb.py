@@ -158,7 +158,17 @@ class WandbRunWrapper:
             logger.debug(f'pluto.compat.wandb: Pluto finish timed out after {timeout}s')
 
     def log(self, data: Dict[str, Any], step=None, commit=None, **kwargs):
-        """Log metrics to both wandb and Pluto."""
+        """Log metrics to both wandb and Pluto.
+
+        Value routing for the Pluto side:
+        - int/float, torch & numpy scalars -> Pluto metrics (time-series)
+        - wandb media (Image/Video/Audio/Histogram/Table), and lists
+          thereof -> converted Pluto media
+        - str and bool -> Pluto config (latest-wins). Pluto has no
+          string/bool time-series metric, so these mirror wandb's
+          summary/overview placement and stay queryable via
+          get_run().config.
+        """
         # Determine the step to use for Pluto.
         # When step is explicit, use it. Otherwise:
         # - Normal mode: read wandb's _step before log() increments it
@@ -186,11 +196,25 @@ class WandbRunWrapper:
                 # Pluto.log() natively supports lists, so we just need
                 # to convert each element and pass the list through.
                 pluto_data: Dict[str, Any] = {}
+                # String values have no time-series metric equivalent in
+                # Pluto (op._process_log_item_sync only keeps int/float/
+                # tensor/File/Data). wandb puts loose strings in the run
+                # summary/overview; the closest Pluto analogue is config,
+                # which is latest-wins and queryable via get_run().config.
+                # This is what lets e.g. a resume skill read back the most
+                # recent checkpoint/r2_path for a run.
+                pluto_config: Dict[str, Any] = {}
                 for key, value in data.items():
-                    if isinstance(value, (int, float)):
+                    if isinstance(value, bool):
+                        # bool is a subclass of int, but Pluto drops bool
+                        # metrics — surface it as config so it isn't lost.
+                        pluto_config[key] = value
+                    elif isinstance(value, (int, float)):
                         pluto_data[key] = value
-                    elif _is_torch_tensor_scalar(value):
+                    elif _is_torch_tensor_scalar(value) or _is_numpy_scalar(value):
                         pluto_data[key] = value.item()
+                    elif isinstance(value, str):
+                        pluto_config[key] = value
                     elif isinstance(value, (list, tuple)):
                         # List of wandb media — convert each element.
                         converted_items = []
@@ -211,6 +235,15 @@ class WandbRunWrapper:
                     if actual_step is not None:
                         log_kwargs['step'] = actual_step
                     self._pluto_run.log(pluto_data, **log_kwargs)
+
+                if pluto_config:
+                    try:
+                        self._pluto_run.update_config(pluto_config)
+                    except Exception as e:
+                        logger.debug(
+                            f'pluto.compat.wandb: Failed to sync string/bool '
+                            f'values to Pluto config: {e}'
+                        )
             except Exception as e:
                 logger.debug(f'pluto.compat.wandb: Failed to log metrics to Pluto: {e}')
 
@@ -504,6 +537,22 @@ def _is_torch_tensor_scalar(value):
         import torch
 
         return isinstance(value, torch.Tensor) and value.dim() == 0
+    except ImportError:
+        return False
+
+
+def _is_numpy_scalar(value):
+    """Check if value is a numpy scalar number (e.g. np.int64, np.float32).
+
+    numpy scalars are NOT instances of Python int/float, so frameworks that
+    log ``np.int64(step)`` / ``np.float32(loss)`` would otherwise be dropped
+    by the numeric filter below — even though Pluto's own log() accepts
+    anything with .item(). Booleans are excluded (Pluto drops bool metrics).
+    """
+    try:
+        import numpy as np
+
+        return isinstance(value, np.generic) and not isinstance(value, np.bool_)
     except ImportError:
         return False
 

@@ -236,3 +236,71 @@ def test_omegaconf_config_flows_through_shim_and_serializes(clean_env, monkeypat
     payload = make_compat_start_v1(native, Settings(), info=None)
     inner = json.loads(json.loads(payload.decode())['config'])
     assert inner['model']['full_name'] == 'resnet-v2'  # interpolation resolved
+
+
+# ---------------------------------------------------------------------------
+# WandbRunWrapper.log value routing
+#
+# The shim pre-filters each logged value before forwarding to Pluto. These
+# tests pin the routing that backs the /resume-crashed-run use case: string
+# paths (e.g. checkpoint/r2_path) must reach Pluto as config (latest-wins,
+# queryable via get_run().config), and numpy scalars must not be silently
+# dropped the way plain str/np values were before.
+# ---------------------------------------------------------------------------
+
+
+def _make_wrapper():
+    """Build a WandbRunWrapper with mock wandb/pluto runs (no atexit)."""
+    wandb_run = MagicMock()
+    wandb_run._step = 7
+    pluto_run = MagicMock()
+    pluto_module = MagicMock()
+    # Avoid registering a real atexit handler during the test.
+    with mock.patch.object(wandb_compat.atexit, 'register'):
+        wrapper = wandb_compat.WandbRunWrapper(
+            wandb_run, pluto_run, pluto_module, wandb_disabled=False
+        )
+    return wrapper, pluto_run
+
+
+def test_log_routes_strings_to_config_not_metrics():
+    """checkpoint/r2_path (a str) must land in Pluto config, not log()."""
+    wrapper, pluto_run = _make_wrapper()
+
+    wrapper.log(
+        {
+            'checkpoint/step': 100,
+            'checkpoint/r2_path': 's3://bucket/run/ckpt-100.pt',
+            'checkpoint/local_path': '/nfs/run/ckpt-100.pt',
+        }
+    )
+
+    # Strings forwarded to config (latest-wins, readable via get_run().config).
+    assert pluto_run.update_config.call_count == 1
+    cfg = pluto_run.update_config.call_args.args[0]
+    assert cfg['checkpoint/r2_path'] == 's3://bucket/run/ckpt-100.pt'
+    assert cfg['checkpoint/local_path'] == '/nfs/run/ckpt-100.pt'
+
+    # Numeric value still goes to metrics; strings must NOT be in log().
+    logged = pluto_run.log.call_args.args[0]
+    assert logged == {'checkpoint/step': 100}
+    assert 'checkpoint/r2_path' not in logged
+
+
+def test_log_forwards_numpy_scalars_as_metrics():
+    """np.int64/np.float32 must reach Pluto metrics, not be dropped."""
+    np = pytest.importorskip('numpy')
+    wrapper, pluto_run = _make_wrapper()
+
+    wrapper.log(
+        {
+            'checkpoint/step': np.int64(100),
+            'loss': np.float32(0.5),
+        }
+    )
+
+    logged = pluto_run.log.call_args.args[0]
+    assert logged['checkpoint/step'] == 100
+    assert isinstance(logged['checkpoint/step'], int)  # .item() -> python int
+    assert abs(logged['loss'] - 0.5) < 1e-6
+    assert isinstance(logged['loss'], float)
