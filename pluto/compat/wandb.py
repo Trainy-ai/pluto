@@ -41,6 +41,7 @@ Hard Requirements:
 """
 
 import atexit
+import json
 import logging
 import os
 import threading
@@ -91,6 +92,9 @@ class WandbRunWrapper:
         self._fallback_step = 0  # Used when wandb is disabled (_step won't increment)
         self._closed = False
         self._close_lock = threading.Lock()
+        # Keys we've already warned about being unforwardable to Pluto, so a
+        # value logged every step warns once rather than spamming the logs.
+        self._unforwardable_warned: set = set()
 
         if self._pluto_run:
             atexit.register(self._atexit_cleanup_pluto)
@@ -169,6 +173,10 @@ class WandbRunWrapper:
           string/bool time-series metric, so these mirror wandb's
           summary/overview placement and stay queryable via
           get_run().config.
+        - anything else with no metric/media mapping -> preserved as
+          config if JSON-serializable, otherwise dropped with a ONE-TIME
+          warning per key (see _handle_unforwardable). Nothing is dropped
+          silently.
         """
         # Determine the step to use for Pluto.
         # When step is explicit, use it. Otherwise:
@@ -225,11 +233,19 @@ class WandbRunWrapper:
                                 converted_items.append(c)
                         if converted_items:
                             pluto_data[key] = converted_items
+                        else:
+                            # Not a media list (e.g. list of primitives) —
+                            # preserve as config if possible, else warn.
+                            self._handle_unforwardable(key, value, pluto_config)
                     else:
                         # Try to convert wandb data types to pluto equivalents
                         converted = _convert_wandb_to_pluto(key, value, self._pluto)
                         if converted is not None:
                             pluto_data[key] = converted
+                        else:
+                            # No metric/media mapping — last-resort handling
+                            # so the value is never silently dropped.
+                            self._handle_unforwardable(key, value, pluto_config)
 
                 if pluto_data:
                     log_kwargs = {}
@@ -249,6 +265,36 @@ class WandbRunWrapper:
                 logger.debug(f'pluto.compat.wandb: Failed to log metrics to Pluto: {e}')
 
         return result
+
+    def _handle_unforwardable(self, key, value, pluto_config: Dict[str, Any]) -> None:
+        """Last-resort handling for a value with no metric/media mapping.
+
+        Pluto only stores numbers (metrics), media/structured data, and
+        config — so values outside those (dicts, None, raw/multi-element
+        tensors, numpy arrays, unconvertible wandb media like Html/Object3D,
+        custom objects) have nowhere to go. Rather than dropping them
+        silently — which is what made missing data so hard to diagnose —
+        we:
+
+        1. Preserve the value as config if it's JSON-serializable (mirrors
+           how wandb keeps loose values in the run summary). This covers
+           nested dicts/lists of primitives, None, etc.
+        2. Otherwise warn ONCE per key (WARNING, not debug) naming the key
+           and type, so the drop is visible. The value still reached W&B;
+           only the Pluto copy is dropped.
+        """
+        if _is_json_serializable(value):
+            pluto_config[key] = value
+            return
+        if key not in self._unforwardable_warned:
+            self._unforwardable_warned.add(key)
+            logger.warning(
+                'pluto.compat.wandb: not forwarding %r to Pluto — value of '
+                'type %s has no metric/media/config mapping (it was still '
+                'logged to W&B). This warning is shown once per key.',
+                key,
+                type(value).__name__,
+            )
 
     def finish(self, exit_code=None, quiet=None):
         """Finish both wandb and Pluto runs."""
@@ -558,6 +604,21 @@ def _as_scalar_number(value):
     if isinstance(result, bool) or not isinstance(result, (int, float)):
         return None
     return result
+
+
+def _is_json_serializable(value) -> bool:
+    """True if value can be stored as Pluto config (round-trips through JSON).
+
+    Used as the last-resort fallback for values with no metric/media
+    mapping: serializable ones (str, bool, None, nested dicts/lists of
+    primitives) are preserved as config; everything else is warned about
+    and dropped. Mirrors the serialization Pluto config itself performs.
+    """
+    try:
+        json.dumps(value)
+        return True
+    except (TypeError, ValueError):
+        return False
 
 
 def _is_torch_distributed() -> bool:
