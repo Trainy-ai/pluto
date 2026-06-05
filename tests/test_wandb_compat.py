@@ -304,3 +304,39 @@ def test_log_forwards_numpy_scalars_as_metrics():
     assert isinstance(logged['checkpoint/step'], int)  # .item() -> python int
     assert abs(logged['loss'] - 0.5) < 1e-6
     assert isinstance(logged['loss'], float)
+
+
+def test_log_forwards_any_item_scalar_like_pluto_core():
+    """Any scalar exposing .item() is forwarded, matching Pluto's own log().
+
+    Guards against the shim being stricter than op._process_log_item_sync:
+    e.g. an ``epoch`` that arrives as a 0-d-tensor-like wrapper rather than a
+    plain int must still reach Pluto instead of being silently dropped.
+    """
+    wrapper, pluto_run = _make_wrapper()
+
+    class _ScalarLike:
+        def __init__(self, v):
+            self._v = v
+
+        def item(self):
+            return self._v
+
+    wrapper.log({'checkpoint/epoch': _ScalarLike(12)})
+
+    logged = pluto_run.log.call_args.args[0]
+    assert logged == {'checkpoint/epoch': 12}
+
+
+def test_log_does_not_treat_failing_item_as_scalar():
+    """A non-scalar whose .item() raises must not crash or produce a metric."""
+    wrapper, pluto_run = _make_wrapper()
+
+    class _MultiElement:
+        def item(self):
+            raise ValueError('can only convert an array of size 1')
+
+    wrapper.log({'weird': _MultiElement()})
+
+    assert not pluto_run.log.called
+    assert not pluto_run.update_config.called

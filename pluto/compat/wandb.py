@@ -161,7 +161,8 @@ class WandbRunWrapper:
         """Log metrics to both wandb and Pluto.
 
         Value routing for the Pluto side:
-        - int/float, torch & numpy scalars -> Pluto metrics (time-series)
+        - int/float and any scalar exposing .item() (numpy/torch/etc.)
+          -> Pluto metrics (time-series), matching Pluto core's own log()
         - wandb media (Image/Video/Audio/Histogram/Table), and lists
           thereof -> converted Pluto media
         - str and bool -> Pluto config (latest-wins). Pluto has no
@@ -211,8 +212,8 @@ class WandbRunWrapper:
                         pluto_config[key] = value
                     elif isinstance(value, (int, float)):
                         pluto_data[key] = value
-                    elif _is_torch_tensor_scalar(value) or _is_numpy_scalar(value):
-                        pluto_data[key] = value.item()
+                    elif (num := _as_scalar_number(value)) is not None:
+                        pluto_data[key] = num
                     elif isinstance(value, str):
                         pluto_config[key] = value
                     elif isinstance(value, (list, tuple)):
@@ -531,30 +532,32 @@ def _resolve_wandb_to_pluto_run(wandb_run_id, project):
     return None
 
 
-def _is_torch_tensor_scalar(value):
-    """Check if value is a scalar torch tensor."""
-    try:
-        import torch
+def _as_scalar_number(value):
+    """Return value as a python int/float if it's a scalar number, else None.
 
-        return isinstance(value, torch.Tensor) and value.dim() == 0
-    except ImportError:
-        return False
+    Mirrors Pluto's own log() (op._process_log_item_sync), which forwards
+    anything exposing a callable ``.item()``. The shim previously only
+    accepted plain int/float and torch scalar tensors, so a value logged as
+    a numpy scalar (``np.int64``), a 0-d numpy array, or a non-torch 0-d
+    tensor was dropped here even though Pluto core would have kept it — e.g.
+    an ``epoch`` that is ``np.int64`` rather than a plain ``int``.
 
-
-def _is_numpy_scalar(value):
-    """Check if value is a numpy scalar number (e.g. np.int64, np.float32).
-
-    numpy scalars are NOT instances of Python int/float, so frameworks that
-    log ``np.int64(step)`` / ``np.float32(loss)`` would otherwise be dropped
-    by the numeric filter below — even though Pluto's own log() accepts
-    anything with .item(). Booleans are excluded (Pluto drops bool metrics).
+    bool and str are excluded (Pluto drops bool metrics; str routes to
+    config). ``.item()`` on a multi-element array/tensor raises — we treat
+    that as "not a scalar" and return None, same as Pluto would fail it.
     """
+    if isinstance(value, (bool, str)):
+        return None
+    item = getattr(value, 'item', None)
+    if not callable(item):
+        return None
     try:
-        import numpy as np
-
-        return isinstance(value, np.generic) and not isinstance(value, np.bool_)
-    except ImportError:
-        return False
+        result = item()
+    except Exception:
+        return None
+    if isinstance(result, bool) or not isinstance(result, (int, float)):
+        return None
+    return result
 
 
 def _is_torch_distributed() -> bool:
