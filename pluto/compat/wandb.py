@@ -174,9 +174,9 @@ class WandbRunWrapper:
           summary/overview placement and stay queryable via
           get_run().config.
         - anything else with no metric/media mapping -> preserved as
-          config if JSON-serializable, otherwise dropped with a ONE-TIME
-          warning per key (see _handle_unforwardable). Nothing is dropped
-          silently.
+          config if JSON-serializable, otherwise dropped and reported to
+          Sentry telemetry once per key (a maintainer-coverage signal, not
+          a user-facing warning). See _handle_unforwardable.
         """
         # Determine the step to use for Pluto.
         # When step is explicit, use it. Otherwise:
@@ -279,22 +279,41 @@ class WandbRunWrapper:
         1. Preserve the value as config if it's JSON-serializable (mirrors
            how wandb keeps loose values in the run summary). This covers
            nested dicts/lists of primitives, None, etc.
-        2. Otherwise warn ONCE per key (WARNING, not debug) naming the key
-           and type, so the drop is visible. The value still reached W&B;
-           only the Pluto copy is dropped.
+        2. Otherwise drop the Pluto copy (it still reached W&B) and report
+           it as a maintainer-coverage signal via Sentry telemetry — once
+           per key. This is a gap in OUR type handling, not a user error,
+           so we deliberately do NOT emit a user-facing warning: people
+           migrating away from wandb shouldn't be nagged about types only
+           we can fix. The local log stays at debug for self-host
+           debugging.
         """
         if _is_json_serializable(value):
             pluto_config[key] = value
             return
-        if key not in self._unforwardable_warned:
-            self._unforwardable_warned.add(key)
-            logger.warning(
-                'pluto.compat.wandb: not forwarding %r to Pluto — value of '
-                'type %s has no metric/media/config mapping (it was still '
-                'logged to W&B). This warning is shown once per key.',
-                key,
-                type(value).__name__,
+        if key in self._unforwardable_warned:
+            return
+        self._unforwardable_warned.add(key)
+        type_name = type(value).__name__
+        # Quiet locally (debug only) — not a user-actionable problem.
+        logger.debug(
+            'pluto.compat.wandb: not forwarding %r to Pluto — type %s has no '
+            'metric/media/config mapping (still logged to W&B).',
+            key,
+            type_name,
+        )
+        # Alert us (the maintainers) so we can add coverage for the type.
+        # Message is keyed on the type (not the run-specific key) so Sentry
+        # groups all occurrences of the same unhandled type together.
+        try:
+            from pluto import sentry
+
+            sentry.capture_message(
+                f'wandb compat: unforwardable Pluto log value of type '
+                f'{type_name!r} (no metric/media/config mapping)',
+                level='warning',
             )
+        except Exception:
+            pass
 
     def finish(self, exit_code=None, quiet=None):
         """Finish both wandb and Pluto runs."""

@@ -342,8 +342,8 @@ def test_log_does_not_treat_failing_item_as_scalar():
     assert not pluto_run.update_config.called
 
 
-def test_unforwardable_value_warns_once_not_silent(caplog):
-    """A value with no Pluto mapping must warn (once per key), never silently drop."""
+def test_unforwardable_value_alerts_sentry_once_not_user():
+    """An unmappable value alerts Sentry (maintainers) once — not the user."""
     wrapper, pluto_run = _make_wrapper()
 
     class _Opaque:
@@ -352,15 +352,15 @@ def test_unforwardable_value_warns_once_not_silent(caplog):
         def item(self):
             raise ValueError('not a scalar')
 
-    with caplog.at_level('WARNING', logger='pluto.compat.wandb'):
+    with mock.patch('pluto.sentry.capture_message') as cap:
         wrapper.log({'mystery': _Opaque()})
-        wrapper.log({'mystery': _Opaque()})  # second time: must NOT warn again
+        wrapper.log({'mystery': _Opaque()})  # second time: no duplicate alert
 
-    warnings = [r for r in caplog.records if 'mystery' in r.getMessage()]
-    assert len(warnings) == 1, 'should warn exactly once per key'
-    assert 'mystery' in warnings[0].getMessage()
-    assert '_Opaque' in warnings[0].getMessage()  # names the offending type
-    # Nothing forwarded — but it was loud about it.
+    # Exactly one maintainer-facing Sentry alert, grouped by type name.
+    assert cap.call_count == 1
+    assert '_Opaque' in cap.call_args.args[0]
+    assert cap.call_args.kwargs.get('level') == 'warning'
+    # Nothing forwarded to the user's run, and no user-facing exception.
     assert not pluto_run.log.called
     assert not pluto_run.update_config.called
 
