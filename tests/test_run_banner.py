@@ -94,3 +94,14 @@ def test_banner_no_url_omits_external_id():
         op._print_run_banner('started')
 
     assert out.getvalue() == 'pluto: run LV3-12 started\n'
+
+
+def test_banner_host_only_url_omits_external_id():
+    """A host-only URL has no path segment, so external_id is omitted rather
+    than falling back to the hostname."""
+    op = _make_op('LV3-12', 'https://pluto.trainy.ai')
+    out = io.StringIO()
+    with redirect_stdout(out):
+        op._print_run_banner('started')
+
+    assert out.getvalue() == 'pluto: run LV3-12 started\n'

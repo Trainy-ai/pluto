@@ -11,6 +11,7 @@ import time
 import traceback
 from collections import defaultdict
 from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple, Union
+from urllib.parse import urlparse
 
 import pluto
 
@@ -483,7 +484,11 @@ class Op:
             return  # server didn't return a display ID; nothing stable to print
         external_id = None
         if self.settings.url_view:
-            external_id = self.settings.url_view.rstrip('/').rsplit('/', 1)[-1]
+            # Parse the path so a host-only URL (no run slug) doesn't yield the
+            # hostname as a bogus external_id.
+            path = urlparse(self.settings.url_view).path.strip('/')
+            if path:
+                external_id = path.split('/')[-1]
         suffix = f' (external_id={external_id})' if external_id else ''
         print(f'pluto: run {display_id} {verb}{suffix}', flush=True)
 
