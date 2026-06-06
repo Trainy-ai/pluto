@@ -56,6 +56,9 @@ from ._utils import (
 
 logger = logging.getLogger(__name__)
 
+# Distinct from None so config dedup can tell "never logged" from "logged None".
+_MISSING = object()
+
 _original_wandb_init = None
 _original_wandb_log = None
 _original_wandb_finish = None
@@ -95,6 +98,10 @@ class WandbRunWrapper:
         # Keys we've already warned about being unforwardable to Pluto, so a
         # value logged every step warns once rather than spamming the logs.
         self._unforwardable_warned: set = set()
+        # Last config values we synced to Pluto, keyed by log key. Lets us skip
+        # redundant update_config() calls when a str/bool/config value is logged
+        # unchanged every step (a common pattern: phase/status/checkpoint paths).
+        self._last_logged_config: Dict[str, Any] = {}
 
         if self._pluto_run:
             atexit.register(self._atexit_cleanup_pluto)
@@ -174,9 +181,13 @@ class WandbRunWrapper:
           summary/overview placement and stay queryable via
           get_run().config.
         - anything else with no metric/media mapping -> preserved as
-          config if JSON-serializable, otherwise dropped and reported to
-          Sentry telemetry once per key (a maintainer-coverage signal, not
-          a user-facing warning). See _handle_unforwardable.
+          config if it survives update_config's normalization (incl.
+          OmegaConf), otherwise dropped and reported to Sentry telemetry
+          once per key (a maintainer-coverage signal, not a user-facing
+          warning). See _handle_unforwardable.
+
+        str/bool/config values are deduped against the last synced value, so
+        logging an unchanged value every step doesn't spam update_config.
         """
         # Determine the step to use for Pluto.
         # When step is explicit, use it. Otherwise:
@@ -217,13 +228,17 @@ class WandbRunWrapper:
                     if isinstance(value, bool):
                         # bool is a subclass of int, but Pluto drops bool
                         # metrics — surface it as config so it isn't lost.
-                        pluto_config[key] = value
+                        # Skip if unchanged since last log (avoid redundant
+                        # config writes when logged every step).
+                        if self._last_logged_config.get(key, _MISSING) != value:
+                            pluto_config[key] = value
                     elif isinstance(value, (int, float)):
                         pluto_data[key] = value
                     elif (num := _as_scalar_number(value)) is not None:
                         pluto_data[key] = num
                     elif isinstance(value, str):
-                        pluto_config[key] = value
+                        if self._last_logged_config.get(key, _MISSING) != value:
+                            pluto_config[key] = value
                     elif isinstance(value, (list, tuple)):
                         # List of wandb media — convert each element.
                         converted_items = []
@@ -247,22 +262,32 @@ class WandbRunWrapper:
                             # so the value is never silently dropped.
                             self._handle_unforwardable(key, value, pluto_config)
 
+                # Metrics and config are sent in independent try blocks: a
+                # failure logging metrics must NOT skip the config update (or
+                # vice versa) — str/bool from the same wandb.log() call live in
+                # config and would otherwise be silently lost.
                 if pluto_data:
-                    log_kwargs = {}
-                    if actual_step is not None:
-                        log_kwargs['step'] = actual_step
-                    self._pluto_run.log(pluto_data, **log_kwargs)
+                    try:
+                        log_kwargs = {}
+                        if actual_step is not None:
+                            log_kwargs['step'] = actual_step
+                        self._pluto_run.log(pluto_data, **log_kwargs)
+                    except Exception as e:
+                        logger.debug(
+                            f'pluto.compat.wandb: Failed to log metrics to Pluto: {e}'
+                        )
 
                 if pluto_config:
                     try:
                         self._pluto_run.update_config(pluto_config)
+                        # Only remember as synced once the update succeeds.
+                        self._last_logged_config.update(pluto_config)
                     except Exception as e:
                         logger.debug(
-                            f'pluto.compat.wandb: Failed to sync string/bool '
-                            f'values to Pluto config: {e}'
+                            f'pluto.compat.wandb: Failed to sync config to Pluto: {e}'
                         )
             except Exception as e:
-                logger.debug(f'pluto.compat.wandb: Failed to log metrics to Pluto: {e}')
+                logger.debug(f'pluto.compat.wandb: Failed to prepare Pluto data: {e}')
 
         return result
 
@@ -276,9 +301,11 @@ class WandbRunWrapper:
         silently — which is what made missing data so hard to diagnose —
         we:
 
-        1. Preserve the value as config if it's JSON-serializable (mirrors
-           how wandb keeps loose values in the run summary). This covers
-           nested dicts/lists of primitives, None, etc.
+        1. Preserve the value as config if it survives update_config's own
+           normalization (mirrors how wandb keeps loose values in the run
+           summary). This covers nested dicts/lists of primitives, None, and
+           OmegaConf DictConfig/ListConfig nodes (which to_native_config
+           deep-converts). Skipped if unchanged since the last log.
         2. Otherwise drop the Pluto copy (it still reached W&B) and report
            it as a maintainer-coverage signal via Sentry telemetry — once
            per key. This is a gap in OUR type handling, not a user error,
@@ -287,8 +314,10 @@ class WandbRunWrapper:
            we can fix. The local log stays at debug for self-host
            debugging.
         """
-        if _is_json_serializable(value):
-            pluto_config[key] = value
+        storable, native = _config_storable_value(value)
+        if storable:
+            if self._last_logged_config.get(key, _MISSING) != native:
+                pluto_config[key] = native
             return
         if key in self._unforwardable_warned:
             return
@@ -625,19 +654,28 @@ def _as_scalar_number(value):
     return result
 
 
-def _is_json_serializable(value) -> bool:
-    """True if value can be stored as Pluto config (round-trips through JSON).
+def _config_storable_value(value):
+    """Return ``(storable, native)`` for the config fallback.
 
-    Used as the last-resort fallback for values with no metric/media
-    mapping: serializable ones (str, bool, None, nested dicts/lists of
-    primitives) are preserved as config; everything else is warned about
-    and dropped. Mirrors the serialization Pluto config itself performs.
+    Mirrors what ``update_config`` actually does — normalize via
+    ``to_native_config`` (which deep-converts OmegaConf ``DictConfig`` /
+    ``ListConfig`` to native containers), then check JSON-serializability.
+    Keeping the gate in lockstep with ``update_config`` means a logged
+    ``DictConfig`` is correctly stored as config, even though plain
+    ``json.dumps`` would reject it. Tensors / ndarrays / custom objects still
+    fail (``to_native_config`` leaves them as-is) and fall through to the
+    Sentry path.
+
+    Returns ``(True, native_value)`` when storable, else ``(False, None)``.
     """
     try:
-        json.dumps(value)
-        return True
-    except (TypeError, ValueError):
-        return False
+        from pluto.util import to_native_config
+
+        native = to_native_config(value)
+        json.dumps(native)
+        return True, native
+    except Exception:
+        return False, None
 
 
 def _is_torch_distributed() -> bool:

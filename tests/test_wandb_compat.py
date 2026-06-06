@@ -375,3 +375,39 @@ def test_json_serializable_unmapped_value_falls_back_to_config():
     assert cfg['meta/info'] == {'kind': 'resume', 'attempt': 3}
     assert cfg['note'] is None
     assert not pluto_run.log.called  # no numeric metrics in this call
+
+
+def test_log_skips_redundant_config_updates():
+    """An unchanged str/bool config value must not re-trigger update_config."""
+    wrapper, pluto_run = _make_wrapper()
+
+    # First log: config is synced.
+    wrapper.log({'phase': 'train', 'loss': 0.5})
+    assert pluto_run.update_config.call_count == 1
+    assert pluto_run.update_config.call_args.args[0] == {'phase': 'train'}
+
+    # Same config value again: update_config must NOT be called.
+    pluto_run.update_config.reset_mock()
+    wrapper.log({'phase': 'train', 'loss': 0.4})
+    assert pluto_run.update_config.call_count == 0
+
+    # Changed config value: update_config is called again, with only the change.
+    wrapper.log({'phase': 'val', 'loss': 0.3})
+    assert pluto_run.update_config.call_count == 1
+    assert pluto_run.update_config.call_args.args[0] == {'phase': 'val'}
+
+
+def test_omegaconf_value_falls_back_to_config_not_dropped():
+    """A logged OmegaConf node is storable as config (not Sentry-dropped)."""
+    OmegaConf = pytest.importorskip('omegaconf').OmegaConf
+    wrapper, pluto_run = _make_wrapper()
+
+    cfg_node = OmegaConf.create({'lr': 0.01, 'sched': {'name': 'cosine'}})
+
+    with mock.patch('pluto.sentry.capture_message') as cap:
+        wrapper.log({'hparams': cfg_node})
+
+    # Stored as config, deep-converted to native containers; not dropped.
+    cfg = pluto_run.update_config.call_args.args[0]
+    assert cfg['hparams'] == {'lr': 0.01, 'sched': {'name': 'cosine'}}
+    assert not cap.called  # OmegaConf is storable -> no maintainer alert
