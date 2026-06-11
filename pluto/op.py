@@ -513,7 +513,10 @@ class Op:
         url = print_url(self.settings.url_view)
         display_id = self.settings._display_id
         if display_id:
-            return f'View run {ANSI.green}{display_id}{ANSI.reset} at {url}'
+            # Return to cyan (the INFO message color) after the green ID rather
+            # than a full reset, so the trailing "at <url>" stays cyan like the
+            # rest of the line.
+            return f'View run {ANSI.green}{display_id}{ANSI.cyan} at {url}'
         return f'View run at {url}'
 
     def start(self) -> None:

@@ -153,13 +153,14 @@ def test_view_run_message_includes_green_display_id(monkeypatch):
     from pluto import util
 
     monkeypatch.setattr(util.ANSI, 'green', '<G>')
-    monkeypatch.setattr(util.ANSI, 'reset', '<R>')
+    monkeypatch.setattr(util.ANSI, 'cyan', '<C>')
     url = 'https://pluto.trainy.ai/o/trainy/projects/testing-ci/OgiAJ'
     op = _make_op('TCI-144405', url)
 
     msg = op._view_run_message()
 
-    assert 'View run <G>TCI-144405<R> at ' in msg
+    # ID is green, then back to cyan so the trailing "at <url>" stays cyan.
+    assert 'View run <G>TCI-144405<C> at ' in msg
     assert url in msg
 
 
