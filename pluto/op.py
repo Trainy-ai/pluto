@@ -478,6 +478,11 @@ class Op:
         of the run URL). This is intentionally a plain ``print`` to stdout,
         independent of the logging system, so it can't be suppressed by log
         levels or console-capture settings and always lands on stdout.
+
+        The line is colored green only when stdout is a TTY. When stdout is
+        piped or redirected (the case where tooling scrapes the banner), it is
+        emitted as plain text so the ANSI codes never land in captured logs and
+        greppability is preserved.
         """
         display_id = self.settings._display_id
         if not display_id:
@@ -490,7 +495,12 @@ class Op:
             if path:
                 external_id = path.split('/')[-1]
         suffix = f' (external_id={external_id})' if external_id else ''
-        print(f'pluto: run {display_id} {verb}{suffix}', flush=True)
+        msg = f'pluto: run {display_id} {verb}{suffix}'
+        # Wrap the whole line (not just the ID) so the codes sit at the very
+        # start/end and the matchable token stays contiguous even in a TTY.
+        if sys.stdout is not None and sys.stdout.isatty():
+            msg = f'\033[32m{msg}\033[0m'  # green
+        print(msg, flush=True)
 
     def start(self) -> None:
         # Start sync process if enabled

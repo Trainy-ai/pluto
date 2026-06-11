@@ -105,3 +105,44 @@ def test_banner_host_only_url_omits_external_id():
         op._print_run_banner('started')
 
     assert out.getvalue() == 'pluto: run LV3-12 started\n'
+
+
+class _FakeTTY(io.StringIO):
+    """A StringIO that claims to be a TTY, to exercise the colored path."""
+
+    def isatty(self):
+        return True
+
+
+def test_banner_non_tty_is_plain_no_ansi():
+    """Piped/redirected stdout (isatty() is False) -> no ANSI codes, so the
+    captured output stays byte-clean for downstream greppers."""
+    op = _make_op(
+        'LV3-12', 'https://pluto.trainy.ai/o/linum-n/projects/linum-v3/dhyecrvx'
+    )
+    out = io.StringIO()  # StringIO.isatty() -> False
+    with redirect_stdout(out):
+        op._print_run_banner('started')
+
+    assert '\033' not in out.getvalue()
+    assert out.getvalue() == 'pluto: run LV3-12 started (external_id=dhyecrvx)\n'
+
+
+def test_banner_tty_is_green_and_still_greppable():
+    """On a TTY the line is green-wrapped, but the codes sit at the start/end
+    so the matchable token stays contiguous and the consumer regex works."""
+    import re
+
+    op = _make_op(
+        'LV3-12', 'https://pluto.trainy.ai/o/linum-n/projects/linum-v3/dhyecrvx'
+    )
+    out = _FakeTTY()
+    with redirect_stdout(out):
+        op._print_run_banner('started')
+
+    value = out.getvalue()
+    assert value.startswith('\033[32m')
+    assert value.endswith('\033[0m\n')
+    # The reverse-lookup regex still extracts the display ID from the colored line.
+    m = re.search(r'pluto:\s*run\s+([A-Z0-9]+-\d+)', value)
+    assert m is not None and m.group(1) == 'LV3-12'
