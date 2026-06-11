@@ -11,6 +11,7 @@ import time
 import traceback
 from collections import defaultdict
 from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple, Union
+from urllib.parse import urlparse
 
 import pluto
 
@@ -33,6 +34,7 @@ from .sync import SyncProcessManager
 from .sync.store import HEALTH_METRIC_KEYS
 from .sys import System
 from .util import (
+    ANSI,
     deep_merge,
     get_char,
     get_val,
@@ -348,6 +350,7 @@ class Op:
             response_data = r.json()
             self.settings.url_view = response_data['url']
             self.settings._op_id = response_data['runId']
+            self.settings._display_id = response_data.get('displayId')
             self._resumed = response_data.get('resumed', False)
             self._fork_run_id = response_data.get('forkedFromRunId')
             self._fork_step = response_data.get('forkStep')
@@ -375,6 +378,7 @@ class Op:
                         f'reattach, or use a unique run_id.'
                     )
                 logger.info(f'{tag}: resumed run {str(self.settings._op_id)}')
+                self._print_run_banner('resumed')
                 logger.warning(
                     f'{tag}: Run was resumed via run_id. The `name` parameter '
                     f'is ignored for resumed runs - the original run name is '
@@ -382,6 +386,7 @@ class Op:
                 )
             else:
                 logger.info(f'{tag}: started run {str(self.settings._op_id)}')
+                self._print_run_banner('started')
 
             os.makedirs(f'{self.settings.get_dir()}/files', exist_ok=True)
 
@@ -461,6 +466,59 @@ class Op:
         )
         logger.debug(f'{tag}: initialized sync process manager')
 
+    def _print_run_banner(self, verb: str) -> None:
+        """Print a stable, greppable run banner to stdout.
+
+        Emits one line in a fixed format so external tooling can reverse-look
+        up a run from a training process's stdout, e.g.::
+
+            pluto: run LV3-12 started (external_id=dhyecrvx)
+
+        The display ID (e.g. ``LV3-12``) comes from the server's create/resume
+        response; the ``external_id`` is the sqid slug (the last path segment
+        of the run URL). This is intentionally a plain ``print`` to stdout,
+        independent of the logging system, so it can't be suppressed by log
+        levels or console-capture settings and always lands on stdout.
+
+        The line is colored green only when stdout is a TTY. When stdout is
+        piped or redirected (the case where tooling scrapes the banner), it is
+        emitted as plain text so the ANSI codes never land in captured logs and
+        greppability is preserved.
+        """
+        display_id = self.settings._display_id
+        if not display_id:
+            return  # server didn't return a display ID; nothing stable to print
+        external_id = None
+        if self.settings.url_view:
+            # Parse the path so a host-only URL (no run slug) doesn't yield the
+            # hostname as a bogus external_id.
+            path = urlparse(self.settings.url_view).path.strip('/')
+            if path:
+                external_id = path.split('/')[-1]
+        suffix = f' (external_id={external_id})' if external_id else ''
+        msg = f'pluto: run {display_id} {verb}{suffix}'
+        # Wrap the whole line (not just the ID) so the codes sit at the very
+        # start/end and the matchable token stays contiguous even in a TTY.
+        if sys.stdout is not None and sys.stdout.isatty():
+            msg = f'\033[32m{msg}\033[0m'  # green
+        print(msg, flush=True)
+
+    def _view_run_message(self) -> str:
+        """Build the 'View run [<id>] at <url>' log message.
+
+        Includes the display ID (green) when the server returned one. ANSI
+        codes come from ``util.ANSI``, which blanks them on non-TTY output, so
+        this matches how ``print_url`` colors the URL.
+        """
+        url = print_url(self.settings.url_view)
+        display_id = self.settings._display_id
+        if display_id:
+            # Return to cyan (the INFO message color) after the green ID rather
+            # than a full reset, so the trailing "at <url>" stays cyan like the
+            # rest of the line.
+            return f'View run {ANSI.green}{display_id}{ANSI.cyan} at {url}'
+        return f'View run at {url}'
+
     def start(self) -> None:
         # Start sync process if enabled
         if self._sync_manager is not None:
@@ -481,7 +539,7 @@ class Op:
             self._iface._update_meta(sys_metric_names)
 
         # Print URL where users can view the run
-        logger.info(f'{tag}: View run at {print_url(self.settings.url_view)}')
+        logger.info(f'{tag}: {self._view_run_message()}')
 
         # Register excepthook to detect unhandled exceptions and mark runs as FAILED
         _register_excepthook()
@@ -758,7 +816,7 @@ class Op:
 
             if update_status:
                 # Print URL where users can view the completed run
-                logger.info(f'{tag}: View run at {print_url(self.settings.url_view)}')
+                logger.info(f'{tag}: {self._view_run_message()}')
             else:
                 logger.debug(f'{tag}: closed (run status unchanged)')
         except (Exception, KeyboardInterrupt) as e:
