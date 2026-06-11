@@ -146,3 +146,27 @@ def test_banner_tty_is_green_and_still_greppable():
     # The reverse-lookup regex still extracts the display ID from the colored line.
     m = re.search(r'pluto:\s*run\s+([A-Z0-9]+-\d+)', value)
     assert m is not None and m.group(1) == 'LV3-12'
+
+
+def test_view_run_message_includes_green_display_id(monkeypatch):
+    """The 'View run' log line names the run, with the display ID colored."""
+    from pluto import util
+
+    monkeypatch.setattr(util.ANSI, 'green', '<G>')
+    monkeypatch.setattr(util.ANSI, 'reset', '<R>')
+    url = 'https://pluto.trainy.ai/o/trainy/projects/testing-ci/OgiAJ'
+    op = _make_op('TCI-144405', url)
+
+    msg = op._view_run_message()
+
+    assert 'View run <G>TCI-144405<R> at ' in msg
+    assert url in msg
+
+
+def test_view_run_message_without_display_id_falls_back():
+    op = _make_op(None, 'https://pluto.trainy.ai/o/trainy/projects/testing-ci/OgiAJ')
+
+    msg = op._view_run_message()
+
+    assert msg.startswith('View run at ')
+    assert 'TCI-' not in msg

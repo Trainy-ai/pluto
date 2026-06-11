@@ -34,6 +34,7 @@ from .sync import SyncProcessManager
 from .sync.store import HEALTH_METRIC_KEYS
 from .sys import System
 from .util import (
+    ANSI,
     deep_merge,
     get_char,
     get_val,
@@ -502,6 +503,19 @@ class Op:
             msg = f'\033[32m{msg}\033[0m'  # green
         print(msg, flush=True)
 
+    def _view_run_message(self) -> str:
+        """Build the 'View run [<id>] at <url>' log message.
+
+        Includes the display ID (green) when the server returned one. ANSI
+        codes come from ``util.ANSI``, which blanks them on non-TTY output, so
+        this matches how ``print_url`` colors the URL.
+        """
+        url = print_url(self.settings.url_view)
+        display_id = self.settings._display_id
+        if display_id:
+            return f'View run {ANSI.green}{display_id}{ANSI.reset} at {url}'
+        return f'View run at {url}'
+
     def start(self) -> None:
         # Start sync process if enabled
         if self._sync_manager is not None:
@@ -522,7 +536,7 @@ class Op:
             self._iface._update_meta(sys_metric_names)
 
         # Print URL where users can view the run
-        logger.info(f'{tag}: View run at {print_url(self.settings.url_view)}')
+        logger.info(f'{tag}: {self._view_run_message()}')
 
         # Register excepthook to detect unhandled exceptions and mark runs as FAILED
         _register_excepthook()
@@ -799,7 +813,7 @@ class Op:
 
             if update_status:
                 # Print URL where users can view the completed run
-                logger.info(f'{tag}: View run at {print_url(self.settings.url_view)}')
+                logger.info(f'{tag}: {self._view_run_message()}')
             else:
                 logger.debug(f'{tag}: closed (run status unchanged)')
         except (Exception, KeyboardInterrupt) as e:
