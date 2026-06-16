@@ -1,0 +1,23 @@
+name: contract-test (prod)
+
+# Runs the OpenAPI schema contract test against production.
+
+on:
+  push:
+    branches:
+      - main
+      - 'releases/**'
+  pull_request:
+    branches:
+      - main
+      - 'releases/**'
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  prod:
+    uses: ./.github/workflows/contract-test.yml
+    with:
+      url_api: https://pluto-api.trainy.ai
+    secrets: inherit

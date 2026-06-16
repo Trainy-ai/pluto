@@ -1,0 +1,57 @@
+name: contract-test
+
+# Reusable workflow: run the OpenAPI schema contract test (tests/test_contract.py)
+# against a given Pluto API host. Callers (contract-test-prod.yml,
+# contract-test-staging.yml) supply the base URL so the two environments share
+# one identical job definition and can never drift.
+
+on:
+  workflow_call:
+    inputs:
+      url_api:
+        description: Pluto API base URL (e.g. https://pluto-api.trainy.ai)
+        required: true
+        type: string
+
+permissions: {}
+
+jobs:
+  contract:
+    # Reuse the "integration" environment so secrets.MLOP_API_TOKEN resolves.
+    environment: integration
+    permissions:
+      contents: read
+    runs-on: ubicloud-standard-4
+    strategy:
+      matrix:
+        python-version: ["3.11"]
+        poetry-version: ["2.1.1"]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install Poetry
+        run: pip install poetry==${{ matrix.poetry-version }}
+
+      - name: Install deps
+        run: |
+          set -euox pipefail
+          # Clear stale cached venv that may be missing dev dependencies.
+          rm -rf .venv
+          # `--extras full` is required even for this light job: importing
+          # pluto.query pulls in pluto/__init__.py -> pluto/file.py -> soundfile.
+          poetry install --with dev --extras full
+          pip install -e ".[dev,full]"
+
+      - name: Run contract test
+        env:
+          PLUTO_URL_API: ${{ inputs.url_api }}
+          PLUTO_API_KEY: ${{ secrets.MLOP_API_TOKEN }}
+        run: |
+          set -euox pipefail
+          poetry run pytest tests/test_contract.py -rs -v

@@ -17,6 +17,8 @@ spec). Skips cleanly when the spec is unreachable, so offline/hermetic runs are
 unaffected — matching the network-dependent style of ``tests/test_e2e.py``.
 """
 
+import os
+
 import httpx
 import pytest
 
@@ -33,8 +35,15 @@ _COMPONENT = 'FieldFilterTerm'
 
 def _fetch_openapi() -> dict:
     url = f'{_resolve_url_api(None)}/api/openapi.json'
+    # Prod serves the spec unauthenticated; staging/dev may gate it. Send the
+    # bearer token when present so the check actually runs there. Harmless on an
+    # unauthenticated endpoint.
+    headers = {}
+    token = os.environ.get('PLUTO_API_KEY')
+    if token:
+        headers['Authorization'] = f'Bearer {token}'
     try:
-        resp = httpx.get(url, timeout=15, follow_redirects=True)
+        resp = httpx.get(url, timeout=15, follow_redirects=True, headers=headers)
     except httpx.HTTPError as exc:  # pragma: no cover - network dependent
         pytest.skip(f'Could not reach OpenAPI spec at {url}: {exc}')
     if resp.status_code != 200:

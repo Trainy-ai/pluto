@@ -1,0 +1,25 @@
+name: contract-test (staging)
+
+# Runs the OpenAPI schema contract test against staging/dev, where the server
+# side typically deploys first — so client/server enum drift is caught before
+# it reaches production.
+
+on:
+  push:
+    branches:
+      - main
+      - 'releases/**'
+  pull_request:
+    branches:
+      - main
+      - 'releases/**'
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  staging:
+    uses: ./.github/workflows/contract-test.yml
+    with:
+      url_api: https://pluto-api-dev.trainy.ai
+    secrets: inherit
