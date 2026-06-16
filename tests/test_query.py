@@ -231,6 +231,12 @@ class TestListRuns:
         call_args = client._client.get.call_args
         assert call_args[1]['params']['offset'] == 100_000
 
+    def test_negative_offset_omitted(self, client, mock_response):
+        client._client.get.return_value = mock_response(200, {'runs': []})
+        client.list_runs('proj', offset=-5)
+        call_args = client._client.get.call_args
+        assert 'offset' not in call_args[1]['params']
+
     def test_field_filters_objects(self, client, mock_response):
         from pluto.query import FieldFilter
 

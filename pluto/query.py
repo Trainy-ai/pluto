@@ -274,7 +274,9 @@ class Client:
                     clamped,
                     _MAX_OFFSET,
                 )
-            params['offset'] = clamped
+            # A negative offset clamps to 0; don't send a redundant offset=0.
+            if clamped:
+                params['offset'] = clamped
         return self._get('/api/runs/list', params=params)['runs']
 
     def get_run(

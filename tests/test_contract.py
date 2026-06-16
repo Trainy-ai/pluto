@@ -39,7 +39,10 @@ def _fetch_openapi() -> dict:
         pytest.skip(f'Could not reach OpenAPI spec at {url}: {exc}')
     if resp.status_code != 200:
         pytest.skip(f'OpenAPI spec at {url} returned HTTP {resp.status_code}')
-    return resp.json()
+    try:
+        return resp.json()
+    except ValueError as exc:  # invalid/non-JSON body (e.g. an HTML error page)
+        pytest.skip(f'OpenAPI spec at {url} returned non-JSON body: {exc}')
 
 
 def _term_schema() -> dict:
