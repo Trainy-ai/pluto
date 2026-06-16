@@ -15,7 +15,10 @@ on:
       - 'releases/**'
   workflow_dispatch:
 
-permissions: {}
+# Must grant at least what the called workflow's job requests (contents: read);
+# a called workflow cannot receive more token permission than its caller.
+permissions:
+  contents: read
 
 jobs:
   staging:
