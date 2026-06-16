@@ -207,6 +207,98 @@ class TestListRuns:
         call_args = client._client.get.call_args
         assert call_args[1]['params']['limit'] == 200
 
+    def test_sort(self, client, mock_response):
+        client._client.get.return_value = mock_response(200, {'runs': []})
+        client.list_runs('proj', sort='-createdAt')
+        call_args = client._client.get.call_args
+        assert call_args[1]['params']['sort'] == '-createdAt'
+
+    def test_offset(self, client, mock_response):
+        client._client.get.return_value = mock_response(200, {'runs': []})
+        client.list_runs('proj', offset=100)
+        call_args = client._client.get.call_args
+        assert call_args[1]['params']['offset'] == 100
+
+    def test_offset_zero_omitted(self, client, mock_response):
+        client._client.get.return_value = mock_response(200, {'runs': []})
+        client.list_runs('proj')
+        call_args = client._client.get.call_args
+        assert 'offset' not in call_args[1]['params']
+
+    def test_offset_clamped(self, client, mock_response):
+        client._client.get.return_value = mock_response(200, {'runs': []})
+        client.list_runs('proj', offset=10**9)
+        call_args = client._client.get.call_args
+        assert call_args[1]['params']['offset'] == 100_000
+
+    def test_field_filters_objects(self, client, mock_response):
+        from pluto.query import FieldFilter
+
+        client._client.get.return_value = mock_response(200, {'runs': []})
+        client.list_runs(
+            'proj',
+            field_filters=[FieldFilter('config', 'lr', 'number', '>', [0.001])],
+        )
+        call_args = client._client.get.call_args
+        sent = json.loads(call_args[1]['params']['fieldFilters'])
+        assert sent == [
+            {
+                'source': 'config',
+                'key': 'lr',
+                'dataType': 'number',
+                'operator': '>',
+                'values': [0.001],
+            }
+        ]
+
+    def test_field_filters_raw_dicts(self, client, mock_response):
+        client._client.get.return_value = mock_response(200, {'runs': []})
+        term = {
+            'source': 'systemMetadata',
+            'key': 'gpu',
+            'dataType': 'text',
+            'operator': 'contains',
+            'values': ['a100'],
+        }
+        client.list_runs('proj', field_filters=[term])
+        call_args = client._client.get.call_args
+        assert json.loads(call_args[1]['params']['fieldFilters']) == [term]
+
+    def test_field_filters_too_many_raises(self, client, mock_response):
+        from pluto.query import FieldFilter
+
+        client._client.get.return_value = mock_response(200, {'runs': []})
+        terms = [FieldFilter('config', f'k{i}', 'text', 'is', ['x']) for i in range(51)]
+        with pytest.raises(ValueError, match='At most 50'):
+            client.list_runs('proj', field_filters=terms)
+
+
+class TestFieldFilter:
+    def test_scalar_values_coerced_to_list(self):
+        from pluto.query import FieldFilter
+
+        f = FieldFilter('config', 'model', 'text', 'is', 'gpt')
+        assert f.values == ['gpt']
+        assert f.to_dict()['values'] == ['gpt']
+
+    def test_bad_source_raises(self):
+        from pluto.query import FieldFilter
+
+        with pytest.raises(ValueError, match='source'):
+            FieldFilter('cfg', 'lr', 'number', '>', [1])
+
+    def test_bad_datatype_raises(self):
+        from pluto.query import FieldFilter
+
+        with pytest.raises(ValueError, match='dataType'):
+            FieldFilter('config', 'lr', 'float', '>', [1])
+
+    def test_bad_operator_raises(self):
+        from pluto.query import FieldFilter
+
+        with pytest.raises(ValueError, match='operator'):
+            FieldFilter('config', 'lr', 'number', 'gt', [1])
+
 
 # ---------------------------------------------------------------------------
 # get_run
@@ -520,7 +612,13 @@ class TestModuleFunctions:
 
         assert result == [{'id': 1}]
         mock_client_instance.list_runs.assert_called_once_with(
-            'my-project', search=None, tags=None, limit=50
+            'my-project',
+            search=None,
+            tags=None,
+            limit=50,
+            field_filters=None,
+            sort=None,
+            offset=0,
         )
 
         # Clean up

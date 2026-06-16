@@ -18,10 +18,12 @@ Usage::
     runs = client.list_runs("my-project")
 """
 
+import json
 import logging
 import os
 import time
 import warnings
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
@@ -43,6 +45,100 @@ class QueryError(Exception):
     def __init__(self, message: str, status_code: Optional[int] = None):
         self.status_code = status_code
         super().__init__(message)
+
+
+# Field-filter vocabulary, kept in step with the server's zod schema for the
+# ``/api/runs/list`` ``fieldFilters`` parameter. ``tests/test_contract.py``
+# asserts these match ``components.schemas.FieldFilterTerm`` in the live
+# OpenAPI spec, so drift fails CI rather than surfacing as opaque HTTP 400s.
+_FILTER_SOURCES = {'config', 'systemMetadata'}
+_FILTER_DATATYPES = {'text', 'number', 'date', 'option'}
+_FILTER_OPERATORS = {
+    'contains',
+    'does not contain',
+    'is',
+    'is not',
+    'starts with',
+    'ends with',
+    'regex',
+    '>',
+    '<',
+    '>=',
+    '<=',
+    'is between',
+    'is any of',
+    'is none of',
+}
+
+# Server caps the filter set at 50 terms; reject early with a clear error.
+_MAX_FILTER_TERMS = 50
+# Server clamps offset to this range (MAX_JSON_SORT_OFFSET).
+_MAX_OFFSET = 100_000
+
+
+@dataclass
+class FieldFilter:
+    """A single server-side filter term for :meth:`Client.list_runs`.
+
+    Filters runs by an indexed ``config.*`` or ``systemMetadata.*`` field.
+    Multiple terms are AND-combined by the server.
+
+    Args:
+        source: ``"config"`` or ``"systemMetadata"``.
+        key: Dotted field path (e.g. ``"checkpoint.r2_prefix"``).
+        dataType: One of ``"text"``, ``"number"``, ``"date"``, ``"option"``.
+        operator: One of the supported operators (e.g. ``"contains"``,
+            ``"is"``, ``">"``, ``"is between"``, ``"is any of"``). See
+            :data:`_FILTER_OPERATORS` for the full set.
+        values: Operand list. A scalar is coerced to a single-element list.
+
+    Example::
+
+        FieldFilter("config", "lr", "number", ">", [0.001])
+        FieldFilter("config", "model", "text", "contains", "gpt")
+
+    Raises:
+        ValueError: If ``source``, ``dataType``, or ``operator`` is not a
+            recognised value.
+    """
+
+    source: str
+    key: str
+    dataType: str
+    operator: str
+    values: List[Any] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        if self.source not in _FILTER_SOURCES:
+            raise ValueError(
+                f'FieldFilter source must be one of {sorted(_FILTER_SOURCES)}, '
+                f'got {self.source!r}'
+            )
+        if self.dataType not in _FILTER_DATATYPES:
+            raise ValueError(
+                f'FieldFilter dataType must be one of {sorted(_FILTER_DATATYPES)}, '
+                f'got {self.dataType!r}'
+            )
+        if self.operator not in _FILTER_OPERATORS:
+            raise ValueError(
+                f'FieldFilter operator must be one of {sorted(_FILTER_OPERATORS)}, '
+                f'got {self.operator!r}'
+            )
+        # Accept a bare scalar for convenience (e.g. operator "is").
+        if not isinstance(self.values, (list, tuple)):
+            self.values = [self.values]
+        else:
+            self.values = list(self.values)
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Serialize to the server's filter-term JSON shape."""
+        return {
+            'source': self.source,
+            'key': self.key,
+            'dataType': self.dataType,
+            'operator': self.operator,
+            'values': self.values,
+        }
 
 
 class Client:
@@ -115,6 +211,9 @@ class Client:
         search: Optional[str] = None,
         tags: Optional[List[str]] = None,
         limit: int = 50,
+        field_filters: Optional[List[Union['FieldFilter', Dict[str, Any]]]] = None,
+        sort: Optional[str] = None,
+        offset: int = 0,
     ) -> List[Dict[str, Any]]:
         """List runs in a project.
 
@@ -124,17 +223,58 @@ class Client:
             tags: Filter by tags (AND logic). Only runs matching *all*
                 specified tags are returned.
             limit: Maximum number of runs to return (max 200).
+            field_filters: Server-side filters over ``config.*`` /
+                ``systemMetadata.*`` fields. A list of :class:`FieldFilter`
+                instances (or raw dicts in the same ``{source, key, dataType,
+                operator, values}`` shape). Terms are AND-combined. At most 50
+                terms.
+            sort: Server-side ordering as ``[+|-]<field>`` (``-`` = descending).
+                Accepts built-in columns (``createdAt``, ``updatedAt``,
+                ``name``, ``status`` and their snake_case aliases),
+                ``config.<key>.value`` / ``systemMetadata.<key>.value``,
+                ``summary_metrics.<name>`` (LAST aggregation), and
+                ``heartbeat_at`` (last logged data point). Defaults to
+                ``createdAt desc`` server-side.
+            offset: Skip-based pagination offset (0–100,000). Combine with
+                ``limit`` to page; advance ``offset`` until a short page is
+                returned.
 
         Returns:
             List of run dicts with keys: ``id``, ``name``, ``displayId``,
             ``status``, ``tags``, ``config``, ``createdAt``, ``updatedAt``,
             ``url``.
+
+        Raises:
+            ValueError: If more than 50 ``field_filters`` terms are given.
         """
         params: Dict[str, Any] = {'projectName': project, 'limit': min(limit, 200)}
         if search is not None:
             params['search'] = search
         if tags is not None:
             params['tags'] = ','.join(tags)
+        if field_filters is not None:
+            if len(field_filters) > _MAX_FILTER_TERMS:
+                raise ValueError(
+                    f'At most {_MAX_FILTER_TERMS} field_filters terms are '
+                    f'supported, got {len(field_filters)}'
+                )
+            terms = [
+                f.to_dict() if isinstance(f, FieldFilter) else f for f in field_filters
+            ]
+            params['fieldFilters'] = json.dumps(terms)
+        if sort is not None:
+            params['sort'] = sort
+        if offset:
+            clamped = max(0, min(offset, _MAX_OFFSET))
+            if clamped != offset:
+                logger.debug(
+                    '%s: offset %d clamped to %d (max %d)',
+                    tag,
+                    offset,
+                    clamped,
+                    _MAX_OFFSET,
+                )
+            params['offset'] = clamped
         return self._get('/api/runs/list', params=params)['runs']
 
     def get_run(
@@ -549,9 +689,20 @@ def list_runs(
     search: Optional[str] = None,
     tags: Optional[List[str]] = None,
     limit: int = 50,
+    field_filters: Optional[List[Union['FieldFilter', Dict[str, Any]]]] = None,
+    sort: Optional[str] = None,
+    offset: int = 0,
 ) -> List[Dict[str, Any]]:
     """List runs in a project. See :meth:`Client.list_runs`."""
-    return _get_client().list_runs(project, search=search, tags=tags, limit=limit)
+    return _get_client().list_runs(
+        project,
+        search=search,
+        tags=tags,
+        limit=limit,
+        field_filters=field_filters,
+        sort=sort,
+        offset=offset,
+    )
 
 
 def get_run(project: str, run_id: Union[int, str]) -> Dict[str, Any]:

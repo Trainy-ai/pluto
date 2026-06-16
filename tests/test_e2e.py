@@ -430,6 +430,63 @@ def test_e2e_list_runs_search():
     assert run_id in found_ids, f'Run {run_id} (name={task_name}) not found via search'
 
 
+def test_e2e_list_runs_sort_created_desc():
+    """Verify sort='-createdAt' returns runs newest-first."""
+    # Create two runs in sequence so their creation order is known.
+    run_a = pluto.init(project=TESTING_PROJECT_NAME, name=get_task_name(), config={})
+    id_a = run_a.settings._op_id
+    run_a.finish()
+    run_b = pluto.init(project=TESTING_PROJECT_NAME, name=get_task_name(), config={})
+    id_b = run_b.settings._op_id
+    run_b.finish()
+
+    runs = pq.list_runs(TESTING_PROJECT_NAME, sort='-createdAt', limit=200)
+    ids = [r['id'] for r in runs]
+    assert id_a in ids and id_b in ids
+    # The later-created run (B) must appear before the earlier one (A).
+    assert ids.index(id_b) < ids.index(id_a), 'sort=-createdAt not newest-first'
+
+
+def test_e2e_list_runs_offset_pagination():
+    """Verify offset pagination skips runs."""
+    # Ensure at least two runs exist.
+    pluto.init(project=TESTING_PROJECT_NAME, name=get_task_name(), config={}).finish()
+    pluto.init(project=TESTING_PROJECT_NAME, name=get_task_name(), config={}).finish()
+
+    page1 = pq.list_runs(TESTING_PROJECT_NAME, sort='-createdAt', limit=1)
+    page2 = pq.list_runs(TESTING_PROJECT_NAME, sort='-createdAt', limit=1, offset=1)
+    assert len(page1) == 1 and len(page2) == 1
+    assert page1[0]['id'] != page2[0]['id'], 'offset did not advance the page'
+
+
+def test_e2e_list_runs_field_filter():
+    """Verify fieldFilters filters runs by a config value, server-side."""
+    marker = f'e2e-ff-{int(time.time())}'
+    run = pluto.init(
+        project=TESTING_PROJECT_NAME,
+        name=get_task_name(),
+        config={'e2e_filter_marker': marker},
+    )
+    run_id = run.settings._op_id
+    run.finish()
+
+    def _query():
+        runs = pq.list_runs(
+            TESTING_PROJECT_NAME,
+            field_filters=[
+                pq.FieldFilter('config', 'e2e_filter_marker', 'text', 'is', [marker])
+            ],
+            limit=200,
+        )
+        ids = [r['id'] for r in runs]
+        return run_id in ids
+
+    # Field values are indexed asynchronously; poll for eventual consistency.
+    assert _poll(
+        fn=_query, check=lambda found: found
+    ), f'Run {run_id} not found via fieldFilters on config.e2e_filter_marker'
+
+
 # ---------------------------------------------------------------------------
 # Histogram (structured data)
 # ---------------------------------------------------------------------------
