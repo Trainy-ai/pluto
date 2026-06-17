@@ -36,6 +36,7 @@ soundfile = ">=0.12"
 [tool.poetry.group.dev.dependencies]
 mypy = "^1.10.0"
 ruff = "^0.4.7"
+griffe = "^2.0"  # static docstring parsing for scripts/gen_api_docs.py
 pytest = "^8.2.2"
 pytest-xdist = "^3.6.1"
 types-colorama = "^0.4.15.20240311"
