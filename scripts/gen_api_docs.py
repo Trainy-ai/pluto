@@ -515,16 +515,29 @@ def main() -> int:
     out = Path(args.out)
     files = build()
 
+    # Files the generator owns (everything else, e.g. README.md, is left alone).
+    # Used to detect/prune orphans from pages that were removed from PAGES.
+    def managed_on_disk() -> set:
+        if not out.exists():
+            return set()
+        found = {p.name for p in out.glob('*.mdx')}
+        if (out / 'meta.json').exists():
+            found.add('meta.json')
+        return found
+
     if args.check:
         stale = []
         for name, content in files.items():
             path = out / name
             if not path.exists() or path.read_text() != content:
                 stale.append(name)
-        if stale:
+        orphans = sorted(managed_on_disk() - set(files))
+        if stale or orphans:
             print('Stale API docs (run scripts/gen_api_docs.py):', file=sys.stderr)
             for name in stale:
-                print(f'  - {name}', file=sys.stderr)
+                print(f'  - changed/missing: {name}', file=sys.stderr)
+            for name in orphans:
+                print(f'  - orphaned (remove): {name}', file=sys.stderr)
             return 1
         print(f'docs-api/ is up to date ({len(files)} files).')
         return 0
@@ -532,7 +545,14 @@ def main() -> int:
     out.mkdir(parents=True, exist_ok=True)
     for name, content in files.items():
         (out / name).write_text(content)
-    print(f'Wrote {len(files)} files to {out}/')
+    # Prune managed files left over from pages removed from PAGES.
+    removed = sorted(managed_on_disk() - set(files))
+    for name in removed:
+        (out / name).unlink()
+    msg = f'Wrote {len(files)} files to {out}/'
+    if removed:
+        msg += f' (pruned {len(removed)}: {", ".join(removed)})'
+    print(msg)
     return 0
 
 
