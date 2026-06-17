@@ -349,7 +349,18 @@ def render_admonitions(sections) -> str:
         if sec.kind.value not in ('admonition', 'examples'):
             continue
         if sec.kind.value == 'examples':
-            out.append('**Example**\n\n' + render_example(str(sec.value)))
+            # griffe yields a list of (DocstringSectionKind, str) tuples: a
+            # `text` segment is prose, an `examples` segment is code.
+            parts = []
+            for ex_kind, content in sec.value:
+                kv = getattr(ex_kind, 'value', str(ex_kind))
+                if kv == 'examples':
+                    parts.append('```python\n' + content.strip() + '\n```')
+                else:
+                    parts.append(rst_to_md(content))
+            body = '\n\n'.join(p for p in parts if p)
+            if body:
+                out.append('**Example**\n\n' + body)
             continue
         kind = getattr(sec.value, 'kind', '')
         title = sec.title or (kind.title() if kind else 'Note')
