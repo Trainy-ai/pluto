@@ -236,6 +236,13 @@ class WandbRunWrapper:
                         pluto_data[key] = value
                     elif (num := _as_scalar_number(value)) is not None:
                         pluto_data[key] = num
+                    elif (b := _as_scalar_bool(value)) is not None:
+                        # Scalar tensor/numpy whose .item() is a bool
+                        # (e.g. torch.tensor(True), np.bool_). Pluto has no
+                        # bool metric, so route to config like a plain bool
+                        # instead of dropping it as unforwardable.
+                        if self._last_logged_config.get(key, _MISSING) != b:
+                            pluto_config[key] = b
                     elif isinstance(value, str):
                         if self._last_logged_config.get(key, _MISSING) != value:
                             pluto_config[key] = value
@@ -652,6 +659,28 @@ def _as_scalar_number(value):
     if isinstance(result, bool) or not isinstance(result, (int, float)):
         return None
     return result
+
+
+def _as_scalar_bool(value):
+    """Return a python bool if value is a scalar whose ``.item()`` is a bool.
+
+    Covers tensor/numpy scalars wrapping a bool (``torch.tensor(True)``,
+    ``np.bool_(True)``) — their ``.item()`` yields a Python ``bool``. Pluto
+    has no bool metric, so these are routed to config exactly like a plain
+    ``bool`` rather than dropped as unforwardable. Plain Python ``bool`` is
+    handled earlier by the ``isinstance(value, bool)`` branch; ``str`` is
+    excluded so it can't be mistaken for a scalar.
+    """
+    if isinstance(value, (bool, str)):
+        return None
+    item = getattr(value, 'item', None)
+    if not callable(item):
+        return None
+    try:
+        result = item()
+    except Exception:
+        return None
+    return result if isinstance(result, bool) else None
 
 
 def _config_storable_value(value):

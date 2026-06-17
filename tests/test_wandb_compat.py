@@ -397,6 +397,23 @@ def test_log_skips_redundant_config_updates():
     assert pluto_run.update_config.call_args.args[0] == {'phase': 'val'}
 
 
+def test_scalar_bool_tensor_routes_to_config_not_dropped():
+    """A scalar whose .item() is a bool goes to config like a plain bool."""
+    wrapper, pluto_run = _make_wrapper()
+
+    class _BoolScalar:  # mimics torch.tensor(True) / np.bool_
+        def item(self):
+            return True
+
+    with mock.patch('pluto.sentry.capture_message') as cap:
+        wrapper.log({'flag': _BoolScalar()})
+
+    cfg = pluto_run.update_config.call_args.args[0]
+    assert cfg == {'flag': True}
+    assert not cap.called  # not treated as unforwardable
+    assert not pluto_run.log.called  # bool is not a metric
+
+
 def test_omegaconf_value_falls_back_to_config_not_dropped():
     """A logged OmegaConf node is storable as config (not Sentry-dropped)."""
     OmegaConf = pytest.importorskip('omegaconf').OmegaConf
