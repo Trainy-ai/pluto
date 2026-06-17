@@ -88,9 +88,9 @@ def test_init_failure_logs_traceback(clean_env, monkeypatch, caplog):
     assert result is wandb_run
     records = [r for r in caplog.records if 'DUAL-LOGGING DISABLED' in r.getMessage()]
     assert records, 'expected a DUAL-LOGGING DISABLED error log'
-    assert (
-        records[0].exc_info is not None
-    ), 'error must be logged with exc_info so the traceback is surfaced'
+    assert records[0].exc_info is not None, (
+        'error must be logged with exc_info so the traceback is surfaced'
+    )
 
 
 def test_project_kwarg_is_used_when_no_env_vars_set(clean_env):
@@ -411,3 +411,42 @@ def test_omegaconf_value_falls_back_to_config_not_dropped():
     cfg = pluto_run.update_config.call_args.args[0]
     assert cfg['hparams'] == {'lr': 0.01, 'sched': {'name': 'cosine'}}
     assert not cap.called  # OmegaConf is storable -> no maintainer alert
+
+
+# ---------------------------------------------------------------------------
+# Media caption forwarding: wandb.Image/Audio/Video(caption=...) must reach
+# pluto.Image/Audio/Video(caption=...). Regression for the shim dropping it.
+# ---------------------------------------------------------------------------
+def _fake_wandb_media(type_name, path, caption=None):
+    """An object whose type().__name__ matches what the shim dispatches on."""
+    cls = type(type_name, (), {})
+    obj = cls()
+    obj._path = path
+    obj._caption = caption
+    return obj
+
+
+@pytest.mark.parametrize('type_name', ['Image', 'Audio', 'Video'])
+def test_wandb_media_caption_forwarded(type_name):
+    """caption= on a wandb media object is forwarded to the pluto equivalent."""
+    pluto_module = MagicMock()
+    media = _fake_wandb_media(type_name, '/tmp/x.png', caption='a fluffy cat')
+
+    wandb_compat._convert_wandb_to_pluto('eval/images', media, pluto_module)
+
+    factory = getattr(pluto_module, type_name)
+    factory.assert_called_once()
+    assert factory.call_args.kwargs.get('caption') == 'a fluffy cat'
+
+
+@pytest.mark.parametrize('type_name', ['Image', 'Audio', 'Video'])
+def test_wandb_media_without_caption(type_name):
+    """No caption on the wandb object forwards caption=None (not a crash)."""
+    pluto_module = MagicMock()
+    media = _fake_wandb_media(type_name, '/tmp/x.png', caption=None)
+
+    wandb_compat._convert_wandb_to_pluto('eval/images', media, pluto_module)
+
+    factory = getattr(pluto_module, type_name)
+    factory.assert_called_once()
+    assert factory.call_args.kwargs.get('caption') is None

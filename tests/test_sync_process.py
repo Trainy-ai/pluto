@@ -90,6 +90,88 @@ class TestSyncStore:
         assert all(isinstance(f, FileRecord) for f in pending)
         assert all(f.status == SyncStatus.PENDING for f in pending)
 
+    def test_enqueue_file_caption_roundtrip(self, store):
+        """A caption set on enqueue survives the get_pending_files read-back,
+        and an un-captioned file reads back as None."""
+        store.register_run('test-run-1', 'test-project')
+
+        store.enqueue_file(
+            run_id='test-run-1',
+            local_path='/tmp/cat.png',
+            file_name='cat',
+            file_ext='.png',
+            file_type='image/png',
+            file_size=1024,
+            log_name='eval/images',
+            timestamp_ms=int(time.time() * 1000),
+            step=0,
+            caption='a fluffy orange cat',
+        )
+        store.enqueue_file(
+            run_id='test-run-1',
+            local_path='/tmp/dog.png',
+            file_name='dog',
+            file_ext='.png',
+            file_type='image/png',
+            file_size=1024,
+            log_name='eval/images',
+            timestamp_ms=int(time.time() * 1000),
+            step=1,
+        )
+
+        by_name = {f.file_name: f for f in store.get_pending_files(limit=10)}
+        assert by_name['cat'].caption == 'a fluffy orange cat'
+        assert by_name['dog'].caption is None
+
+    def test_caption_migration_on_legacy_db(self, tmp_path):
+        """A DB created without the caption column gets it added on open
+        (additive migration), so enqueue/select with caption works."""
+        import sqlite3
+
+        db_path = str(tmp_path / 'legacy.db')
+        # Simulate a pre-caption file_uploads table.
+        conn = sqlite3.connect(db_path)
+        conn.execute("""
+            CREATE TABLE file_uploads (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_id TEXT NOT NULL,
+                local_path TEXT NOT NULL,
+                remote_url TEXT,
+                file_type TEXT NOT NULL,
+                file_size INTEGER,
+                file_name TEXT,
+                file_ext TEXT,
+                log_name TEXT,
+                timestamp_ms INTEGER NOT NULL,
+                step INTEGER,
+                status INTEGER DEFAULT 0,
+                retry_count INTEGER DEFAULT 0,
+                created_at REAL NOT NULL,
+                last_attempt_at REAL,
+                error_message TEXT
+            )
+        """)
+        conn.commit()
+        conn.close()
+
+        store = SyncStore(db_path)
+        store.register_run('r', 'p')
+        store.enqueue_file(
+            run_id='r',
+            local_path='/tmp/cat.png',
+            file_name='cat',
+            file_ext='.png',
+            file_type='image/png',
+            file_size=1,
+            log_name='eval/images',
+            timestamp_ms=int(time.time() * 1000),
+            step=0,
+            caption='migrated cat',
+        )
+        pending = store.get_pending_files(limit=10)
+        store.close()
+        assert pending[0].caption == 'migrated cat'
+
     def test_file_status_transitions(self, store):
         """Test file status transitions work correctly."""
         store.register_run('test-run-1', 'test-project')
@@ -354,9 +436,9 @@ class TestSyncProcessShutdown:
         assert 'test_metric_gamma' in run.settings.meta
 
         # Verify _iface exists and would have been used for metadata
-        assert (
-            run._iface is not None
-        ), 'ServerInterface must exist to register metric names with server'
+        assert run._iface is not None, (
+            'ServerInterface must exist to register metric names with server'
+        )
 
         run.finish()
 
@@ -537,6 +619,72 @@ class TestSyncUploaderPayloadFormat:
             assert 'v' not in payload, "Should not use 'v' field"
             assert 's' not in payload, "Should not use 's' field"
             assert 't' not in payload, "Should not use 't' field"
+
+    def test_file_payload_includes_caption(self, uploader):
+        """The /files presign payload carries `caption` when set, and omits
+        the key entirely when the file has no caption."""
+        records = [
+            FileRecord(
+                id=1,
+                run_id='test-run',
+                local_path='/tmp/cat.png',
+                file_name='cat',
+                file_ext='.png',
+                file_type='image/png',
+                file_size=10,
+                log_name='eval/images',
+                timestamp_ms=1705600000000,
+                step=0,
+                status=SyncStatus.PENDING,
+                retry_count=0,
+                created_at=time.time(),
+                last_attempt_at=None,
+                error_message=None,
+                presigned_url=None,
+                caption='a fluffy orange cat',
+            ),
+            FileRecord(
+                id=2,
+                run_id='test-run',
+                local_path='/tmp/dog.png',
+                file_name='dog',
+                file_ext='.png',
+                file_type='image/png',
+                file_size=10,
+                log_name='eval/images',
+                timestamp_ms=1705600000000,
+                step=1,
+                status=SyncStatus.PENDING,
+                retry_count=0,
+                created_at=time.time(),
+                last_attempt_at=None,
+                error_message=None,
+                presigned_url=None,
+                caption=None,
+            ),
+        ]
+
+        mock_response = MagicMock()
+        mock_response.raise_for_status = MagicMock()
+        mock_response.json.return_value = {}
+
+        with patch('httpx.Client') as MockClient:
+            mock_client = MagicMock()
+            mock_client.post.return_value = mock_response
+            MockClient.return_value = mock_client
+            uploader._client = None
+
+            uploader._get_presigned_urls(records)
+
+            call_args = mock_client.post.call_args
+            body = call_args.kwargs.get('content') or call_args[1].get('content')
+            if isinstance(body, bytes):
+                body = body.decode('utf-8')
+            files = json.loads(body)['files']
+            by_name = {f['fileName']: f for f in files}
+
+            assert by_name['cat.png']['caption'] == 'a fluffy orange cat'
+            assert 'caption' not in by_name['dog.png']
 
     def test_metrics_payload_filters_non_numeric(self, uploader):
         """Test that non-numeric values are filtered from metrics."""

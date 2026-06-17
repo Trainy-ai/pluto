@@ -170,6 +170,9 @@ def make_compat_file_v1(file, timestamp, step):
                 'logName': k,
                 'step': step,
             }
+            caption = getattr(f, '_caption', None)
+            if caption is not None:
+                i['caption'] = caption
             batch.append(i)
     return json.dumps({'files': batch}).encode()
 

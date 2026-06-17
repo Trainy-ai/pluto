@@ -701,6 +701,17 @@ def _is_torch_distributed() -> bool:
         return False
 
 
+def _wandb_caption(value):
+    """Extract a user-provided caption from a wandb media object.
+
+    wandb.Image/Audio/Video store the ``caption=`` kwarg on ``_caption``.
+    Returns a non-empty string or None (ignores wandb's list-of-captions
+    grouping form, which has no single-file equivalent here).
+    """
+    cap = getattr(value, '_caption', None)
+    return cap if isinstance(cap, str) and cap else None
+
+
 def _convert_wandb_to_pluto(key, value, pluto_module):
     """
     Convert wandb data types to Pluto equivalents.
@@ -720,15 +731,16 @@ def _convert_wandb_to_pluto(key, value, pluto_module):
             # which does NOT match subclasses, so we can't pass the PIL
             # object directly. Instead, use the file path — wandb.Image
             # always writes to _path on construction.
+            caption = _wandb_caption(value)
             if getattr(value, '_path', None):
-                return pluto_module.Image(value._path)
+                return pluto_module.Image(value._path, caption=caption)
             # Fallback: convert PIL to numpy (which pluto.Image handles)
             pil_img = getattr(value, 'image', None) or getattr(value, '_image', None)
             if pil_img is not None:
                 try:
                     import numpy as np
 
-                    return pluto_module.Image(np.asarray(pil_img))
+                    return pluto_module.Image(np.asarray(pil_img), caption=caption)
                 except Exception:
                     return None
             return None
@@ -748,14 +760,14 @@ def _convert_wandb_to_pluto(key, value, pluto_module):
             # wandb.Audio always writes to _path on construction
             # (whether from numpy, file path, or bytes).
             if getattr(value, '_path', None):
-                return pluto_module.Audio(value._path)
+                return pluto_module.Audio(value._path, caption=_wandb_caption(value))
             return None
 
         if type_name == 'Video':
             # wandb.Video always writes to _path on construction (after
             # encoding). This can take a few seconds for numpy input.
             if getattr(value, '_path', None):
-                return pluto_module.Video(value._path)
+                return pluto_module.Video(value._path, caption=_wandb_caption(value))
             return None
 
         if type_name == 'Table':
