@@ -187,12 +187,16 @@ class ServerInterface:
             num: List of numeric metric names
             df: Dict mapping file type names to lists of log names
         """
+        # Suppress the per-request httpx INFO line ("HTTP Request: POST
+        # .../api/runs/logName/add ..."). One POST fires per new metric/file
+        # name, so this is noisy; the heartbeat/status path suppresses it too.
         if num:
             self._post_v1(
                 self.settings.url_meta,
                 self.headers,
                 make_compat_meta_v1(num, 'num', self.settings),
                 client=self.client_api,
+                suppress_httpx_logs=True,
             )
         if df:
             for type_name, names in df.items():
@@ -201,6 +205,7 @@ class ServerInterface:
                     self.headers,
                     make_compat_meta_v1(names, type_name, self.settings),
                     client=self.client_api,
+                    suppress_httpx_logs=True,
                 )
 
     def _log_failed_request(
