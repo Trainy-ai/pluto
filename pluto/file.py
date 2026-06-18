@@ -23,6 +23,10 @@ INVALID_CHAR = re.compile(r'[^a-zA-Z0-9_\-.]')
 
 class File:
     tag = tag
+    # Optional user-provided caption (e.g. Image(caption=...)). Media subclasses
+    # override this instance attribute in their __init__; the class-level default
+    # ensures it always exists (e.g. on a directly-constructed File).
+    _caption: Optional[str] = None
 
     def __init__(
         self,
@@ -112,6 +116,10 @@ class Artifact(File):
         self._tmp: Optional[str] = None
         self._ext: str = ''
         self._name = caption + f'.{uuid.uuid4()}' if caption else f'{uuid.uuid4()}'
+        # Preserve the raw caption separately so it can be sent to the server
+        # as a dedicated field (mlop_files.caption); _name keeps the legacy
+        # caption-as-filename behavior for back-compat with older servers.
+        self._caption = caption
         self._id = f'{uuid.uuid4()}{uuid.uuid4()}'.replace('-', '')
 
         self._metadata: Dict[str, Any] = metadata or {}
@@ -148,6 +156,10 @@ class Text(File):
 
     def __init__(self, data: Union[str, Any], caption: Optional[str] = None) -> None:
         self._name = caption + f'.{uuid.uuid4()}' if caption else f'{uuid.uuid4()}'
+        # Preserve the raw caption separately so it can be sent to the server
+        # as a dedicated field (mlop_files.caption); _name keeps the legacy
+        # caption-as-filename behavior for back-compat with older servers.
+        self._caption = caption
         self._id = f'{uuid.uuid4()}{uuid.uuid4()}'.replace('-', '')
         self._ext = '.txt'
         self._path: Optional[str] = None
@@ -182,6 +194,10 @@ class Image(File):
         caption: Optional[str] = None,
     ) -> None:
         self._name = caption + f'.{uuid.uuid4()}' if caption else f'{uuid.uuid4()}'
+        # Preserve the raw caption separately so it can be sent to the server
+        # as a dedicated field (mlop_files.caption); _name keeps the legacy
+        # caption-as-filename behavior for back-compat with older servers.
+        self._caption = caption
         self._id = f'{uuid.uuid4()}{uuid.uuid4()}'.replace('-', '')
         self._ext = '.png'
         self._image: Any = None
@@ -252,6 +268,10 @@ class Audio(File):
         rate = kwargs.get('sample_rate', rate)
 
         self._name = caption + f'.{uuid.uuid4()}' if caption else f'{uuid.uuid4()}'
+        # Preserve the raw caption separately so it can be sent to the server
+        # as a dedicated field (mlop_files.caption); _name keeps the legacy
+        # caption-as-filename behavior for back-compat with older servers.
+        self._caption = caption
         self._id = f'{uuid.uuid4()}{uuid.uuid4()}'.replace('-', '')
         self._ext = '.wav'
         self._audio: Any
@@ -305,6 +325,10 @@ class Video(File):
         rate = kwargs.get('fps', rate)
 
         self._name = caption + f'.{uuid.uuid4()}' if caption else f'{uuid.uuid4()}'
+        # Preserve the raw caption separately so it can be sent to the server
+        # as a dedicated field (mlop_files.caption); _name keeps the legacy
+        # caption-as-filename behavior for back-compat with older servers.
+        self._caption = caption
         self._id = f'{uuid.uuid4()}{uuid.uuid4()}'.replace('-', '')
         self._ext = f'.{format}' if format in ['mp4', 'webm', 'ogg', 'gif'] else '.mp4'
         self._path: Optional[str] = None

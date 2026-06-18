@@ -346,6 +346,7 @@ class SyncProcessManager:
         log_name: str,
         timestamp_ms: int,
         step: Optional[int] = None,
+        caption: Optional[str] = None,
     ) -> None:
         """
         Enqueue a file for upload.
@@ -363,6 +364,7 @@ class SyncProcessManager:
             log_name=log_name,
             timestamp_ms=timestamp_ms,
             step=step,
+            caption=caption,
         )
         # Update heartbeat to show we're alive
         self.store.heartbeat(self.run_id)
@@ -1287,16 +1289,20 @@ class _SyncUploader:
         for f in file_records:
             file_ext = f.file_ext
             file_type = file_ext[1:] if file_ext.startswith('.') else file_ext
-            batch.append(
-                {
-                    'fileName': f'{f.file_name}{f.file_ext}',
-                    'fileSize': f.file_size,
-                    'fileType': file_type,
-                    'time': f.timestamp_ms,
-                    'logName': f.log_name,
-                    'step': f.step,
-                }
-            )
+            entry: Dict[str, Any] = {
+                'fileName': f'{f.file_name}{f.file_ext}',
+                'fileSize': f.file_size,
+                'fileType': file_type,
+                'time': f.timestamp_ms,
+                'logName': f.log_name,
+                'step': f.step,
+            }
+            # Only include caption when set — keeps the payload identical to
+            # before for un-captioned files and older servers (which ignore
+            # unknown fields anyway).
+            if f.caption is not None:
+                entry['caption'] = f.caption
+            batch.append(entry)
 
         body = json.dumps({'files': batch})
         headers = self._get_headers()

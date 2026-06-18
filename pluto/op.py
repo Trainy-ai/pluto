@@ -696,6 +696,7 @@ class Op:
                 log_name=log_name,
                 timestamp_ms=timestamp_ms,
                 step=self._step,
+                caption=file_obj._caption,
             )
             logger.debug(
                 f'{tag}: enqueued file {file_obj._name}{file_obj._ext} for sync'

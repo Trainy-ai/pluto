@@ -162,6 +162,7 @@ class FileRecord:
     last_attempt_at: Optional[float]
     error_message: Optional[str]
     presigned_url: Optional[str]
+    caption: Optional[str] = None
 
 
 @dataclass
@@ -193,7 +194,8 @@ class SyncStore:
     - Health diagnostics (queue depth, write latency, WAL size)
     """
 
-    SCHEMA_VERSION = 1
+    # v2: added file_uploads.caption (backfilled via _add_column_if_missing)
+    SCHEMA_VERSION = 2
 
     # SQLite's own busy handler wait. Kept deliberately short because we layer
     # application-level exponential backoff (see _retry_on_locked) on top: a
@@ -256,10 +258,12 @@ class SyncStore:
                     (self.SCHEMA_VERSION,),
                 )
             elif row['version'] != self.SCHEMA_VERSION:
-                # Handle migrations in future versions
-                logger.warning(
-                    f'{tag}: Schema version mismatch: {row["version"]} != '
-                    f'{self.SCHEMA_VERSION}'
+                logger.info(
+                    f'{tag}: migrating schema {row["version"]} -> {self.SCHEMA_VERSION}'
+                )
+                cursor.execute(
+                    'UPDATE schema_version SET version = ?',
+                    (self.SCHEMA_VERSION,),
                 )
 
             # Run metadata (which runs are active, their sync state)
@@ -318,6 +322,7 @@ class SyncStore:
                     file_name TEXT,
                     file_ext TEXT,
                     log_name TEXT,
+                    caption TEXT,
                     timestamp_ms INTEGER NOT NULL,
                     step INTEGER,
                     status INTEGER DEFAULT 0,
@@ -329,7 +334,23 @@ class SyncStore:
                 )
             """)
 
+            # Additive migrations for DBs created before a column existed.
+            # CREATE TABLE IF NOT EXISTS above is a no-op on an existing table,
+            # so backfill new columns here. Idempotent (skips if present).
+            self._add_column_if_missing(cursor, 'file_uploads', 'caption', 'TEXT')
+
             self.conn.commit()
+
+    def _add_column_if_missing(
+        self, cursor: Any, table: str, column: str, decl: str
+    ) -> None:
+        """Add a column to an existing table if it isn't already present.
+
+        SQLite's ALTER TABLE has no IF NOT EXISTS, so check PRAGMA first.
+        """
+        existing = {r['name'] for r in cursor.execute(f'PRAGMA table_info({table})')}
+        if column not in existing:
+            cursor.execute(f'ALTER TABLE {table} ADD COLUMN {column} {decl}')
 
     @_retry_on_locked
     def register_run(
@@ -672,6 +693,7 @@ class SyncStore:
         log_name: str,
         timestamp_ms: int,
         step: Optional[int] = None,
+        caption: Optional[str] = None,
     ) -> int:
         """Add a file to the upload queue. Returns file record ID."""
         now = time.time()
@@ -681,9 +703,10 @@ class SyncStore:
                 """
                 INSERT INTO file_uploads (
                     run_id, local_path, file_type, file_size,
-                    timestamp_ms, step, created_at, file_name, file_ext, log_name
+                    timestamp_ms, step, created_at, file_name, file_ext,
+                    log_name, caption
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     run_id,
@@ -696,6 +719,7 @@ class SyncStore:
                     file_name,
                     file_ext,
                     log_name,
+                    caption,
                 ),
             )
             return cursor.lastrowid or 0
@@ -738,6 +762,7 @@ class SyncStore:
                         last_attempt_at=row['last_attempt_at'],
                         error_message=row['error_message'],
                         presigned_url=row['remote_url'],
+                        caption=(row['caption'] if 'caption' in row.keys() else None),
                     )
                 )
             return records
