@@ -88,9 +88,9 @@ def test_init_failure_logs_traceback(clean_env, monkeypatch, caplog):
     assert result is wandb_run
     records = [r for r in caplog.records if 'DUAL-LOGGING DISABLED' in r.getMessage()]
     assert records, 'expected a DUAL-LOGGING DISABLED error log'
-    assert records[0].exc_info is not None, (
-        'error must be logged with exc_info so the traceback is surfaced'
-    )
+    assert (
+        records[0].exc_info is not None
+    ), 'error must be logged with exc_info so the traceback is surfaced'
 
 
 def test_project_kwarg_is_used_when_no_env_vars_set(clean_env):

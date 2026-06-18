@@ -41,6 +41,7 @@ Hard Requirements:
 """
 
 import atexit
+import copy
 import json
 import logging
 import os
@@ -281,7 +282,12 @@ class WandbRunWrapper:
                     try:
                         self._pluto_run.update_config(pluto_config)
                         # Only remember as synced once the update succeeds.
-                        self._last_logged_config.update(pluto_config)
+                        # deepcopy so the dedup snapshot can't share a reference
+                        # with a caller-owned mutable: today pluto_config holds
+                        # only immutable str/bool or a fresh to_native_config
+                        # rebuild, but copying keeps the != comparison correct
+                        # even if a future branch stores a user object directly.
+                        self._last_logged_config.update(copy.deepcopy(pluto_config))
                     except Exception as e:
                         logger.debug(
                             f'pluto.compat.wandb: Failed to sync config to Pluto: {e}'
