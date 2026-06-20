@@ -30,15 +30,23 @@ NAME_MAX = 255
 
 
 def _bounded_basename(name: str, uid: str, ext: str) -> str:
-    """Build ``{name}-{uid}{ext}``, truncating ``name`` to fit NAME_MAX bytes.
+    """Build ``{name}-{uid}{ext}``, sanitized and truncated to fit NAME_MAX bytes.
 
-    Only the caption-derived ``name`` is shortened; ``uid`` (uniqueness) and
-    ``ext`` are always preserved, so truncation can't cause collisions or break
-    the extension. Truncation is byte-aware to avoid splitting a multibyte char.
+    ``name`` is caption-derived and can reach here *before* File.__init__ has
+    sanitized ``self._name`` -- the media ``load()`` methods build the staging
+    path first -- so sanitize here too: map anything outside the allowed set to
+    ``-`` (mirroring File.__init__), which strips ``/`` and ``\\`` so the result
+    is always a single, path-traversal-safe component. A name that is empty or
+    only dots collapses to a placeholder. ``uid`` (uniqueness) and ``ext`` are
+    always preserved, so truncation can't cause collisions or drop the
+    extension; truncation is byte-aware to avoid splitting a multibyte char.
     """
+    safe_name = INVALID_CHAR.sub('-', name)
+    if not safe_name.strip('.'):  # '', '.', '..', ... -> never a dir reference
+        safe_name = 'file'
     suffix = f'-{uid}{ext}'
     budget = max(NAME_MAX - len(suffix.encode('utf-8')), 0)
-    safe = name.encode('utf-8')[:budget].decode('utf-8', 'ignore')
+    safe = safe_name.encode('utf-8')[:budget].decode('utf-8', 'ignore')
     return f'{safe}{suffix}'
 
 

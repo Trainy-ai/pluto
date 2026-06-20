@@ -436,9 +436,9 @@ class TestSyncProcessShutdown:
         assert 'test_metric_gamma' in run.settings.meta
 
         # Verify _iface exists and would have been used for metadata
-        assert run._iface is not None, (
-            'ServerInterface must exist to register metric names with server'
-        )
+        assert (
+            run._iface is not None
+        ), 'ServerInterface must exist to register metric names with server'
 
         run.finish()
 
@@ -1428,3 +1428,40 @@ class TestCaptionEndToEndClientPath:
         # Full caption is preserved for the server-side fileName/display.
         assert rec.caption == long_caption
         assert long_caption in rec.file_name
+
+    def test_caption_with_separators_is_traversal_safe(self, tmp_path):
+        """A caption with path separators / '..' must not escape the files dir.
+
+        The staging path is built from the caption-derived name before
+        File.__init__ sanitizes it, so _bounded_basename must neutralize
+        separators itself. The staged file must land directly under <dir>/files.
+        """
+        import types
+
+        from pluto.op import Op
+
+        store = SyncStore(str(tmp_path / 'sync.db'))
+        files_dir = tmp_path / 'files'
+        os.makedirs(files_dir, exist_ok=True)
+
+        def _enqueue_file(**kwargs):
+            store.enqueue_file(run_id='test-run', **kwargs)
+
+        fake_op = types.SimpleNamespace(
+            _sync_manager=types.SimpleNamespace(enqueue_file=_enqueue_file),
+            settings=types.SimpleNamespace(get_dir=lambda: str(tmp_path)),
+            _step=1,
+        )
+
+        # In-memory image so load() builds the staging path from the raw caption.
+        arr = np.zeros((4, 4, 3), dtype=np.uint8)
+        obj = pluto.Image(arr, caption='../../etc/evil/payload')
+        Op._enqueue_file_sync(fake_op, 'eval-images/x', obj, 1705600000000)
+
+        rec = store.get_pending_files(limit=10)[0]
+        staged = os.path.realpath(rec.local_path)
+        # Staged directly in <dir>/files, not in a traversed-to directory, and
+        # the basename carries no surviving separators.
+        assert os.path.dirname(staged) == os.path.realpath(str(files_dir))
+        assert '/' not in rec.file_name and '\\' not in rec.file_name
+        assert os.path.exists(rec.local_path)
