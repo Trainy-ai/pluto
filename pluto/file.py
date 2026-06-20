@@ -20,6 +20,27 @@ tag = 'File'
 VALID_CHAR = re.compile(r'^[a-zA-Z0-9_\-.]+$')
 INVALID_CHAR = re.compile(r'[^a-zA-Z0-9_\-.]')
 
+# Most filesystems cap a single path component at 255 bytes (NAME_MAX). The
+# staging filename embeds the caption-derived ``_name`` — which, via the wandb
+# compat shim, can be a long generation-parameter tuple — so it can overflow
+# that limit and make open()/shutil.copyfile raise ENAMETOOLONG, silently
+# dropping the file. Bound the *on-disk* name only; ``self._name`` (and thus the
+# server-side fileName/display) is left intact.
+NAME_MAX = 255
+
+
+def _bounded_basename(name: str, uid: str, ext: str) -> str:
+    """Build ``{name}-{uid}{ext}``, truncating ``name`` to fit NAME_MAX bytes.
+
+    Only the caption-derived ``name`` is shortened; ``uid`` (uniqueness) and
+    ``ext`` are always preserved, so truncation can't cause collisions or break
+    the extension. Truncation is byte-aware to avoid splitting a multibyte char.
+    """
+    suffix = f'-{uid}{ext}'
+    budget = max(NAME_MAX - len(suffix.encode('utf-8')), 0)
+    safe = name.encode('utf-8')[:budget].decode('utf-8', 'ignore')
+    return f'{safe}{suffix}'
+
 
 class File:
     tag = tag
@@ -65,9 +86,13 @@ class File:
         with open(self._path, 'rb') as f:
             return hashlib.sha256(f.read()).hexdigest()
 
+    def _staging_path(self, dir: str) -> str:
+        """Absolute on-disk path for the staged copy, bounded to NAME_MAX."""
+        return f'{dir}/files/{_bounded_basename(self._name, self._id, self._ext)}'
+
     def _mkcopy(self, dir: str) -> None:
         if self._tmp is None:
-            self._tmp = f'{dir}/files/{self._name}-{self._id}{self._ext}'
+            self._tmp = self._staging_path(dir)
             if self._path is None:
                 raise ValueError('File path is not set')
             shutil.copyfile(self._path, self._tmp)
@@ -138,7 +163,7 @@ class Artifact(File):
 
     def load(self, dir: Optional[str] = None) -> None:
         if not self._path and self._bytes is not None and dir:
-            self._tmp = f'{dir}/files/{self._name}-{self._id}{self._ext}'
+            self._tmp = self._staging_path(dir)
             with open(self._tmp, 'wb') as f:
                 f.write(self._bytes)
             self._path = os.path.abspath(self._tmp)
@@ -175,7 +200,7 @@ class Text(File):
     def load(self, dir: Optional[str] = None) -> None:
         if not self._path:
             if dir:
-                self._tmp = f'{dir}/files/{self._name}-{self._id}{self._ext}'
+                self._tmp = self._staging_path(dir)
                 with open(self._tmp, 'w') as f:
                     f.write(self._text)
                 self._path = os.path.abspath(self._tmp)
@@ -234,7 +259,7 @@ class Image(File):
     def load(self, dir: Optional[str] = None) -> None:
         if not self._path:
             if dir:
-                self._tmp = f'{dir}/files/{self._name}-{self._id}{self._ext}'
+                self._tmp = self._staging_path(dir)
                 if getattr(self, '_matplotlib', False):
                     make_compat_image_matplotlib(self._tmp, self._image)
                 elif self._image == 'bytes' and self._bytes is not None:
@@ -297,7 +322,7 @@ class Audio(File):
     def load(self, dir: Optional[str] = None) -> None:
         if not self._path:
             if dir:
-                self._tmp = f'{dir}/files/{self._name}-{self._id}{self._ext}'
+                self._tmp = self._staging_path(dir)
                 if isinstance(self._audio, str) and self._audio == 'bytes':
                     if self._bytes is not None:
                         with open(self._tmp, 'wb') as f:
@@ -361,7 +386,7 @@ class Video(File):
     def load(self, dir: Optional[str] = None) -> None:
         if not self._path:
             if dir:
-                self._tmp = f'{dir}/files/{self._name}-{self._id}{self._ext}'
+                self._tmp = self._staging_path(dir)
                 if self._video == 'bytes' and self._bytes is not None:
                     with open(self._tmp, 'wb') as f:
                         f.write(self._bytes)

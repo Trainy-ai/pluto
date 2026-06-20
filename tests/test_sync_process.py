@@ -436,9 +436,9 @@ class TestSyncProcessShutdown:
         assert 'test_metric_gamma' in run.settings.meta
 
         # Verify _iface exists and would have been used for metadata
-        assert (
-            run._iface is not None
-        ), 'ServerInterface must exist to register metric names with server'
+        assert run._iface is not None, (
+            'ServerInterface must exist to register metric names with server'
+        )
 
         run.finish()
 
@@ -1376,3 +1376,55 @@ class TestCaptionEndToEndClientPath:
                 assert 'caption' not in payload[log_name]
             else:
                 assert payload[log_name]['caption'] == expected
+
+    def test_long_caption_does_not_drop_file(self, tmp_path):
+        """A long caption must not make _mkcopy raise ENAMETOOLONG.
+
+        Regression for the wandb compat shim baking long generation-param
+        captions into the staging filename: ``{caption}.{uuid}-{sha256}{ext}``
+        could exceed the 255-byte NAME_MAX, so shutil.copyfile raised
+        OSError(ENAMETOOLONG). That error propagated out of _enqueue_file_sync
+        and was swallowed by the shim's try/except, silently dropping the file
+        (and never registering its log). The on-disk name must be bounded while
+        the full caption is preserved for the server-side fileName.
+        """
+        import types
+
+        from pluto.file import NAME_MAX
+        from pluto.op import Op
+
+        store = SyncStore(str(tmp_path / 'sync.db'))
+        os.makedirs(tmp_path / 'files', exist_ok=True)
+
+        def _enqueue_file(**kwargs):
+            store.enqueue_file(run_id='test-run', **kwargs)
+
+        fake_op = types.SimpleNamespace(
+            _sync_manager=types.SimpleNamespace(enqueue_file=_enqueue_file),
+            settings=types.SimpleNamespace(get_dir=lambda: str(tmp_path)),
+            _step=1,
+        )
+
+        mp4 = tmp_path / 'src.mp4'
+        mp4.write_bytes(b'\x00\x00\x00\x18ftypmp42' + b'\x00' * 64)
+        # A synthetic structured caption (sanitized-form params), long
+        # enough to overflow NAME_MAX once combined with uuid + sha256 + ext.
+        long_caption = (
+            'group-a--key1-val1--key2-val2--key3-val3--key4-val4--key5-val5--key6'
+            '--group-b--key7-val7--key8-val8--key9-val9--key10-val10'
+            '--group-c--key11-val11--key12-val12'
+        )
+        obj = pluto.Video(str(mp4), caption=long_caption)
+
+        # Must not raise (previously raised OSError: File name too long).
+        Op._enqueue_file_sync(fake_op, 'eval-videos/x', obj, 1705600000000)
+
+        records = store.get_pending_files(limit=10)
+        assert len(records) == 1
+        rec = records[0]
+        # File was actually staged on disk and the basename respects NAME_MAX.
+        assert os.path.exists(rec.local_path)
+        assert len(os.path.basename(rec.local_path).encode('utf-8')) <= NAME_MAX
+        # Full caption is preserved for the server-side fileName/display.
+        assert rec.caption == long_caption
+        assert long_caption in rec.file_name
