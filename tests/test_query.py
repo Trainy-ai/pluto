@@ -305,6 +305,56 @@ class TestFieldFilter:
         with pytest.raises(ValueError, match='operator'):
             FieldFilter('config', 'lr', 'number', 'gt', [1])
 
+    @pytest.mark.parametrize(
+        'source,key,dtype,op,vals',
+        [
+            ('config', 'lr', 'number', 'is between', [0.1, 0.9]),
+            ('config', 'lr', 'number', 'is greater than', [0.1]),
+            ('config', 'ts', 'date', 'is before', ['2026-01-01']),
+            ('config', 'ts', 'date', 'is on or after', ['2026-01-01']),
+            ('config', 'name', 'text', 'starts with', ['gpt']),
+            ('systemMetadata', 'gpu', 'option', 'is any of', ['a100', 'h100']),
+            ('config', 'checkpoint', 'text', 'exists', []),
+            ('config', 'lr', 'number', 'not exists', []),
+        ],
+    )
+    def test_valid_operators_accepted(self, source, key, dtype, op, vals):
+        from pluto.query import FieldFilter
+
+        f = FieldFilter(source, key, dtype, op, vals)
+        assert f.to_dict()['operator'] == op
+
+    @pytest.mark.parametrize(
+        'dtype,op',
+        [
+            ('number', 'contains'),  # text-only operator on number
+            ('date', 'regex'),  # text-only operator on date
+            ('number', 'is any of'),  # option-only operator on number
+            ('option', '>'),  # number-only operator on option
+            ('text', 'is between'),  # number-only operator on text
+        ],
+    )
+    def test_operator_rejected_for_wrong_datatype(self, dtype, op):
+        from pluto.query import FieldFilter
+
+        with pytest.raises(ValueError, match='not valid for dataType'):
+            FieldFilter('config', 'k', dtype, op, ['x'])
+
+    def test_flat_operator_set_is_union(self):
+        # The flat set the contract test compares against must be exactly the
+        # union of the per-dataType sets plus the common operators.
+        from pluto.query import (
+            _FILTER_OPERATORS,
+            _FILTER_OPERATORS_BY_DATATYPE,
+            _FILTER_OPERATORS_COMMON,
+        )
+
+        expected = set(_FILTER_OPERATORS_COMMON)
+        for ops in _FILTER_OPERATORS_BY_DATATYPE.values():
+            expected |= ops
+        assert _FILTER_OPERATORS == expected
+        assert len(_FILTER_OPERATORS) == 26
+
 
 # ---------------------------------------------------------------------------
 # get_run

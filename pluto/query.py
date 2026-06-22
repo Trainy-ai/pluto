@@ -48,27 +48,63 @@ class QueryError(Exception):
 
 
 # Field-filter vocabulary, kept in step with the server's zod schema for the
-# ``/api/runs/list`` ``fieldFilters`` parameter. ``tests/test_contract.py``
-# asserts these match ``components.schemas.FieldFilterTerm`` in the live
-# OpenAPI spec, so drift fails CI rather than surfacing as opaque HTTP 400s.
+# ``/api/runs/list`` ``fieldFilters`` parameter (pluto-server
+# ``buildValueCondition``). Operators are scoped to the dataType they apply to —
+# the server dispatches on dataType — so e.g. ``contains`` is text-only and ``>``
+# is number-only. ``exists``/``not exists`` work for any dataType.
 _FILTER_SOURCES = {'config', 'systemMetadata'}
 _FILTER_DATATYPES = {'text', 'number', 'date', 'option'}
-_FILTER_OPERATORS = {
-    'contains',
-    'does not contain',
-    'is',
-    'is not',
-    'starts with',
-    'ends with',
-    'regex',
-    '>',
-    '<',
-    '>=',
-    '<=',
-    'is between',
-    'is any of',
-    'is none of',
+_FILTER_OPERATORS_COMMON = {'exists', 'not exists'}
+_FILTER_OPERATORS_BY_DATATYPE = {
+    'text': {
+        'contains',
+        'does not contain',
+        'equals',
+        'is',
+        'is not',
+        'starts with',
+        'ends with',
+        'regex',
+    },
+    'number': {
+        'is',
+        'is not',
+        'is greater than',
+        '>',
+        'is less than',
+        '<',
+        'is greater than or equal to',
+        '>=',
+        'is less than or equal to',
+        '<=',
+        'is between',
+        'is not between',
+    },
+    'date': {
+        'is before',
+        'is on or before',
+        'is after',
+        'is on or after',
+        'is between',
+        'is not between',
+    },
+    'option': {'is', 'is not', 'is any of', 'is none of'},
 }
+# Flat union — the single operator enum the server publishes in OpenAPI.
+# ``tests/test_contract.py`` asserts this equals
+# ``components.schemas.FieldFilterTerm.properties.operator.enum`` in the live
+# spec, so drift fails CI rather than surfacing as opaque HTTP 400s.
+_FILTER_OPERATORS = _FILTER_OPERATORS_COMMON.union(
+    *_FILTER_OPERATORS_BY_DATATYPE.values()
+)
+
+
+def _allowed_operators(data_type: str) -> set:
+    """Operators valid for *data_type* (its dataType-specific set + common)."""
+    return (
+        _FILTER_OPERATORS_BY_DATATYPE.get(data_type, set()) | _FILTER_OPERATORS_COMMON
+    )
+
 
 # Server caps the filter set at 50 terms; reject early with a clear error.
 _MAX_FILTER_TERMS = 50
@@ -87,19 +123,30 @@ class FieldFilter:
         source: ``"config"`` or ``"systemMetadata"``.
         key: Dotted field path (e.g. ``"checkpoint.r2_prefix"``).
         dataType: One of ``"text"``, ``"number"``, ``"date"``, ``"option"``.
-        operator: One of the supported operators (e.g. ``"contains"``,
-            ``"is"``, ``">"``, ``"is between"``, ``"is any of"``). See
-            :data:`_FILTER_OPERATORS` for the full set.
+        operator: An operator valid for *dataType* (the server dispatches on
+            dataType). text: ``contains``, ``does not contain``, ``equals``,
+            ``is``, ``is not``, ``starts with``, ``ends with``, ``regex``;
+            number: ``is``, ``is not``, ``is greater than``/``>``,
+            ``is less than``/``<``, ``is greater than or equal to``/``>=``,
+            ``is less than or equal to``/``<=``, ``is between``,
+            ``is not between``; date: ``is before``, ``is on or before``,
+            ``is after``, ``is on or after``, ``is between``, ``is not between``;
+            option: ``is``, ``is not``, ``is any of``, ``is none of``. Any
+            dataType also accepts ``exists`` / ``not exists``.
         values: Operand list. A scalar is coerced to a single-element list.
+            ``is between`` takes two values; ``exists`` / ``not exists`` take
+            none.
 
     Example::
 
         FieldFilter("config", "lr", "number", ">", [0.001])
+        FieldFilter("config", "lr", "number", "is between", [0.1, 0.9])
         FieldFilter("config", "model", "text", "contains", "gpt")
+        FieldFilter("config", "checkpoint", "text", "exists")
 
     Raises:
-        ValueError: If ``source``, ``dataType``, or ``operator`` is not a
-            recognised value.
+        ValueError: If ``source`` or ``dataType`` is unrecognised, or
+            ``operator`` is not valid for ``dataType``.
     """
 
     source: str
@@ -119,10 +166,11 @@ class FieldFilter:
                 f'FieldFilter dataType must be one of {sorted(_FILTER_DATATYPES)}, '
                 f'got {self.dataType!r}'
             )
-        if self.operator not in _FILTER_OPERATORS:
+        allowed = _allowed_operators(self.dataType)
+        if self.operator not in allowed:
             raise ValueError(
-                f'FieldFilter operator must be one of {sorted(_FILTER_OPERATORS)}, '
-                f'got {self.operator!r}'
+                f'FieldFilter operator {self.operator!r} is not valid for '
+                f'dataType {self.dataType!r}; expected one of {sorted(allowed)}'
             )
         # Accept a bare scalar for convenience (e.g. operator "is").
         if not isinstance(self.values, (list, tuple)):
