@@ -1465,3 +1465,60 @@ class TestCaptionEndToEndClientPath:
         assert os.path.dirname(staged) == os.path.realpath(str(files_dir))
         assert '/' not in rec.file_name and '\\' not in rec.file_name
         assert os.path.exists(rec.local_path)
+
+
+class TestLogItemResilience:
+    """Native-API resilience: a single bad log item must not abort the batch
+    or crash the caller, and must be surfaced loudly (not silently swallowed).
+    This is the property the wandb shim used to (silently) provide; owning it at
+    the native API means every entry point gets it.
+    """
+
+    def _make_op(self, tmp_path, enqueue_metrics_sink):
+        import types
+
+        from pluto.op import Op
+
+        os.makedirs(tmp_path / 'files', exist_ok=True)
+
+        def _enqueue_file(**kwargs):
+            raise OSError(36, 'File name too long')
+
+        op = Op.__new__(Op)
+        op._step = 0
+        op._iface = None
+        op._dropped_item_warned = set()
+        op.settings = types.SimpleNamespace(get_dir=lambda: str(tmp_path), meta=[])
+        op._sync_manager = types.SimpleNamespace(
+            enqueue_file=_enqueue_file,
+            enqueue_metrics=lambda m, ts, step: enqueue_metrics_sink.append(m),
+        )
+        return op
+
+    def test_bad_item_dropped_loudly_batch_survives(self, tmp_path, caplog):
+        import logging
+
+        metrics_sink = []
+        op = self._make_op(tmp_path, metrics_sink)
+
+        png = tmp_path / 'src.png'
+        png.write_bytes(bytes.fromhex('89504e470d0a1a0a') + b'\x00' * 64)
+        bad = pluto.Image(str(png), caption='boom')
+
+        with caplog.at_level(logging.DEBUG, logger='pluto'):
+            # A good metric and a file whose enqueue fails, in the same call.
+            op._log_via_sync({'loss': 0.5, 'eval/img': bad}, step=1)
+
+        # Sibling metric still reached the sync manager (batch not aborted).
+        assert metrics_sink and 0.5 in metrics_sink[0].values()
+        # The drop was surfaced at error, not swallowed.
+        errors = [r for r in caplog.records if r.levelno == logging.ERROR]
+        assert any('OSError' in r.message for r in errors)
+
+        # Same (key, exc-type) again -> deduped to debug, no new error/warning.
+        caplog.clear()
+        with caplog.at_level(logging.DEBUG, logger='pluto'):
+            op._log_via_sync(
+                {'eval/img': pluto.Image(str(png), caption='boom2')}, step=2
+            )
+        assert not [r for r in caplog.records if r.levelno >= logging.WARNING]

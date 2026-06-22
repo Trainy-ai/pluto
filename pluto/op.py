@@ -422,6 +422,9 @@ class Op:
         self._queue: queue.Queue[QueueItem] = queue.Queue()
         self._finished = False
         self._finish_lock = threading.Lock()
+        # (log-key, exc-type) pairs already surfaced at error from a dropped log
+        # item, so a per-step failure is shouted once then drops to debug.
+        self._dropped_item_warned: set = set()
         atexit.register(self.finish)
 
     def _init_sync_manager(self) -> None:
@@ -599,7 +602,15 @@ class Op:
                 self._register_meta_sync(k, items[0], new_metric_names, new_file_meta)
 
             for item in items:
-                self._process_log_item_sync(k, item, metrics, timestamp_ms)
+                try:
+                    self._process_log_item_sync(k, item, metrics, timestamp_ms)
+                except Exception as e:
+                    # One bad item (e.g. media that can't be encoded/staged)
+                    # must not abort the rest of the batch or crash the caller's
+                    # training loop -- logging is best-effort. Drop just this
+                    # item, loudly, and keep going so sibling metrics/files in
+                    # the same call still reach the server.
+                    self._warn_dropped_item(k, item, e)
 
         if metrics:
             self._sync_manager.enqueue_metrics(metrics, timestamp_ms, self._step)
@@ -607,6 +618,26 @@ class Op:
         # Register new metric/file names with server (required for dashboard display)
         if (new_metric_names or new_file_meta) and self._iface:
             self._iface._update_meta(num=new_metric_names, df=dict(new_file_meta))
+
+    def _warn_dropped_item(self, key: str, value: Any, exc: Exception) -> None:
+        """Report a log item dropped due to an unexpected error.
+
+        Surfaced at the native API so every entry point (direct log(), and the
+        wandb/neptune/lightning shims alike) gets the same visibility -- a shim
+        catching exceptions is then only defense-in-depth, not the sole signal.
+        Logged once per (key, exc-type) at error, then at debug, so a failure
+        that recurs every step is shouted once rather than flooding.
+        """
+        seen = (key, type(exc).__name__)
+        detail = (
+            f'{tag}: dropped {key!r} ({type(value).__name__}): '
+            f'{type(exc).__name__}: {exc}'
+        )
+        if seen in self._dropped_item_warned:
+            logger.debug(detail)
+            return
+        self._dropped_item_warned.add(seen)
+        logger.error(f'{detail} (further occurrences at debug)')
 
     def _is_numeric_value(self, value: Any) -> bool:
         """Check if value is a numeric type (int, float, or tensor)."""
