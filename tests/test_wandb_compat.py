@@ -287,6 +287,61 @@ def test_log_routes_strings_to_config_not_metrics():
     assert 'checkpoint/r2_path' not in logged
 
 
+def test_log_failure_unexpected_error_is_loud_then_deduped(caplog):
+    """A non-network failure (e.g. OSError) must surface at ERROR, not vanish
+    at debug -- that silent debug-swallow is what hid the long-filename bug.
+    A recurring identical failure is shouted once, then drops to debug."""
+    import logging
+
+    wrapper, pluto_run = _make_wrapper()
+    pluto_run.log.side_effect = OSError(36, 'File name too long')
+
+    with mock.patch('pluto.sentry.capture_exception') as cap:
+        with caplog.at_level(logging.DEBUG, logger='pluto.compat.wandb'):
+            wrapper.log({'loss': 0.1})  # first occurrence
+            errors = [r for r in caplog.records if r.levelno == logging.ERROR]
+            assert len(errors) == 1
+            assert 'OSError' in errors[0].message
+            # wandb itself is never impacted: the wrapped run.log still ran.
+            wrapper._wandb_run.log.assert_called()
+            # Reported to Sentry once, with the real exception.
+            assert cap.call_count == 1
+            assert isinstance(cap.call_args.args[0], OSError)
+
+            caplog.clear()
+            wrapper.log({'loss': 0.2})  # same (context, type) -> deduped to debug
+            assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+            assert any(
+                r.levelno == logging.DEBUG and 'OSError' in r.message
+                for r in caplog.records
+            )
+            assert cap.call_count == 1  # no second telemetry event
+
+
+def test_log_failure_httpx_error_stays_at_debug(caplog):
+    """Transient network errors are noisy and already retried by the sync
+    layer, so they must stay at debug even on the first occurrence."""
+    import logging
+
+    import httpx
+
+    wrapper, pluto_run = _make_wrapper()
+    pluto_run.log.side_effect = httpx.ConnectError('connection refused')
+
+    with mock.patch('pluto.sentry.capture_exception') as cap:
+        with caplog.at_level(logging.DEBUG, logger='pluto.compat.wandb'):
+            wrapper.log({'loss': 0.1})
+
+        assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+        assert any(
+            'Failed to log media/metrics' in r.message
+            for r in caplog.records
+            if r.levelno == logging.DEBUG
+        )
+        # Transient network errors are not telemetry-worthy.
+        cap.assert_not_called()
+
+
 def test_log_forwards_numpy_scalars_as_metrics():
     """np.int64/np.float32 must reach Pluto metrics, not be dropped."""
     np = pytest.importorskip('numpy')
