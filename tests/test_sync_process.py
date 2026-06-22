@@ -1377,16 +1377,52 @@ class TestCaptionEndToEndClientPath:
             else:
                 assert payload[log_name]['caption'] == expected
 
-    def test_long_caption_does_not_drop_file(self, tmp_path):
-        """A long caption must not make _mkcopy raise ENAMETOOLONG.
+    # A synthetic structured caption (sanitized-form params), long enough to
+    # overflow NAME_MAX once combined with uuid + sha256 + ext.
+    _LONG_CAPTION = (
+        'group-a--key1-val1--key2-val2--key3-val3--key4-val4--key5-val5--key6'
+        '--group-b--key7-val7--key8-val8--key9-val9--key10-val10'
+        '--group-c--key11-val11--key12-val12'
+    )
 
-        Regression for the wandb compat shim baking long generation-param
-        captions into the staging filename: ``{caption}.{uuid}-{sha256}{ext}``
-        could exceed the 255-byte NAME_MAX, so shutil.copyfile raised
-        OSError(ENAMETOOLONG). That error propagated out of _enqueue_file_sync
-        and was swallowed by the shim's try/except, silently dropping the file
-        (and never registering its log). The on-disk name must be bounded while
-        the full caption is preserved for the server-side fileName.
+    def _captioned_media(self, tmp_path, kind, caption):
+        """Build one media object of ``kind`` with ``caption``.
+
+        Covers both staging-path call sites: file-path inputs stage in
+        _mkcopy() (after File.__init__ sanitizes _name); the in-memory Text
+        input stages in load() (before sanitization).
+        """
+        if kind == 'image':
+            p = tmp_path / 'src.png'
+            p.write_bytes(bytes.fromhex('89504e470d0a1a0a') + b'\x00' * 64)
+            return pluto.Image(str(p), caption=caption)
+        if kind == 'audio':
+            p = tmp_path / 'src.wav'
+            p.write_bytes(b'RIFF\x00\x00\x00\x00WAVE' + b'\x00' * 64)
+            return pluto.Audio(str(p), caption=caption)
+        if kind == 'video':
+            p = tmp_path / 'src.mp4'
+            p.write_bytes(b'\x00\x00\x00\x18ftypmp42' + b'\x00' * 64)
+            return pluto.Video(str(p), caption=caption)
+        if kind == 'text':
+            return pluto.Text('log line', caption=caption)
+        if kind == 'artifact':
+            p = tmp_path / 'src.json'
+            p.write_text('{"k": 1}')
+            return pluto.Artifact(str(p), caption=caption)
+        raise ValueError(kind)
+
+    @pytest.mark.parametrize('kind', ['image', 'audio', 'video', 'text', 'artifact'])
+    def test_long_caption_does_not_drop_file(self, tmp_path, kind):
+        """A long caption must not make _mkcopy/load raise ENAMETOOLONG.
+
+        The staging copy is named ``{caption}.{uuid}-{sha256}{ext}`` for *every*
+        media type, so a long caption could exceed the 255-byte NAME_MAX and
+        make shutil.copyfile/open raise OSError(ENAMETOOLONG). That error
+        propagated out of _enqueue_file_sync and was swallowed by the shim's
+        try/except, silently dropping the file (and never registering its log).
+        The on-disk name must be bounded while the full caption is preserved for
+        the server-side fileName. Parametrized across all media types.
         """
         import types
 
@@ -1405,19 +1441,10 @@ class TestCaptionEndToEndClientPath:
             _step=1,
         )
 
-        mp4 = tmp_path / 'src.mp4'
-        mp4.write_bytes(b'\x00\x00\x00\x18ftypmp42' + b'\x00' * 64)
-        # A synthetic structured caption (sanitized-form params), long
-        # enough to overflow NAME_MAX once combined with uuid + sha256 + ext.
-        long_caption = (
-            'group-a--key1-val1--key2-val2--key3-val3--key4-val4--key5-val5--key6'
-            '--group-b--key7-val7--key8-val8--key9-val9--key10-val10'
-            '--group-c--key11-val11--key12-val12'
-        )
-        obj = pluto.Video(str(mp4), caption=long_caption)
+        obj = self._captioned_media(tmp_path, kind, self._LONG_CAPTION)
 
         # Must not raise (previously raised OSError: File name too long).
-        Op._enqueue_file_sync(fake_op, 'eval-videos/x', obj, 1705600000000)
+        Op._enqueue_file_sync(fake_op, f'eval/{kind}', obj, 1705600000000)
 
         records = store.get_pending_files(limit=10)
         assert len(records) == 1
@@ -1426,8 +1453,8 @@ class TestCaptionEndToEndClientPath:
         assert os.path.exists(rec.local_path)
         assert len(os.path.basename(rec.local_path).encode('utf-8')) <= NAME_MAX
         # Full caption is preserved for the server-side fileName/display.
-        assert rec.caption == long_caption
-        assert long_caption in rec.file_name
+        assert rec.caption == self._LONG_CAPTION
+        assert self._LONG_CAPTION in rec.file_name
 
     def test_caption_with_separators_is_traversal_safe(self, tmp_path):
         """A caption with path separators / '..' must not escape the files dir.
