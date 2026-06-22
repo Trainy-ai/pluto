@@ -202,6 +202,14 @@ class WandbRunWrapper:
             f'pluto.compat.wandb: {detail} '
             '(Pluto copy dropped; wandb unaffected; further occurrences at debug)'
         )
+        # Telemetry: report the failure once per (context, type) so we see these
+        # in the wild. Self-gates on PLUTO_DISABLE_TELEMETRY / CI; never raises.
+        try:
+            from pluto import sentry
+
+            sentry.capture_exception(exc)
+        except Exception:
+            pass
 
     def log(self, data: Dict[str, Any], step=None, commit=None, **kwargs):
         """Log metrics to both wandb and Pluto.

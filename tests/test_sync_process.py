@@ -1505,20 +1505,25 @@ class TestLogItemResilience:
         png.write_bytes(bytes.fromhex('89504e470d0a1a0a') + b'\x00' * 64)
         bad = pluto.Image(str(png), caption='boom')
 
-        with caplog.at_level(logging.DEBUG, logger='pluto'):
-            # A good metric and a file whose enqueue fails, in the same call.
-            op._log_via_sync({'loss': 0.5, 'eval/img': bad}, step=1)
+        with patch('pluto.sentry.capture_exception') as cap:
+            with caplog.at_level(logging.DEBUG, logger='pluto'):
+                # A good metric and a file whose enqueue fails, in one call.
+                op._log_via_sync({'loss': 0.5, 'eval/img': bad}, step=1)
 
-        # Sibling metric still reached the sync manager (batch not aborted).
-        assert metrics_sink and 0.5 in metrics_sink[0].values()
-        # The drop was surfaced at error, not swallowed.
-        errors = [r for r in caplog.records if r.levelno == logging.ERROR]
-        assert any('OSError' in r.message for r in errors)
+            # Sibling metric still reached the sync manager (batch not aborted).
+            assert metrics_sink and 0.5 in metrics_sink[0].values()
+            # The drop was surfaced at error, not swallowed.
+            errors = [r for r in caplog.records if r.levelno == logging.ERROR]
+            assert any('OSError' in r.message for r in errors)
+            # ...and reported to Sentry telemetry (with the real exception).
+            assert cap.call_count == 1
+            assert isinstance(cap.call_args.args[0], OSError)
 
-        # Same (key, exc-type) again -> deduped to debug, no new error/warning.
-        caplog.clear()
-        with caplog.at_level(logging.DEBUG, logger='pluto'):
-            op._log_via_sync(
-                {'eval/img': pluto.Image(str(png), caption='boom2')}, step=2
-            )
-        assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+            # Same (key, exc-type) again -> deduped: debug only, no new Sentry.
+            caplog.clear()
+            with caplog.at_level(logging.DEBUG, logger='pluto'):
+                op._log_via_sync(
+                    {'eval/img': pluto.Image(str(png), caption='boom2')}, step=2
+                )
+            assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+            assert cap.call_count == 1

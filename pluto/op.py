@@ -638,6 +638,15 @@ class Op:
             return
         self._dropped_item_warned.add(seen)
         logger.error(f'{detail} (further occurrences at debug)')
+        # Telemetry: report once per (key, exc-type) so we can spot and fix
+        # these in the wild (ships the exception + traceback). Self-gates on
+        # PLUTO_DISABLE_TELEMETRY / CI and never raises.
+        try:
+            from pluto import sentry
+
+            sentry.capture_exception(exc)
+        except Exception:
+            pass
 
     def _is_numeric_value(self, value: Any) -> bool:
         """Check if value is a numeric type (int, float, or tensor)."""
