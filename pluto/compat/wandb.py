@@ -103,6 +103,10 @@ class WandbRunWrapper:
         # redundant update_config() calls when a str/bool/config value is logged
         # unchanged every step (a common pattern: phase/status/checkpoint paths).
         self._last_logged_config: Dict[str, Any] = {}
+        # (context, exc-type) pairs already surfaced at error, so a failure that
+        # recurs every step is shouted once then drops to debug (see
+        # _log_pluto_failure).
+        self._pluto_failure_warned: set = set()
 
         if self._pluto_run:
             atexit.register(self._atexit_cleanup_pluto)
@@ -168,6 +172,36 @@ class WandbRunWrapper:
             thread.join(timeout=1.0)
         else:
             logger.debug(f'pluto.compat.wandb: Pluto finish timed out after {timeout}s')
+
+    def _log_pluto_failure(self, context: str, exc: Exception) -> None:
+        """Report a swallowed Pluto-side failure at a severity matching its kind.
+
+        The shim must never let a Pluto problem break wandb logging, so callers
+        catch broadly. But severity should depend on the cause:
+
+        - Transient/expected network errors (httpx) are noisy and already
+          retried by the sync layer -> keep them at debug.
+        - Anything else (e.g. an OSError from an oversized staging filename, or
+          a bug) means the user's data was silently dropped and they'd otherwise
+          be left guessing -> surface it at error, once per (context, type) so a
+          per-step failure is shouted once then drops to debug.
+        """
+        import httpx
+
+        if isinstance(exc, httpx.HTTPError):
+            logger.debug(f'pluto.compat.wandb: {context}: {exc}')
+            return
+
+        detail = f'{context}: {type(exc).__name__}: {exc}'
+        key = (context, type(exc).__name__)
+        if key in self._pluto_failure_warned:
+            logger.debug(f'pluto.compat.wandb: {detail}')
+            return
+        self._pluto_failure_warned.add(key)
+        logger.error(
+            f'pluto.compat.wandb: {detail} '
+            '(Pluto copy dropped; wandb unaffected; further occurrences at debug)'
+        )
 
     def log(self, data: Dict[str, Any], step=None, commit=None, **kwargs):
         """Log metrics to both wandb and Pluto.
@@ -274,9 +308,7 @@ class WandbRunWrapper:
                             log_kwargs['step'] = actual_step
                         self._pluto_run.log(pluto_data, **log_kwargs)
                     except Exception as e:
-                        logger.debug(
-                            f'pluto.compat.wandb: Failed to log metrics to Pluto: {e}'
-                        )
+                        self._log_pluto_failure('Failed to log media/metrics', e)
 
                 if pluto_config:
                     try:
@@ -289,11 +321,9 @@ class WandbRunWrapper:
                         # even if a future branch stores a user object directly.
                         self._last_logged_config.update(copy.deepcopy(pluto_config))
                     except Exception as e:
-                        logger.debug(
-                            f'pluto.compat.wandb: Failed to sync config to Pluto: {e}'
-                        )
+                        self._log_pluto_failure('Failed to sync config', e)
             except Exception as e:
-                logger.debug(f'pluto.compat.wandb: Failed to prepare Pluto data: {e}')
+                self._log_pluto_failure('Failed to prepare Pluto data', e)
 
         return result
 
