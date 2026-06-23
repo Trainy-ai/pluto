@@ -482,8 +482,8 @@ def test_e2e_list_runs_offset_pagination():
     assert [r['id'] for r in page2] == [id_a], 'offset=1 should skip to the older run'
 
 
-def test_e2e_list_runs_field_filter():
-    """Verify fieldFilters filters runs by a config value, server-side."""
+def test_e2e_list_runs_filter():
+    """Verify the wandb-style `filters` query filters by a config value."""
     marker = f'e2e-ff-{int(time.time())}'
     run = pluto.init(
         project=TESTING_PROJECT_NAME,
@@ -496,9 +496,7 @@ def test_e2e_list_runs_field_filter():
     def _query():
         runs = pq.list_runs(
             TESTING_PROJECT_NAME,
-            field_filters=[
-                pq.FieldFilter('config', 'e2e_filter_marker', 'text', 'is', [marker])
-            ],
+            filters={'config.e2e_filter_marker': marker},
             limit=200,
         )
         ids = [r['id'] for r in runs]
@@ -507,7 +505,7 @@ def test_e2e_list_runs_field_filter():
     # Field values are indexed asynchronously; poll for eventual consistency.
     assert _poll(
         fn=_query, check=lambda found: found
-    ), f'Run {run_id} not found via fieldFilters on config.e2e_filter_marker'
+    ), f'Run {run_id} not found via filters on config.e2e_filter_marker'
 
 
 # ---------------------------------------------------------------------------

@@ -237,150 +237,60 @@ class TestListRuns:
         call_args = client._client.get.call_args
         assert 'offset' not in call_args[1]['params']
 
-    def test_status_filter(self, client, mock_response):
+    def test_filters_serialized_as_json(self, client, mock_response):
         client._client.get.return_value = mock_response(200, {'runs': []})
-        client.list_runs('proj', status=['RUNNING', 'FAILED'])
-        call_args = client._client.get.call_args
-        assert call_args[1]['params']['status'] == 'RUNNING,FAILED'
-
-    def test_bad_status_raises(self, client, mock_response):
-        client._client.get.return_value = mock_response(200, {'runs': []})
-        with pytest.raises(ValueError, match='invalid status'):
-            client.list_runs('proj', status=['RUNNING', 'NOPE'])
-
-    def test_heartbeat_filters(self, client, mock_response):
-        client._client.get.return_value = mock_response(200, {'runs': []})
-        client.list_runs(
-            'proj',
-            heartbeat_after='2026-06-01T00:00:00Z',
-            heartbeat_before='2026-06-22T00:00:00Z',
-        )
-        params = client._client.get.call_args[1]['params']
-        assert params['heartbeatAfter'] == '2026-06-01T00:00:00Z'
-        assert params['heartbeatBefore'] == '2026-06-22T00:00:00Z'
-
-    def test_field_filters_objects(self, client, mock_response):
-        from pluto.query import FieldFilter
-
-        client._client.get.return_value = mock_response(200, {'runs': []})
-        client.list_runs(
-            'proj',
-            field_filters=[FieldFilter('config', 'lr', 'number', '>', [0.001])],
-        )
-        call_args = client._client.get.call_args
-        sent = json.loads(call_args[1]['params']['fieldFilters'])
-        assert sent == [
-            {
-                'source': 'config',
-                'key': 'lr',
-                'dataType': 'number',
-                'operator': '>',
-                'values': [0.001],
-            }
-        ]
-
-    def test_field_filters_raw_dicts(self, client, mock_response):
-        client._client.get.return_value = mock_response(200, {'runs': []})
-        term = {
-            'source': 'systemMetadata',
-            'key': 'gpu',
-            'dataType': 'text',
-            'operator': 'contains',
-            'values': ['a100'],
+        flt = {
+            '$or': [
+                {'state': 'running'},
+                {'heartbeat_at': {'$gte': '2026-06-22T00:00:00Z'}},
+            ]
         }
-        client.list_runs('proj', field_filters=[term])
-        call_args = client._client.get.call_args
-        assert json.loads(call_args[1]['params']['fieldFilters']) == [term]
+        client.list_runs('proj', filters=flt)
+        params = client._client.get.call_args[1]['params']
+        assert json.loads(params['filter']) == flt
 
-    def test_field_filters_invalid_item_type_raises(self, client, mock_response):
+    def test_filters_config_leaf(self, client, mock_response):
         client._client.get.return_value = mock_response(200, {'runs': []})
-        with pytest.raises(TypeError, match='FieldFilter or dict'):
-            client.list_runs('proj', field_filters=['not-a-filter'])
+        client.list_runs('proj', filters={'config.lr': {'$gt': 0.001}})
+        params = client._client.get.call_args[1]['params']
+        assert json.loads(params['filter']) == {'config.lr': {'$gt': 0.001}}
 
-    def test_field_filters_too_many_raises(self, client, mock_response):
-        from pluto.query import FieldFilter
-
+    def test_filters_unknown_field_raises(self, client, mock_response):
         client._client.get.return_value = mock_response(200, {'runs': []})
-        terms = [FieldFilter('config', f'k{i}', 'text', 'is', ['x']) for i in range(51)]
-        with pytest.raises(ValueError, match='At most 50'):
-            client.list_runs('proj', field_filters=terms)
+        with pytest.raises(ValueError, match='unknown filter field'):
+            client.list_runs('proj', filters={'bogus': 1})
+
+    def test_filters_unknown_operator_raises(self, client, mock_response):
+        client._client.get.return_value = mock_response(200, {'runs': []})
+        with pytest.raises(ValueError, match='unknown leaf operator'):
+            client.list_runs('proj', filters={'config.lr': {'$bogus': 1}})
+
+    def test_filters_unknown_boolean_op_raises(self, client, mock_response):
+        client._client.get.return_value = mock_response(200, {'runs': []})
+        with pytest.raises(ValueError, match='unknown boolean operator'):
+            client.list_runs('proj', filters={'$xor': [{'state': 'running'}]})
 
 
-class TestFieldFilter:
-    def test_scalar_values_coerced_to_list(self):
-        from pluto.query import FieldFilter
+class TestValidateFilters:
+    def test_accepts_nested_boolean(self):
+        from pluto.query import _validate_filters
 
-        f = FieldFilter('config', 'model', 'text', 'is', 'gpt')
-        assert f.values == ['gpt']
-        assert f.to_dict()['values'] == ['gpt']
-
-    def test_bad_source_raises(self):
-        from pluto.query import FieldFilter
-
-        with pytest.raises(ValueError, match='source'):
-            FieldFilter('cfg', 'lr', 'number', '>', [1])
-
-    def test_bad_datatype_raises(self):
-        from pluto.query import FieldFilter
-
-        with pytest.raises(ValueError, match='dataType'):
-            FieldFilter('config', 'lr', 'float', '>', [1])
-
-    def test_bad_operator_raises(self):
-        from pluto.query import FieldFilter
-
-        with pytest.raises(ValueError, match='operator'):
-            FieldFilter('config', 'lr', 'number', 'gt', [1])
-
-    @pytest.mark.parametrize(
-        'source,key,dtype,op,vals',
-        [
-            ('config', 'lr', 'number', 'is between', [0.1, 0.9]),
-            ('config', 'lr', 'number', 'is greater than', [0.1]),
-            ('config', 'ts', 'date', 'is before', ['2026-01-01']),
-            ('config', 'ts', 'date', 'is on or after', ['2026-01-01']),
-            ('config', 'name', 'text', 'starts with', ['gpt']),
-            ('systemMetadata', 'gpu', 'option', 'is any of', ['a100', 'h100']),
-            ('config', 'checkpoint', 'text', 'exists', []),
-            ('config', 'lr', 'number', 'not exists', []),
-        ],
-    )
-    def test_valid_operators_accepted(self, source, key, dtype, op, vals):
-        from pluto.query import FieldFilter
-
-        f = FieldFilter(source, key, dtype, op, vals)
-        assert f.to_dict()['operator'] == op
-
-    @pytest.mark.parametrize(
-        'dtype,op',
-        [
-            ('number', 'contains'),  # text-only operator on number
-            ('date', 'regex'),  # text-only operator on date
-            ('number', 'is any of'),  # option-only operator on number
-            ('option', '>'),  # number-only operator on option
-            ('text', 'is between'),  # number-only operator on text
-        ],
-    )
-    def test_operator_rejected_for_wrong_datatype(self, dtype, op):
-        from pluto.query import FieldFilter
-
-        with pytest.raises(ValueError, match='not valid for dataType'):
-            FieldFilter('config', 'k', dtype, op, ['x'])
-
-    def test_flat_operator_set_is_union(self):
-        # The flat set the contract test compares against must be exactly the
-        # union of the per-dataType sets plus the common operators.
-        from pluto.query import (
-            _FILTER_OPERATORS,
-            _FILTER_OPERATORS_BY_DATATYPE,
-            _FILTER_OPERATORS_COMMON,
+        _validate_filters(
+            {
+                '$and': [
+                    {'$or': [{'status': 'RUNNING'}, {'status': 'FAILED'}]},
+                    {'$not': {'config.lr': {'$lt': 0.1}}},
+                    {'tags': {'$in': ['a', 'b']}},
+                    {'summaryMetrics.loss': {'$lte': 0.5}},
+                ]
+            }
         )
 
-        expected = set(_FILTER_OPERATORS_COMMON)
-        for ops in _FILTER_OPERATORS_BY_DATATYPE.values():
-            expected |= ops
-        assert _FILTER_OPERATORS == expected
-        assert len(_FILTER_OPERATORS) == 26
+    def test_and_or_require_list(self):
+        from pluto.query import _validate_filters
+
+        with pytest.raises(ValueError, match=r'\$or expects a list'):
+            _validate_filters({'$or': {'state': 'running'}})
 
 
 # ---------------------------------------------------------------------------
@@ -699,12 +609,9 @@ class TestModuleFunctions:
             search=None,
             tags=None,
             limit=50,
-            field_filters=None,
             sort=None,
             offset=0,
-            status=None,
-            heartbeat_after=None,
-            heartbeat_before=None,
+            filters=None,
         )
 
         # Clean up

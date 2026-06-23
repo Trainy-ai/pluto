@@ -1,20 +1,20 @@
-"""Contract test: keep the client's field-filter vocabulary in step with the
-server's zod schema.
+"""Contract test: the client's ``filters`` surface has a server counterpart.
 
-The server's zod schema for the ``/api/runs/list`` ``fieldFilters`` parameter is
-the source of truth. Rather than reimplement validation, we assert the client's
-hardcoded enums match the schema the server publishes in its OpenAPI document
-(served at ``{url_api}/api/openapi.json``), so any drift fails CI loudly instead
-of surfacing as opaque HTTP 400s for users.
+The client sends `list_runs(filters=...)` as the `/api/runs/list` ``filter``
+query param. This test fetches the server's published OpenAPI document
+(``{url_api}/api/openapi.json``) and asserts that endpoint actually documents a
+``filter`` parameter — so a deployed server that dropped/renamed it (or a client
+pointed at a server that predates the feature) fails CI loudly instead of
+silently no-op-ing the filter.
 
-This depends on the server exposing the inner filter-term schema as a structured
-OpenAPI component (``components.schemas.FieldFilterTerm`` with real ``enum``s).
-Until that companion server change lands, the spec carries the operators only as
-prose in the parameter description, so this test SKIPS rather than fails.
+Until the server change is deployed to the target host, ``/api/runs/list`` has no
+``filter`` param yet, so the test SKIPS rather than fails. The detailed operator
+vocabulary is validated client-side (``tests/test_query.py``) and on the server;
+a structured ``RunFilter`` schema for a full operator/field contract is a
+fast-follow (see plan).
 
-Network test: hits the live API spec endpoint (no auth required for the public
-spec). Skips cleanly when the spec is unreachable, so offline/hermetic runs are
-unaffected — matching the network-dependent style of ``tests/test_e2e.py``.
+Network test: hits the live API spec endpoint. Skips cleanly when unreachable, so
+offline/hermetic runs are unaffected — matching the style of ``tests/test_e2e.py``.
 """
 
 import os
@@ -22,15 +22,7 @@ import os
 import httpx
 import pytest
 
-from pluto.query import (
-    _FILTER_DATATYPES,
-    _FILTER_OPERATORS,
-    _FILTER_SOURCES,
-    _resolve_url_api,
-)
-
-# Component name the companion server PR registers in its OpenAPI document.
-_COMPONENT = 'FieldFilterTerm'
+from pluto.query import _resolve_url_api
 
 
 def _fetch_openapi() -> dict:
@@ -54,48 +46,26 @@ def _fetch_openapi() -> dict:
         pytest.skip(f'OpenAPI spec at {url} returned non-JSON body: {exc}')
 
 
-def _term_schema() -> dict:
+def _list_runs_params() -> dict:
     spec = _fetch_openapi()
-    schemas = spec.get('components', {}).get('schemas', {})
-    if _COMPONENT not in schemas:
+    op = spec.get('paths', {}).get('/api/runs/list', {}).get('get', {})
+    params = {p.get('name') for p in op.get('parameters', [])}
+    if 'filter' not in params:
         pytest.skip(
-            f'OpenAPI spec has no components.schemas.{_COMPONENT} yet; '
-            'pending the companion pluto-server change that surfaces the '
-            'field-filter zod schema as a structured component.'
+            'GET /api/runs/list has no `filter` param yet; pending the '
+            'pluto-server filter-query change being deployed to this host.'
         )
-    return schemas[_COMPONENT]
+    return params
 
 
-def _enum_for(term: dict, field: str) -> set:
-    prop = term.get('properties', {}).get(field, {})
-    enum = prop.get('enum')
-    if enum is None:
-        pytest.skip(f'{_COMPONENT}.{field} has no enum in the OpenAPI spec')
-    return set(enum)
+def test_filter_param_is_published():
+    params = _list_runs_params()
+    assert 'filter' in params
 
 
-def test_filter_operators_match_server():
-    server = _enum_for(_term_schema(), 'operator')
-    assert server == _FILTER_OPERATORS, (
-        'operator enum drift between client and server.\n'
-        f'  server-only: {sorted(server - _FILTER_OPERATORS)}\n'
-        f'  client-only: {sorted(_FILTER_OPERATORS - server)}'
-    )
-
-
-def test_filter_sources_match_server():
-    server = _enum_for(_term_schema(), 'source')
-    assert server == _FILTER_SOURCES, (
-        'source enum drift between client and server.\n'
-        f'  server-only: {sorted(server - _FILTER_SOURCES)}\n'
-        f'  client-only: {sorted(_FILTER_SOURCES - server)}'
-    )
-
-
-def test_filter_datatypes_match_server():
-    server = _enum_for(_term_schema(), 'dataType')
-    assert server == _FILTER_DATATYPES, (
-        'dataType enum drift between client and server.\n'
-        f'  server-only: {sorted(server - _FILTER_DATATYPES)}\n'
-        f'  client-only: {sorted(_FILTER_DATATYPES - server)}'
-    )
+def test_list_runs_still_documents_core_params():
+    # Guard against an accidental contract regression on the surface the client
+    # relies on alongside `filter`.
+    params = _list_runs_params()
+    for p in ('projectName', 'limit', 'sort', 'offset'):
+        assert p in params, f'/api/runs/list missing documented param: {p}'

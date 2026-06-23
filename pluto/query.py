@@ -23,7 +23,6 @@ import logging
 import os
 import time
 import warnings
-from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
@@ -47,148 +46,89 @@ class QueryError(Exception):
         super().__init__(message)
 
 
-# Field-filter vocabulary, kept in step with the server's zod schema for the
-# ``/api/runs/list`` ``fieldFilters`` parameter (pluto-server
-# ``buildValueCondition``). Operators are scoped to the dataType they apply to —
-# the server dispatches on dataType — so e.g. ``contains`` is text-only and ``>``
-# is number-only. ``exists``/``not exists`` work for any dataType.
-_FILTER_SOURCES = {'config', 'systemMetadata'}
-_FILTER_DATATYPES = {'text', 'number', 'date', 'option'}
-_FILTER_OPERATORS_COMMON = {'exists', 'not exists'}
-_FILTER_OPERATORS_BY_DATATYPE = {
-    'text': {
-        'contains',
-        'does not contain',
-        'equals',
-        'is',
-        'is not',
-        'starts with',
-        'ends with',
-        'regex',
-    },
-    'number': {
-        'is',
-        'is not',
-        'is greater than',
-        '>',
-        'is less than',
-        '<',
-        'is greater than or equal to',
-        '>=',
-        'is less than or equal to',
-        '<=',
-        'is between',
-        'is not between',
-    },
-    'date': {
-        'is before',
-        'is on or before',
-        'is after',
-        'is on or after',
-        'is between',
-        'is not between',
-    },
-    'option': {'is', 'is not', 'is any of', 'is none of'},
+# wandb-compatible vocabulary for the ``filters`` query (the ``/api/runs/list``
+# ``filter`` param). The server (pluto-server ``lib/queries/run-filter.ts``) is
+# the authority on detailed semantics; the client does a light structural check
+# so obvious mistakes fail fast with a clear ``ValueError`` instead of an opaque
+# HTTP 400.
+_FILTER_LEAF_OPS = {
+    '$eq',
+    '$ne',
+    '$gt',
+    '$gte',
+    '$lt',
+    '$lte',
+    '$in',
+    '$nin',
+    '$regex',
 }
-# Flat union — the single operator enum the server publishes in OpenAPI.
-# ``tests/test_contract.py`` asserts this equals
-# ``components.schemas.FieldFilterTerm.properties.operator.enum`` in the live
-# spec, so drift fails CI rather than surfacing as opaque HTTP 400s.
-_FILTER_OPERATORS = _FILTER_OPERATORS_COMMON.union(
-    *_FILTER_OPERATORS_BY_DATATYPE.values()
+# Recognised leaf field names (exact) plus dotted-prefix families.
+_FILTER_FIELDS = {
+    'state',
+    'status',
+    'heartbeat_at',
+    'heartbeatAt',
+    'created_at',
+    'createdAt',
+    'updated_at',
+    'updatedAt',
+    'name',
+    'displayName',
+    'display_name',
+    'tags',
+}
+_FILTER_FIELD_PREFIXES = (
+    'config.',
+    'systemMetadata.',
+    'summaryMetrics.',
+    'summary_metrics.',
 )
 
-
-def _allowed_operators(data_type: str) -> set:
-    """Operators valid for *data_type* (its dataType-specific set + common)."""
-    return (
-        _FILTER_OPERATORS_BY_DATATYPE.get(data_type, set()) | _FILTER_OPERATORS_COMMON
-    )
-
-
-# Server caps the filter set at 50 terms; reject early with a clear error.
-_MAX_FILTER_TERMS = 50
 # Server clamps offset to this range (MAX_JSON_SORT_OFFSET).
 _MAX_OFFSET = 100_000
-# Run lifecycle statuses accepted by the server's ``status`` filter.
-_RUN_STATUSES = {'RUNNING', 'COMPLETED', 'FAILED', 'TERMINATED', 'CANCELLED'}
 
 
-@dataclass
-class FieldFilter:
-    """A single server-side filter term for :meth:`Client.list_runs`.
+def _validate_filters(node: Any, _depth: int = 0) -> None:
+    """Light structural validation of a wandb-style ``filters`` dict.
 
-    Filters runs by an indexed ``config.*`` or ``systemMetadata.*`` field.
-    Multiple terms are AND-combined by the server.
-
-    Args:
-        source: ``"config"`` or ``"systemMetadata"``.
-        key: Dotted field path (e.g. ``"checkpoint.r2_prefix"``).
-        dataType: One of ``"text"``, ``"number"``, ``"date"``, ``"option"``.
-        operator: An operator valid for *dataType* (the server dispatches on
-            dataType). text: ``contains``, ``does not contain``, ``equals``,
-            ``is``, ``is not``, ``starts with``, ``ends with``, ``regex``;
-            number: ``is``, ``is not``, ``is greater than``/``>``,
-            ``is less than``/``<``, ``is greater than or equal to``/``>=``,
-            ``is less than or equal to``/``<=``, ``is between``,
-            ``is not between``; date: ``is before``, ``is on or before``,
-            ``is after``, ``is on or after``, ``is between``, ``is not between``;
-            option: ``is``, ``is not``, ``is any of``, ``is none of``. Any
-            dataType also accepts ``exists`` / ``not exists``.
-        values: Operand list. A scalar is coerced to a single-element list.
-            ``is between`` takes two values; ``exists`` / ``not exists`` take
-            none.
-
-    Example::
-
-        FieldFilter("config", "lr", "number", ">", [0.001])
-        FieldFilter("config", "lr", "number", "is between", [0.1, 0.9])
-        FieldFilter("config", "model", "text", "contains", "gpt")
-        FieldFilter("config", "checkpoint", "text", "exists")
-
-    Raises:
-        ValueError: If ``source`` or ``dataType`` is unrecognised, or
-            ``operator`` is not valid for ``dataType``.
+    Recursively checks boolean operators (``$and``/``$or``/``$not``), leaf
+    operators, and field names against the supported vocabulary, raising
+    ``ValueError`` on anything unrecognised. The server enforces full semantics.
     """
-
-    source: str
-    key: str
-    dataType: str
-    operator: str
-    values: List[Any] = field(default_factory=list)
-
-    def __post_init__(self) -> None:
-        if self.source not in _FILTER_SOURCES:
-            raise ValueError(
-                f'FieldFilter source must be one of {sorted(_FILTER_SOURCES)}, '
-                f'got {self.source!r}'
-            )
-        if self.dataType not in _FILTER_DATATYPES:
-            raise ValueError(
-                f'FieldFilter dataType must be one of {sorted(_FILTER_DATATYPES)}, '
-                f'got {self.dataType!r}'
-            )
-        allowed = _allowed_operators(self.dataType)
-        if self.operator not in allowed:
-            raise ValueError(
-                f'FieldFilter operator {self.operator!r} is not valid for '
-                f'dataType {self.dataType!r}; expected one of {sorted(allowed)}'
-            )
-        # Accept a bare scalar for convenience (e.g. operator "is").
-        if not isinstance(self.values, (list, tuple)):
-            self.values = [self.values]
+    if _depth > 50:
+        raise ValueError('filters nested too deeply')
+    if not isinstance(node, dict):
+        raise ValueError(f'filters node must be a dict, got {type(node).__name__}')
+    for key, value in node.items():
+        if key in ('$and', '$or'):
+            if not isinstance(value, list):
+                raise ValueError(f'{key} expects a list')
+            for child in value:
+                _validate_filters(child, _depth + 1)
+        elif key == '$not':
+            _validate_filters(value, _depth + 1)
+        elif key.startswith('$'):
+            raise ValueError(f'unknown boolean operator: {key!r}')
         else:
-            self.values = list(self.values)
+            _validate_filter_field(key)
+            if isinstance(value, dict) and any(k.startswith('$') for k in value):
+                for op in value:
+                    if op not in _FILTER_LEAF_OPS:
+                        raise ValueError(
+                            f'unknown leaf operator {op!r} on field {key!r}; '
+                            f'expected one of {sorted(_FILTER_LEAF_OPS)}'
+                        )
 
-    def to_dict(self) -> Dict[str, Any]:
-        """Serialize to the server's filter-term JSON shape."""
-        return {
-            'source': self.source,
-            'key': self.key,
-            'dataType': self.dataType,
-            'operator': self.operator,
-            'values': self.values,
-        }
+
+def _validate_filter_field(field_name: str) -> None:
+    if field_name in _FILTER_FIELDS:
+        return
+    if any(
+        field_name.startswith(p) and len(field_name) > len(p)
+        for p in _FILTER_FIELD_PREFIXES
+    ):
+        return
+    raise ValueError(f'unknown filter field: {field_name!r}')
 
 
 class Client:
@@ -261,12 +201,9 @@ class Client:
         search: Optional[str] = None,
         tags: Optional[List[str]] = None,
         limit: int = 50,
-        field_filters: Optional[List[Union['FieldFilter', Dict[str, Any]]]] = None,
         sort: Optional[str] = None,
         offset: int = 0,
-        status: Optional[List[str]] = None,
-        heartbeat_after: Optional[str] = None,
-        heartbeat_before: Optional[str] = None,
+        filters: Optional[Dict[str, Any]] = None,
     ) -> List[Dict[str, Any]]:
         """List runs in a project.
 
@@ -276,11 +213,6 @@ class Client:
             tags: Filter by tags (AND logic). Only runs matching *all*
                 specified tags are returned.
             limit: Maximum number of runs to return (max 200).
-            field_filters: Server-side filters over ``config.*`` /
-                ``systemMetadata.*`` fields. A list of :class:`FieldFilter`
-                instances (or raw dicts in the same ``{source, key, dataType,
-                operator, values}`` shape). Terms are AND-combined. At most 50
-                terms.
             sort: Server-side ordering as ``[+|-]<field>`` (``-`` = descending).
                 Accepts built-in columns (``createdAt``, ``updatedAt``,
                 ``name``, ``status`` and their snake_case aliases),
@@ -291,25 +223,32 @@ class Client:
             offset: Skip-based pagination offset (0–100,000). Combine with
                 ``limit`` to page; advance ``offset`` until a short page is
                 returned.
-            status: Keep only runs whose status is in this list (OR within the
-                list). Allowed: ``RUNNING``, ``COMPLETED``, ``FAILED``,
-                ``TERMINATED``, ``CANCELLED``.
-            heartbeat_after: ISO-8601 timestamp; keep only runs whose last
-                logged-data time (heartbeat) is at or after this. Requires
-                ``project``.
-            heartbeat_before: ISO-8601 timestamp; keep only runs whose heartbeat
-                is at or before this (i.e. *stale*). Requires ``project``.
+            filters: A wandb-compatible MongoDB-style query (the OR-capable
+                filter surface). Boolean ``$and``/``$or``/``$not`` combine leaf
+                terms; each leaf is ``{field: value}`` (equality) or
+                ``{field: {$op: value}}`` with ops ``$eq``, ``$ne``, ``$gt``,
+                ``$gte``, ``$lt``, ``$lte``, ``$in``, ``$nin``, ``$regex``.
+                Fields: ``state``/``status``, ``heartbeat_at``,
+                ``created_at``/``updated_at``, ``name``, ``tags``,
+                ``config.<key>``, ``summaryMetrics.<key>``.
+                ``$or``/``$not`` and ``heartbeat_at``/``summaryMetrics.*`` leaves
+                require ``project``.
 
-        All filters AND together. To find interrupted jobs to retry (the wandb
-        "stale spot run" pattern), select non-completed runs that haven't
-        reported data recently::
+        ``filters`` AND-combines with ``search``/``tags``. To find interrupted
+        spot jobs to retry, find the *alive* set and exclude it — or directly
+        select non-completed runs that have gone stale::
 
-            list_runs(project,
-                      status=['RUNNING', 'FAILED', 'TERMINATED', 'CANCELLED'],
-                      heartbeat_before=cutoff_iso)
+            # wandb-style "alive" set (running OR reported data in the last hour):
+            list_runs(project, filters={"$or": [
+                {"state": "running"},
+                {"heartbeat_at": {"$gte": cutoff_iso}},
+            ]})
 
-        For a literal ``running OR recent-heartbeat`` union, issue two calls and
-        union the run IDs client-side.
+            # retry candidates directly (not completed AND stale):
+            list_runs(project, filters={"$and": [
+                {"status": {"$ne": "COMPLETED"}},
+                {"heartbeat_at": {"$lt": cutoff_iso}},
+            ]})
 
         Returns:
             List of run dicts with keys: ``id``, ``name``, ``displayId``,
@@ -317,45 +256,16 @@ class Client:
             ``url``.
 
         Raises:
-            ValueError: If more than 50 ``field_filters`` terms are given, or a
-                ``status`` value is not a recognised run status.
+            ValueError: If ``filters`` uses an unrecognised operator or field.
         """
         params: Dict[str, Any] = {'projectName': project, 'limit': min(limit, 200)}
         if search is not None:
             params['search'] = search
         if tags is not None:
             params['tags'] = ','.join(tags)
-        if status is not None:
-            invalid = [s for s in status if s not in _RUN_STATUSES]
-            if invalid:
-                raise ValueError(
-                    f'invalid status value(s) {invalid}; '
-                    f'allowed: {sorted(_RUN_STATUSES)}'
-                )
-            if status:
-                params['status'] = ','.join(status)
-        if heartbeat_after is not None:
-            params['heartbeatAfter'] = heartbeat_after
-        if heartbeat_before is not None:
-            params['heartbeatBefore'] = heartbeat_before
-        if field_filters is not None:
-            if len(field_filters) > _MAX_FILTER_TERMS:
-                raise ValueError(
-                    f'At most {_MAX_FILTER_TERMS} field_filters terms are '
-                    f'supported, got {len(field_filters)}'
-                )
-            terms = []
-            for f in field_filters:
-                if isinstance(f, FieldFilter):
-                    terms.append(f.to_dict())
-                elif isinstance(f, dict):
-                    terms.append(f)
-                else:
-                    raise TypeError(
-                        'each field_filters item must be a FieldFilter or dict, '
-                        f'got {type(f).__name__}'
-                    )
-            params['fieldFilters'] = json.dumps(terms)
+        if filters is not None:
+            _validate_filters(filters)
+            params['filter'] = json.dumps(filters)
         if sort is not None:
             params['sort'] = sort
         if offset:
@@ -785,12 +695,9 @@ def list_runs(
     search: Optional[str] = None,
     tags: Optional[List[str]] = None,
     limit: int = 50,
-    field_filters: Optional[List[Union['FieldFilter', Dict[str, Any]]]] = None,
     sort: Optional[str] = None,
     offset: int = 0,
-    status: Optional[List[str]] = None,
-    heartbeat_after: Optional[str] = None,
-    heartbeat_before: Optional[str] = None,
+    filters: Optional[Dict[str, Any]] = None,
 ) -> List[Dict[str, Any]]:
     """List runs in a project. See :meth:`Client.list_runs`."""
     return _get_client().list_runs(
@@ -798,12 +705,9 @@ def list_runs(
         search=search,
         tags=tags,
         limit=limit,
-        field_filters=field_filters,
         sort=sort,
         offset=offset,
-        status=status,
-        heartbeat_after=heartbeat_after,
-        heartbeat_before=heartbeat_before,
+        filters=filters,
     )
 
 
