@@ -237,6 +237,28 @@ class TestListRuns:
         call_args = client._client.get.call_args
         assert 'offset' not in call_args[1]['params']
 
+    def test_status_filter(self, client, mock_response):
+        client._client.get.return_value = mock_response(200, {'runs': []})
+        client.list_runs('proj', status=['RUNNING', 'FAILED'])
+        call_args = client._client.get.call_args
+        assert call_args[1]['params']['status'] == 'RUNNING,FAILED'
+
+    def test_bad_status_raises(self, client, mock_response):
+        client._client.get.return_value = mock_response(200, {'runs': []})
+        with pytest.raises(ValueError, match='invalid status'):
+            client.list_runs('proj', status=['RUNNING', 'NOPE'])
+
+    def test_heartbeat_filters(self, client, mock_response):
+        client._client.get.return_value = mock_response(200, {'runs': []})
+        client.list_runs(
+            'proj',
+            heartbeat_after='2026-06-01T00:00:00Z',
+            heartbeat_before='2026-06-22T00:00:00Z',
+        )
+        params = client._client.get.call_args[1]['params']
+        assert params['heartbeatAfter'] == '2026-06-01T00:00:00Z'
+        assert params['heartbeatBefore'] == '2026-06-22T00:00:00Z'
+
     def test_field_filters_objects(self, client, mock_response):
         from pluto.query import FieldFilter
 
@@ -680,6 +702,9 @@ class TestModuleFunctions:
             field_filters=None,
             sort=None,
             offset=0,
+            status=None,
+            heartbeat_after=None,
+            heartbeat_before=None,
         )
 
         # Clean up

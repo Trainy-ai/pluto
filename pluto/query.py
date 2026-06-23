@@ -110,6 +110,8 @@ def _allowed_operators(data_type: str) -> set:
 _MAX_FILTER_TERMS = 50
 # Server clamps offset to this range (MAX_JSON_SORT_OFFSET).
 _MAX_OFFSET = 100_000
+# Run lifecycle statuses accepted by the server's ``status`` filter.
+_RUN_STATUSES = {'RUNNING', 'COMPLETED', 'FAILED', 'TERMINATED', 'CANCELLED'}
 
 
 @dataclass
@@ -262,6 +264,9 @@ class Client:
         field_filters: Optional[List[Union['FieldFilter', Dict[str, Any]]]] = None,
         sort: Optional[str] = None,
         offset: int = 0,
+        status: Optional[List[str]] = None,
+        heartbeat_after: Optional[str] = None,
+        heartbeat_before: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """List runs in a project.
 
@@ -286,6 +291,25 @@ class Client:
             offset: Skip-based pagination offset (0–100,000). Combine with
                 ``limit`` to page; advance ``offset`` until a short page is
                 returned.
+            status: Keep only runs whose status is in this list (OR within the
+                list). Allowed: ``RUNNING``, ``COMPLETED``, ``FAILED``,
+                ``TERMINATED``, ``CANCELLED``.
+            heartbeat_after: ISO-8601 timestamp; keep only runs whose last
+                logged-data time (heartbeat) is at or after this. Requires
+                ``project``.
+            heartbeat_before: ISO-8601 timestamp; keep only runs whose heartbeat
+                is at or before this (i.e. *stale*). Requires ``project``.
+
+        All filters AND together. To find interrupted jobs to retry (the wandb
+        "stale spot run" pattern), select non-completed runs that haven't
+        reported data recently::
+
+            list_runs(project,
+                      status=['RUNNING', 'FAILED', 'TERMINATED', 'CANCELLED'],
+                      heartbeat_before=cutoff_iso)
+
+        For a literal ``running OR recent-heartbeat`` union, issue two calls and
+        union the run IDs client-side.
 
         Returns:
             List of run dicts with keys: ``id``, ``name``, ``displayId``,
@@ -293,13 +317,27 @@ class Client:
             ``url``.
 
         Raises:
-            ValueError: If more than 50 ``field_filters`` terms are given.
+            ValueError: If more than 50 ``field_filters`` terms are given, or a
+                ``status`` value is not a recognised run status.
         """
         params: Dict[str, Any] = {'projectName': project, 'limit': min(limit, 200)}
         if search is not None:
             params['search'] = search
         if tags is not None:
             params['tags'] = ','.join(tags)
+        if status is not None:
+            invalid = [s for s in status if s not in _RUN_STATUSES]
+            if invalid:
+                raise ValueError(
+                    f'invalid status value(s) {invalid}; '
+                    f'allowed: {sorted(_RUN_STATUSES)}'
+                )
+            if status:
+                params['status'] = ','.join(status)
+        if heartbeat_after is not None:
+            params['heartbeatAfter'] = heartbeat_after
+        if heartbeat_before is not None:
+            params['heartbeatBefore'] = heartbeat_before
         if field_filters is not None:
             if len(field_filters) > _MAX_FILTER_TERMS:
                 raise ValueError(
@@ -750,6 +788,9 @@ def list_runs(
     field_filters: Optional[List[Union['FieldFilter', Dict[str, Any]]]] = None,
     sort: Optional[str] = None,
     offset: int = 0,
+    status: Optional[List[str]] = None,
+    heartbeat_after: Optional[str] = None,
+    heartbeat_before: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     """List runs in a project. See :meth:`Client.list_runs`."""
     return _get_client().list_runs(
@@ -760,6 +801,9 @@ def list_runs(
         field_filters=field_filters,
         sort=sort,
         offset=offset,
+        status=status,
+        heartbeat_after=heartbeat_after,
+        heartbeat_before=heartbeat_before,
     )
 
 

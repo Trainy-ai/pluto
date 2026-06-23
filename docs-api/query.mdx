@@ -47,6 +47,9 @@ list_runs(
     field_filters: Optional[List[Union[FieldFilter, Dict[str, Any]]]] = None,
     sort: Optional[str] = None,
     offset: int = 0,
+    status: Optional[List[str]] = None,
+    heartbeat_after: Optional[str] = None,
+    heartbeat_before: Optional[str] = None,
 ) -> List[Dict[str, Any]]
 ```
 
@@ -61,12 +64,15 @@ List runs in a project.
 | `field_filters` | `Optional[List[Union[FieldFilter, Dict[str, Any]]]]` | Server-side filters over `config.*` / `systemMetadata.*` fields. A list of `FieldFilter` instances (or raw dicts in the same `{source, key, dataType, operator, values}` shape). Terms are AND-combined. At most 50 terms. |
 | `sort` | `Optional[str]` | Server-side ordering as `[+\|-]<field>` (`-` = descending). Accepts built-in columns (`createdAt`, `updatedAt`, `name`, `status` and their snake_case aliases), `config.<key>.value` / `systemMetadata.<key>.value`, `summary_metrics.<name>` (LAST aggregation), and `heartbeat_at` (last logged data point). Defaults to `createdAt desc` server-side. |
 | `offset` | `int` | Skip-based pagination offset (0–100,000). Combine with `limit` to page; advance `offset` until a short page is returned. |
+| `status` | `Optional[List[str]]` | Keep only runs whose status is in this list (OR within the list). Allowed: `RUNNING`, `COMPLETED`, `FAILED`, `TERMINATED`, `CANCELLED`. |
+| `heartbeat_after` | `Optional[str]` | ISO-8601 timestamp; keep only runs whose last logged-data time (heartbeat) is at or after this. Requires `project`. |
+| `heartbeat_before` | `Optional[str]` | ISO-8601 timestamp; keep only runs whose heartbeat is at or before this (i.e. *stale*). Requires `project`. |
 
 **Returns:** `List[Dict[str, Any]]` — List of run dicts with keys: `id`, `name`, `displayId`, `status`, `tags`, `config`, `createdAt`, `updatedAt`, `url`.
 
 **Raises:**
 
-- `ValueError` — If more than 50 `field_filters` terms are given.
+- `ValueError` — If more than 50 `field_filters` terms are given, or a `status` value is not a recognised run status.
 
 #### `Client.get_run`
 
@@ -288,6 +294,9 @@ list_runs(
     field_filters: Optional[List[Union[FieldFilter, Dict[str, Any]]]] = None,
     sort: Optional[str] = None,
     offset: int = 0,
+    status: Optional[List[str]] = None,
+    heartbeat_after: Optional[str] = None,
+    heartbeat_before: Optional[str] = None,
 ) -> List[Dict[str, Any]]
 ```
 
