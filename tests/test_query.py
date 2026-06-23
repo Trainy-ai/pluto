@@ -270,6 +270,11 @@ class TestListRuns:
         call_args = client._client.get.call_args
         assert json.loads(call_args[1]['params']['fieldFilters']) == [term]
 
+    def test_field_filters_invalid_item_type_raises(self, client, mock_response):
+        client._client.get.return_value = mock_response(200, {'runs': []})
+        with pytest.raises(TypeError, match='FieldFilter or dict'):
+            client.list_runs('proj', field_filters=['not-a-filter'])
+
     def test_field_filters_too_many_raises(self, client, mock_response):
         from pluto.query import FieldFilter
 

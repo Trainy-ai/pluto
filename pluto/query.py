@@ -306,9 +306,17 @@ class Client:
                     f'At most {_MAX_FILTER_TERMS} field_filters terms are '
                     f'supported, got {len(field_filters)}'
                 )
-            terms = [
-                f.to_dict() if isinstance(f, FieldFilter) else f for f in field_filters
-            ]
+            terms = []
+            for f in field_filters:
+                if isinstance(f, FieldFilter):
+                    terms.append(f.to_dict())
+                elif isinstance(f, dict):
+                    terms.append(f)
+                else:
+                    raise TypeError(
+                        'each field_filters item must be a FieldFilter or dict, '
+                        f'got {type(f).__name__}'
+                    )
             params['fieldFilters'] = json.dumps(terms)
         if sort is not None:
             params['sort'] = sort
