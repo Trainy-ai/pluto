@@ -20,9 +20,42 @@ tag = 'File'
 VALID_CHAR = re.compile(r'^[a-zA-Z0-9_\-.]+$')
 INVALID_CHAR = re.compile(r'[^a-zA-Z0-9_\-.]')
 
+# Most filesystems cap a single path component at 255 bytes (NAME_MAX). The
+# staging filename embeds the caption-derived ``_name`` — which, via the wandb
+# compat shim, can be a long generation-parameter tuple — so it can overflow
+# that limit and make open()/shutil.copyfile raise ENAMETOOLONG, silently
+# dropping the file. Bound the *on-disk* name only; ``self._name`` (and thus the
+# server-side fileName/display) is left intact.
+NAME_MAX = 255
+
+
+def _bounded_basename(name: str, uid: str, ext: str) -> str:
+    """Build ``{name}-{uid}{ext}``, sanitized and truncated to fit NAME_MAX bytes.
+
+    ``name`` is caption-derived and can reach here *before* File.__init__ has
+    sanitized ``self._name`` -- the media ``load()`` methods build the staging
+    path first -- so sanitize here too: map anything outside the allowed set to
+    ``-`` (mirroring File.__init__), which strips ``/`` and ``\\`` so the result
+    is always a single, path-traversal-safe component. A name that is empty or
+    only dots collapses to a placeholder. ``uid`` (uniqueness) and ``ext`` are
+    always preserved, so truncation can't cause collisions or drop the
+    extension; truncation is byte-aware to avoid splitting a multibyte char.
+    """
+    safe_name = INVALID_CHAR.sub('-', name)
+    if not safe_name.strip('.'):  # '', '.', '..', ... -> never a dir reference
+        safe_name = 'file'
+    suffix = f'-{uid}{ext}'
+    budget = max(NAME_MAX - len(suffix.encode('utf-8')), 0)
+    safe = safe_name.encode('utf-8')[:budget].decode('utf-8', 'ignore')
+    return f'{safe}{suffix}'
+
 
 class File:
     tag = tag
+    # Optional user-provided caption (e.g. Image(caption=...)). Media subclasses
+    # override this instance attribute in their __init__; the class-level default
+    # ensures it always exists (e.g. on a directly-constructed File).
+    _caption: Optional[str] = None
 
     def __init__(
         self,
@@ -61,9 +94,13 @@ class File:
         with open(self._path, 'rb') as f:
             return hashlib.sha256(f.read()).hexdigest()
 
+    def _staging_path(self, dir: str) -> str:
+        """Absolute on-disk path for the staged copy, bounded to NAME_MAX."""
+        return f'{dir}/files/{_bounded_basename(self._name, self._id, self._ext)}'
+
     def _mkcopy(self, dir: str) -> None:
         if self._tmp is None:
-            self._tmp = f'{dir}/files/{self._name}-{self._id}{self._ext}'
+            self._tmp = self._staging_path(dir)
             if self._path is None:
                 raise ValueError('File path is not set')
             shutil.copyfile(self._path, self._tmp)
@@ -112,6 +149,10 @@ class Artifact(File):
         self._tmp: Optional[str] = None
         self._ext: str = ''
         self._name = caption + f'.{uuid.uuid4()}' if caption else f'{uuid.uuid4()}'
+        # Preserve the raw caption separately so it can be sent to the server
+        # as a dedicated field (mlop_files.caption); _name keeps the legacy
+        # caption-as-filename behavior for back-compat with older servers.
+        self._caption = caption
         self._id = f'{uuid.uuid4()}{uuid.uuid4()}'.replace('-', '')
 
         self._metadata: Dict[str, Any] = metadata or {}
@@ -130,7 +171,7 @@ class Artifact(File):
 
     def load(self, dir: Optional[str] = None) -> None:
         if not self._path and self._bytes is not None and dir:
-            self._tmp = f'{dir}/files/{self._name}-{self._id}{self._ext}'
+            self._tmp = self._staging_path(dir)
             with open(self._tmp, 'wb') as f:
                 f.write(self._bytes)
             self._path = os.path.abspath(self._tmp)
@@ -148,6 +189,10 @@ class Text(File):
 
     def __init__(self, data: Union[str, Any], caption: Optional[str] = None) -> None:
         self._name = caption + f'.{uuid.uuid4()}' if caption else f'{uuid.uuid4()}'
+        # Preserve the raw caption separately so it can be sent to the server
+        # as a dedicated field (mlop_files.caption); _name keeps the legacy
+        # caption-as-filename behavior for back-compat with older servers.
+        self._caption = caption
         self._id = f'{uuid.uuid4()}{uuid.uuid4()}'.replace('-', '')
         self._ext = '.txt'
         self._path: Optional[str] = None
@@ -163,7 +208,7 @@ class Text(File):
     def load(self, dir: Optional[str] = None) -> None:
         if not self._path:
             if dir:
-                self._tmp = f'{dir}/files/{self._name}-{self._id}{self._ext}'
+                self._tmp = self._staging_path(dir)
                 with open(self._tmp, 'w') as f:
                     f.write(self._text)
                 self._path = os.path.abspath(self._tmp)
@@ -182,6 +227,10 @@ class Image(File):
         caption: Optional[str] = None,
     ) -> None:
         self._name = caption + f'.{uuid.uuid4()}' if caption else f'{uuid.uuid4()}'
+        # Preserve the raw caption separately so it can be sent to the server
+        # as a dedicated field (mlop_files.caption); _name keeps the legacy
+        # caption-as-filename behavior for back-compat with older servers.
+        self._caption = caption
         self._id = f'{uuid.uuid4()}{uuid.uuid4()}'.replace('-', '')
         self._ext = '.png'
         self._image: Any = None
@@ -218,7 +267,7 @@ class Image(File):
     def load(self, dir: Optional[str] = None) -> None:
         if not self._path:
             if dir:
-                self._tmp = f'{dir}/files/{self._name}-{self._id}{self._ext}'
+                self._tmp = self._staging_path(dir)
                 if getattr(self, '_matplotlib', False):
                     make_compat_image_matplotlib(self._tmp, self._image)
                 elif self._image == 'bytes' and self._bytes is not None:
@@ -252,6 +301,10 @@ class Audio(File):
         rate = kwargs.get('sample_rate', rate)
 
         self._name = caption + f'.{uuid.uuid4()}' if caption else f'{uuid.uuid4()}'
+        # Preserve the raw caption separately so it can be sent to the server
+        # as a dedicated field (mlop_files.caption); _name keeps the legacy
+        # caption-as-filename behavior for back-compat with older servers.
+        self._caption = caption
         self._id = f'{uuid.uuid4()}{uuid.uuid4()}'.replace('-', '')
         self._ext = '.wav'
         self._audio: Any
@@ -277,7 +330,7 @@ class Audio(File):
     def load(self, dir: Optional[str] = None) -> None:
         if not self._path:
             if dir:
-                self._tmp = f'{dir}/files/{self._name}-{self._id}{self._ext}'
+                self._tmp = self._staging_path(dir)
                 if isinstance(self._audio, str) and self._audio == 'bytes':
                     if self._bytes is not None:
                         with open(self._tmp, 'wb') as f:
@@ -305,6 +358,10 @@ class Video(File):
         rate = kwargs.get('fps', rate)
 
         self._name = caption + f'.{uuid.uuid4()}' if caption else f'{uuid.uuid4()}'
+        # Preserve the raw caption separately so it can be sent to the server
+        # as a dedicated field (mlop_files.caption); _name keeps the legacy
+        # caption-as-filename behavior for back-compat with older servers.
+        self._caption = caption
         self._id = f'{uuid.uuid4()}{uuid.uuid4()}'.replace('-', '')
         self._ext = f'.{format}' if format in ['mp4', 'webm', 'ogg', 'gif'] else '.mp4'
         self._path: Optional[str] = None
@@ -337,7 +394,7 @@ class Video(File):
     def load(self, dir: Optional[str] = None) -> None:
         if not self._path:
             if dir:
-                self._tmp = f'{dir}/files/{self._name}-{self._id}{self._ext}'
+                self._tmp = self._staging_path(dir)
                 if self._video == 'bytes' and self._bytes is not None:
                     with open(self._tmp, 'wb') as f:
                         f.write(self._bytes)

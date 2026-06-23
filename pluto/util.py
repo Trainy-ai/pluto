@@ -17,6 +17,11 @@ import numpy as np
 
 from .sets import get_console
 
+try:
+    from omegaconf import OmegaConf
+except ImportError:  # optional dependency; degrade gracefully when absent
+    OmegaConf = None  # type: ignore[misc, assignment]
+
 logger = logging.getLogger(f'{__name__.split(".")[0]}')
 tag = 'Util'
 
@@ -417,6 +422,79 @@ def clean_dict(d):
             continue
         c[k] = v
     return c
+
+
+def _is_omegaconf(obj: Any) -> bool:
+    """True if ``obj`` is an OmegaConf node (DictConfig/ListConfig).
+
+    Returns False when omegaconf isn't installed. Any failure (broken install)
+    is also treated as "not omegaconf" so a degraded dependency can never crash
+    a caller that doesn't even use OmegaConf.
+    """
+    if OmegaConf is None:
+        return False
+    try:
+        return OmegaConf.is_config(obj)
+    except Exception:
+        return False
+
+
+def _omegaconf_to_container(obj: Any) -> Any:
+    """Convert an OmegaConf node to a native container, degrading on failure.
+
+    Prefer fully-resolved values, but ``resolve=True`` raises on unresolvable
+    or cyclic interpolations (e.g. an unset ``${oc.env:VAR}``). Rather than let
+    that crash init or disable logging, fall back to the unresolved structure
+    (interpolations kept as literal ``${...}`` strings), and finally to a plain
+    string if even that fails. Callers must already have checked
+    :func:`_is_omegaconf`.
+    """
+    if OmegaConf is None:  # pragma: no cover - guarded by _is_omegaconf
+        return str(obj)
+    try:
+        return OmegaConf.to_container(obj, resolve=True)
+    except Exception:
+        try:
+            return OmegaConf.to_container(obj, resolve=False)
+        except Exception:
+            return str(obj)
+
+
+def to_native_config(obj: Any) -> Any:
+    """Recursively convert a run config into JSON-native Python types.
+
+    Handles OmegaConf ``DictConfig`` / ``ListConfig`` at any nesting depth,
+    including the common ``dict(cfg)`` shape where the top-level is a plain
+    ``dict`` but nested values are still OmegaConf nodes. OmegaConf nodes are
+    deep-converted, resolving interpolations (``${...}``) where possible and
+    degrading gracefully when they can't be resolved (see
+    :func:`_omegaconf_to_container`). Plain data (dicts, lists, scalars,
+    ``None``) passes through unchanged. Non-string dict keys are coerced to
+    ``str`` (note: distinct keys with the same string form collapse, matching
+    JSON's own key semantics).
+    """
+    if _is_omegaconf(obj):
+        # _omegaconf_to_container already does a deep conversion to native
+        # types, so return its result rather than re-walking the whole tree.
+        return _omegaconf_to_container(obj)
+    if isinstance(obj, dict):
+        return {str(k): to_native_config(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [to_native_config(v) for v in obj]
+    return obj
+
+
+def config_json_default(o: Any) -> Any:
+    """``json.dumps(default=...)`` hook for config payloads.
+
+    Last line of defense so a single non-serializable config value can never
+    raise and silently disable logging. OmegaConf nodes are deep-converted
+    (resolving interpolations where possible, see
+    :func:`_omegaconf_to_container`); anything else degrades to its string form.
+    """
+    if _is_omegaconf(o):
+        return _omegaconf_to_container(o)
+    return str(o)
 
 
 def dict_to_json(data: Dict[str, Any]) -> Dict[str, Any]:

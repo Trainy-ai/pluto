@@ -90,6 +90,88 @@ class TestSyncStore:
         assert all(isinstance(f, FileRecord) for f in pending)
         assert all(f.status == SyncStatus.PENDING for f in pending)
 
+    def test_enqueue_file_caption_roundtrip(self, store):
+        """A caption set on enqueue survives the get_pending_files read-back,
+        and an un-captioned file reads back as None."""
+        store.register_run('test-run-1', 'test-project')
+
+        store.enqueue_file(
+            run_id='test-run-1',
+            local_path='/tmp/cat.png',
+            file_name='cat',
+            file_ext='.png',
+            file_type='image/png',
+            file_size=1024,
+            log_name='eval/images',
+            timestamp_ms=int(time.time() * 1000),
+            step=0,
+            caption='a fluffy orange cat',
+        )
+        store.enqueue_file(
+            run_id='test-run-1',
+            local_path='/tmp/dog.png',
+            file_name='dog',
+            file_ext='.png',
+            file_type='image/png',
+            file_size=1024,
+            log_name='eval/images',
+            timestamp_ms=int(time.time() * 1000),
+            step=1,
+        )
+
+        by_name = {f.file_name: f for f in store.get_pending_files(limit=10)}
+        assert by_name['cat'].caption == 'a fluffy orange cat'
+        assert by_name['dog'].caption is None
+
+    def test_caption_migration_on_legacy_db(self, tmp_path):
+        """A DB created without the caption column gets it added on open
+        (additive migration), so enqueue/select with caption works."""
+        import sqlite3
+
+        db_path = str(tmp_path / 'legacy.db')
+        # Simulate a pre-caption file_uploads table.
+        conn = sqlite3.connect(db_path)
+        conn.execute("""
+            CREATE TABLE file_uploads (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_id TEXT NOT NULL,
+                local_path TEXT NOT NULL,
+                remote_url TEXT,
+                file_type TEXT NOT NULL,
+                file_size INTEGER,
+                file_name TEXT,
+                file_ext TEXT,
+                log_name TEXT,
+                timestamp_ms INTEGER NOT NULL,
+                step INTEGER,
+                status INTEGER DEFAULT 0,
+                retry_count INTEGER DEFAULT 0,
+                created_at REAL NOT NULL,
+                last_attempt_at REAL,
+                error_message TEXT
+            )
+        """)
+        conn.commit()
+        conn.close()
+
+        store = SyncStore(db_path)
+        store.register_run('r', 'p')
+        store.enqueue_file(
+            run_id='r',
+            local_path='/tmp/cat.png',
+            file_name='cat',
+            file_ext='.png',
+            file_type='image/png',
+            file_size=1,
+            log_name='eval/images',
+            timestamp_ms=int(time.time() * 1000),
+            step=0,
+            caption='migrated cat',
+        )
+        pending = store.get_pending_files(limit=10)
+        store.close()
+        assert pending[0].caption == 'migrated cat'
+
     def test_file_status_transitions(self, store):
         """Test file status transitions work correctly."""
         store.register_run('test-run-1', 'test-project')
@@ -537,6 +619,72 @@ class TestSyncUploaderPayloadFormat:
             assert 'v' not in payload, "Should not use 'v' field"
             assert 's' not in payload, "Should not use 's' field"
             assert 't' not in payload, "Should not use 't' field"
+
+    def test_file_payload_includes_caption(self, uploader):
+        """The /files presign payload carries `caption` when set, and omits
+        the key entirely when the file has no caption."""
+        records = [
+            FileRecord(
+                id=1,
+                run_id='test-run',
+                local_path='/tmp/cat.png',
+                file_name='cat',
+                file_ext='.png',
+                file_type='image/png',
+                file_size=10,
+                log_name='eval/images',
+                timestamp_ms=1705600000000,
+                step=0,
+                status=SyncStatus.PENDING,
+                retry_count=0,
+                created_at=time.time(),
+                last_attempt_at=None,
+                error_message=None,
+                presigned_url=None,
+                caption='a fluffy orange cat',
+            ),
+            FileRecord(
+                id=2,
+                run_id='test-run',
+                local_path='/tmp/dog.png',
+                file_name='dog',
+                file_ext='.png',
+                file_type='image/png',
+                file_size=10,
+                log_name='eval/images',
+                timestamp_ms=1705600000000,
+                step=1,
+                status=SyncStatus.PENDING,
+                retry_count=0,
+                created_at=time.time(),
+                last_attempt_at=None,
+                error_message=None,
+                presigned_url=None,
+                caption=None,
+            ),
+        ]
+
+        mock_response = MagicMock()
+        mock_response.raise_for_status = MagicMock()
+        mock_response.json.return_value = {}
+
+        with patch('httpx.Client') as MockClient:
+            mock_client = MagicMock()
+            mock_client.post.return_value = mock_response
+            MockClient.return_value = mock_client
+            uploader._client = None
+
+            uploader._get_presigned_urls(records)
+
+            call_args = mock_client.post.call_args
+            body = call_args.kwargs.get('content') or call_args[1].get('content')
+            if isinstance(body, bytes):
+                body = body.decode('utf-8')
+            files = json.loads(body)['files']
+            by_name = {f['fileName']: f for f in files}
+
+            assert by_name['cat.png']['caption'] == 'a fluffy orange cat'
+            assert 'caption' not in by_name['dog.png']
 
     def test_metrics_payload_filters_non_numeric(self, uploader):
         """Test that non-numeric values are filtered from metrics."""
@@ -1097,3 +1245,312 @@ class TestDistributedEnvironmentDetection:
                 del os.environ['SLURM_NTASKS']
             if original_world is not None:
                 os.environ['WORLD_SIZE'] = original_world
+
+
+class TestCaptionEndToEndClientPath:
+    """No-network coverage of the *whole* media-caption client path.
+
+    The other caption tests each cover a single link in isolation, with the
+    neighbouring links stubbed out:
+
+    - ``test_wandb_media_caption_forwarded`` mocks ``pluto`` and stops at the
+      wandb->pluto conversion boundary.
+    - ``test_enqueue_file_caption_roundtrip`` calls ``store.enqueue_file``
+      directly.
+    - ``test_file_payload_includes_caption`` hand-builds a ``FileRecord``.
+
+    None of them drive a *real* ``pluto.Image/Audio/Video/Text/Artifact(
+    caption=...)`` through ``Op._enqueue_file_sync`` -- which runs
+    ``load()``/``_mkcopy()`` and reads ``file_obj._caption`` -- and on into the
+    ``/files`` presign payload. That glue is exactly where a caption can be
+    silently dropped, and it's the path a logged caption actually travels to
+    the server. This test exercises the full chain for every media type
+    (including Video), so a regression in any single link fails here.
+    """
+
+    def _build_media(self, tmp_path):
+        """Real on-disk media so load()/_mkcopy() run for real.
+
+        Returns ``[(log_name, pluto_obj, expected_caption)]`` including one
+        deliberately un-captioned file (expected ``None``).
+        """
+        png = tmp_path / 'src.png'
+        png.write_bytes(bytes.fromhex('89504e470d0a1a0a') + b'\x00' * 64)
+        wav = tmp_path / 'src.wav'
+        wav.write_bytes(b'RIFF\x00\x00\x00\x00WAVE' + b'\x00' * 64)
+        mp4 = tmp_path / 'src.mp4'
+        mp4.write_bytes(b'\x00\x00\x00\x18ftypmp42' + b'\x00' * 64)
+        art = tmp_path / 'src.json'
+        art.write_text('{"k": 1}')
+
+        return [
+            (
+                'media/image',
+                pluto.Image(str(png), caption='a fluffy cat'),
+                'a fluffy cat',
+            ),
+            (
+                'media/audio',
+                pluto.Audio(str(wav), caption='one second of noise'),
+                'one second of noise',
+            ),
+            (
+                'media/video',
+                pluto.Video(str(mp4), caption='ten random frames'),
+                'ten random frames',
+            ),
+            ('media/text', pluto.Text('log line', caption='a caption'), 'a caption'),
+            (
+                'media/artifact',
+                pluto.Artifact(str(art), caption='an artifact'),
+                'an artifact',
+            ),
+            # No caption -> must propagate as None / be omitted from payload.
+            ('media/no_caption', pluto.Image(str(png)), None),
+        ]
+
+    def test_captions_reach_files_payload(self, tmp_path):
+        import types
+
+        from pluto.op import Op
+
+        # Real SQLite store; a fake sync manager forwards _enqueue_file_sync's
+        # call straight into it (the real SyncProcessManager would do the same,
+        # minus spawning a subprocess).
+        store = SyncStore(str(tmp_path / 'sync.db'))
+        os.makedirs(tmp_path / 'files', exist_ok=True)
+
+        def _enqueue_file(**kwargs):
+            store.enqueue_file(run_id='test-run', **kwargs)
+
+        fake_op = types.SimpleNamespace(
+            _sync_manager=types.SimpleNamespace(enqueue_file=_enqueue_file),
+            settings=types.SimpleNamespace(get_dir=lambda: str(tmp_path)),
+            _step=1,
+        )
+
+        media = self._build_media(tmp_path)
+        for log_name, obj, _ in media:
+            Op._enqueue_file_sync(fake_op, log_name, obj, 1705600000000)
+
+        # Glue link: caption survived load()/_mkcopy() into the stored record.
+        records = store.get_pending_files(limit=50)
+        by_log = {r.log_name: r for r in records}
+        assert set(by_log) == {m[0] for m in media}
+        for log_name, _, expected in media:
+            assert by_log[log_name].caption == expected, (
+                f'{log_name}: stored caption {by_log[log_name].caption!r} '
+                f'!= expected {expected!r}'
+            )
+
+        # Final link: the caption shows up in the /files presign payload that
+        # is actually POSTed to the server (and is omitted when unset).
+        settings = {
+            '_auth': 'test-token',
+            '_op_id': 12345,
+            '_op_name': 'test-run',
+            'project': 'test-project',
+            'url_file': 'https://test.example.com/files',
+        }
+        uploader = _SyncUploader(settings, logging.getLogger('test'))
+
+        mock_response = MagicMock()
+        mock_response.raise_for_status = MagicMock()
+        mock_response.json.return_value = {}
+        with patch('httpx.Client') as MockClient:
+            mock_client = MagicMock()
+            mock_client.post.return_value = mock_response
+            MockClient.return_value = mock_client
+            uploader._client = None
+
+            uploader._get_presigned_urls(records)
+
+            call_args = mock_client.post.call_args
+            body = call_args.kwargs.get('content') or call_args[1].get('content')
+            if isinstance(body, bytes):
+                body = body.decode('utf-8')
+            payload = {f['logName']: f for f in json.loads(body)['files']}
+
+        for log_name, _, expected in media:
+            if expected is None:
+                assert 'caption' not in payload[log_name]
+            else:
+                assert payload[log_name]['caption'] == expected
+
+    # A synthetic structured caption (sanitized-form params), long enough to
+    # overflow NAME_MAX once combined with uuid + sha256 + ext.
+    _LONG_CAPTION = (
+        'group-a--key1-val1--key2-val2--key3-val3--key4-val4--key5-val5--key6'
+        '--group-b--key7-val7--key8-val8--key9-val9--key10-val10'
+        '--group-c--key11-val11--key12-val12'
+    )
+
+    def _captioned_media(self, tmp_path, kind, caption):
+        """Build one media object of ``kind`` with ``caption``.
+
+        Covers both staging-path call sites: file-path inputs stage in
+        _mkcopy() (after File.__init__ sanitizes _name); the in-memory Text
+        input stages in load() (before sanitization).
+        """
+        if kind == 'image':
+            p = tmp_path / 'src.png'
+            p.write_bytes(bytes.fromhex('89504e470d0a1a0a') + b'\x00' * 64)
+            return pluto.Image(str(p), caption=caption)
+        if kind == 'audio':
+            p = tmp_path / 'src.wav'
+            p.write_bytes(b'RIFF\x00\x00\x00\x00WAVE' + b'\x00' * 64)
+            return pluto.Audio(str(p), caption=caption)
+        if kind == 'video':
+            p = tmp_path / 'src.mp4'
+            p.write_bytes(b'\x00\x00\x00\x18ftypmp42' + b'\x00' * 64)
+            return pluto.Video(str(p), caption=caption)
+        if kind == 'text':
+            return pluto.Text('log line', caption=caption)
+        if kind == 'artifact':
+            p = tmp_path / 'src.json'
+            p.write_text('{"k": 1}')
+            return pluto.Artifact(str(p), caption=caption)
+        raise ValueError(kind)
+
+    @pytest.mark.parametrize('kind', ['image', 'audio', 'video', 'text', 'artifact'])
+    def test_long_caption_does_not_drop_file(self, tmp_path, kind):
+        """A long caption must not make _mkcopy/load raise ENAMETOOLONG.
+
+        The staging copy is named ``{caption}.{uuid}-{sha256}{ext}`` for *every*
+        media type, so a long caption could exceed the 255-byte NAME_MAX and
+        make shutil.copyfile/open raise OSError(ENAMETOOLONG). That error
+        propagated out of _enqueue_file_sync and was swallowed by the shim's
+        try/except, silently dropping the file (and never registering its log).
+        The on-disk name must be bounded while the full caption is preserved for
+        the server-side fileName. Parametrized across all media types.
+        """
+        import types
+
+        from pluto.file import NAME_MAX
+        from pluto.op import Op
+
+        store = SyncStore(str(tmp_path / 'sync.db'))
+        os.makedirs(tmp_path / 'files', exist_ok=True)
+
+        def _enqueue_file(**kwargs):
+            store.enqueue_file(run_id='test-run', **kwargs)
+
+        fake_op = types.SimpleNamespace(
+            _sync_manager=types.SimpleNamespace(enqueue_file=_enqueue_file),
+            settings=types.SimpleNamespace(get_dir=lambda: str(tmp_path)),
+            _step=1,
+        )
+
+        obj = self._captioned_media(tmp_path, kind, self._LONG_CAPTION)
+
+        # Must not raise (previously raised OSError: File name too long).
+        Op._enqueue_file_sync(fake_op, f'eval/{kind}', obj, 1705600000000)
+
+        records = store.get_pending_files(limit=10)
+        assert len(records) == 1
+        rec = records[0]
+        # File was actually staged on disk and the basename respects NAME_MAX.
+        assert os.path.exists(rec.local_path)
+        assert len(os.path.basename(rec.local_path).encode('utf-8')) <= NAME_MAX
+        # Full caption is preserved for the server-side fileName/display.
+        assert rec.caption == self._LONG_CAPTION
+        assert self._LONG_CAPTION in rec.file_name
+
+    def test_caption_with_separators_is_traversal_safe(self, tmp_path):
+        """A caption with path separators / '..' must not escape the files dir.
+
+        The staging path is built from the caption-derived name before
+        File.__init__ sanitizes it, so _bounded_basename must neutralize
+        separators itself. The staged file must land directly under <dir>/files.
+        """
+        import types
+
+        from pluto.op import Op
+
+        store = SyncStore(str(tmp_path / 'sync.db'))
+        files_dir = tmp_path / 'files'
+        os.makedirs(files_dir, exist_ok=True)
+
+        def _enqueue_file(**kwargs):
+            store.enqueue_file(run_id='test-run', **kwargs)
+
+        fake_op = types.SimpleNamespace(
+            _sync_manager=types.SimpleNamespace(enqueue_file=_enqueue_file),
+            settings=types.SimpleNamespace(get_dir=lambda: str(tmp_path)),
+            _step=1,
+        )
+
+        # In-memory image so load() builds the staging path from the raw caption.
+        arr = np.zeros((4, 4, 3), dtype=np.uint8)
+        obj = pluto.Image(arr, caption='../../etc/evil/payload')
+        Op._enqueue_file_sync(fake_op, 'eval-images/x', obj, 1705600000000)
+
+        rec = store.get_pending_files(limit=10)[0]
+        staged = os.path.realpath(rec.local_path)
+        # Staged directly in <dir>/files, not in a traversed-to directory, and
+        # the basename carries no surviving separators.
+        assert os.path.dirname(staged) == os.path.realpath(str(files_dir))
+        assert '/' not in rec.file_name and '\\' not in rec.file_name
+        assert os.path.exists(rec.local_path)
+
+
+class TestLogItemResilience:
+    """Native-API resilience: a single bad log item must not abort the batch
+    or crash the caller, and must be surfaced loudly (not silently swallowed).
+    This is the property the wandb shim used to (silently) provide; owning it at
+    the native API means every entry point gets it.
+    """
+
+    def _make_op(self, tmp_path, enqueue_metrics_sink):
+        import types
+
+        from pluto.op import Op
+
+        os.makedirs(tmp_path / 'files', exist_ok=True)
+
+        def _enqueue_file(**kwargs):
+            raise OSError(36, 'File name too long')
+
+        op = Op.__new__(Op)
+        op._step = 0
+        op._iface = None
+        op._dropped_item_warned = set()
+        op.settings = types.SimpleNamespace(get_dir=lambda: str(tmp_path), meta=[])
+        op._sync_manager = types.SimpleNamespace(
+            enqueue_file=_enqueue_file,
+            enqueue_metrics=lambda m, ts, step: enqueue_metrics_sink.append(m),
+        )
+        return op
+
+    def test_bad_item_dropped_loudly_batch_survives(self, tmp_path, caplog):
+        import logging
+
+        metrics_sink = []
+        op = self._make_op(tmp_path, metrics_sink)
+
+        png = tmp_path / 'src.png'
+        png.write_bytes(bytes.fromhex('89504e470d0a1a0a') + b'\x00' * 64)
+        bad = pluto.Image(str(png), caption='boom')
+
+        with patch('pluto.sentry.capture_exception') as cap:
+            with caplog.at_level(logging.DEBUG, logger='pluto'):
+                # A good metric and a file whose enqueue fails, in one call.
+                op._log_via_sync({'loss': 0.5, 'eval/img': bad}, step=1)
+
+            # Sibling metric still reached the sync manager (batch not aborted).
+            assert metrics_sink and 0.5 in metrics_sink[0].values()
+            # The drop was surfaced at error, not swallowed.
+            errors = [r for r in caplog.records if r.levelno == logging.ERROR]
+            assert any('OSError' in r.message for r in errors)
+            # ...and reported to Sentry telemetry (with the real exception).
+            assert cap.call_count == 1
+            assert isinstance(cap.call_args.args[0], OSError)
+
+            # Same (key, exc-type) again -> deduped: debug only, no new Sentry.
+            caplog.clear()
+            with caplog.at_level(logging.DEBUG, logger='pluto'):
+                op._log_via_sync(
+                    {'eval/img': pluto.Image(str(png), caption='boom2')}, step=2
+                )
+            assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+            assert cap.call_count == 1

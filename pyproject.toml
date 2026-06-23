@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "pluto-ml"
-version = "0.0.22"
+version = "0.0.25"
 description = "Pluto ML - Machine Learning Operations Framework"
 packages = [
     {include = "pluto"},
@@ -36,6 +36,7 @@ soundfile = ">=0.12"
 [tool.poetry.group.dev.dependencies]
 mypy = "^1.10.0"
 ruff = "^0.4.7"
+griffe = "^2.0"  # static docstring parsing for scripts/gen_api_docs.py
 pytest = "^8.2.2"
 pytest-xdist = "^3.6.1"
 types-colorama = "^0.4.15.20240311"
@@ -48,6 +49,7 @@ matplotlib = "^3.10"
 torchvision = "*"
 imageio = "^2.37.0"
 moviepy = "^1.0.3"
+omegaconf = "^2.3"
 
 
 [tool.poetry.extras]

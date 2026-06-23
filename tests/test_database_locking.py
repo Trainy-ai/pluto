@@ -24,9 +24,58 @@ from pluto.sync.store import (
     HEALTH_METRIC_KEYS,
     RecordType,
     SyncStore,
+    _is_transient_sqlite_error,
     _retry_on_locked,
     _retry_stats,
 )
+
+
+class TestTransientErrorClassification:
+    """Which sqlite3.OperationalErrors are treated as retryable."""
+
+    @pytest.mark.parametrize(
+        'message',
+        [
+            'database is locked',
+            'database table is locked',
+            'database is busy',
+            'locking protocol',  # SQLITE_PROTOCOL — the NFS/WAL race
+            'LOCKING PROTOCOL',  # case-insensitive
+        ],
+    )
+    def test_transient_errors_are_retryable(self, message):
+        assert _is_transient_sqlite_error(sqlite3.OperationalError(message))
+
+    @pytest.mark.parametrize(
+        'message',
+        [
+            'disk I/O error',
+            'no such table: sync_queue',
+            'malformed database schema',
+        ],
+    )
+    def test_non_transient_errors_are_not_retryable(self, message):
+        assert not _is_transient_sqlite_error(sqlite3.OperationalError(message))
+
+    def test_locking_protocol_is_retried(self):
+        """A 'locking protocol' error retries instead of being re-raised.
+
+        Regression: this SQLITE_PROTOCOL message lacks the substring 'locked',
+        so it previously fell through the retry check and was dropped on the
+        first hit.
+        """
+        call_count = 0
+
+        @_retry_on_locked
+        def func():
+            nonlocal call_count
+            call_count += 1
+            if call_count < 3:
+                raise sqlite3.OperationalError('locking protocol')
+            return 'ok'
+
+        assert func() == 'ok'
+        assert call_count == 3
 
 
 class TestRetryOnLockedDecorator:
@@ -255,11 +304,25 @@ class TestSyncStoreRetryBehavior:
 
         store.close()
 
-    def test_busy_timeout_is_30_seconds(self, store):
-        """Verify busy_timeout is set to 30000ms."""
+    def test_busy_timeout_default(self, store):
+        """busy_timeout defaults to the (short) DEFAULT_BUSY_TIMEOUT_MS.
+
+        It's kept short on purpose: application-level exponential backoff
+        (@_retry_on_locked) sits on top, so a long SQLite busy_timeout just
+        stacks under every retry and stalls writes (the ~50s/batch regression).
+        """
         cursor = store.conn.execute('PRAGMA busy_timeout')
         timeout = cursor.fetchone()[0]
-        assert timeout == 30000
+        assert timeout == SyncStore.DEFAULT_BUSY_TIMEOUT_MS
+
+    def test_busy_timeout_is_configurable(self, tmp_path):
+        """busy_timeout can be overridden via the constructor."""
+        store = SyncStore(str(tmp_path / 'bt.db'), busy_timeout_ms=1234)
+        try:
+            timeout = store.conn.execute('PRAGMA busy_timeout').fetchone()[0]
+            assert timeout == 1234
+        finally:
+            store.close()
 
 
 class TestConcurrentWriteContention:

@@ -11,6 +11,7 @@ import time
 import traceback
 from collections import defaultdict
 from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple, Union
+from urllib.parse import urlparse
 
 import pluto
 
@@ -32,7 +33,15 @@ from .store import DataStore
 from .sync import SyncProcessManager
 from .sync.store import HEALTH_METRIC_KEYS
 from .sys import System
-from .util import deep_merge, get_char, get_val, print_url, to_json
+from .util import (
+    ANSI,
+    deep_merge,
+    get_char,
+    get_val,
+    print_url,
+    to_json,
+    to_native_config,
+)
 
 logger = logging.getLogger(f'{__name__.split(".")[0]}')
 tag = 'Operation'
@@ -341,6 +350,7 @@ class Op:
             response_data = r.json()
             self.settings.url_view = response_data['url']
             self.settings._op_id = response_data['runId']
+            self.settings._display_id = response_data.get('displayId')
             self._resumed = response_data.get('resumed', False)
             self._fork_run_id = response_data.get('forkedFromRunId')
             self._fork_step = response_data.get('forkStep')
@@ -368,6 +378,7 @@ class Op:
                         f'reattach, or use a unique run_id.'
                     )
                 logger.info(f'{tag}: resumed run {str(self.settings._op_id)}')
+                self._print_run_banner('resumed')
                 logger.warning(
                     f'{tag}: Run was resumed via run_id. The `name` parameter '
                     f'is ignored for resumed runs - the original run name is '
@@ -375,6 +386,7 @@ class Op:
                 )
             else:
                 logger.info(f'{tag}: started run {str(self.settings._op_id)}')
+                self._print_run_banner('started')
 
             os.makedirs(f'{self.settings.get_dir()}/files', exist_ok=True)
 
@@ -410,6 +422,9 @@ class Op:
         self._queue: queue.Queue[QueueItem] = queue.Queue()
         self._finished = False
         self._finish_lock = threading.Lock()
+        # (log-key, exc-type) pairs already surfaced at error from a dropped log
+        # item, so a per-step failure is shouted once then drops to debug.
+        self._dropped_item_warned: set = set()
         atexit.register(self.finish)
 
     def _init_sync_manager(self) -> None:
@@ -454,6 +469,59 @@ class Op:
         )
         logger.debug(f'{tag}: initialized sync process manager')
 
+    def _print_run_banner(self, verb: str) -> None:
+        """Print a stable, greppable run banner to stdout.
+
+        Emits one line in a fixed format so external tooling can reverse-look
+        up a run from a training process's stdout, e.g.::
+
+            pluto: run LV3-12 started (external_id=dhyecrvx)
+
+        The display ID (e.g. ``LV3-12``) comes from the server's create/resume
+        response; the ``external_id`` is the sqid slug (the last path segment
+        of the run URL). This is intentionally a plain ``print`` to stdout,
+        independent of the logging system, so it can't be suppressed by log
+        levels or console-capture settings and always lands on stdout.
+
+        The line is colored green only when stdout is a TTY. When stdout is
+        piped or redirected (the case where tooling scrapes the banner), it is
+        emitted as plain text so the ANSI codes never land in captured logs and
+        greppability is preserved.
+        """
+        display_id = self.settings._display_id
+        if not display_id:
+            return  # server didn't return a display ID; nothing stable to print
+        external_id = None
+        if self.settings.url_view:
+            # Parse the path so a host-only URL (no run slug) doesn't yield the
+            # hostname as a bogus external_id.
+            path = urlparse(self.settings.url_view).path.strip('/')
+            if path:
+                external_id = path.split('/')[-1]
+        suffix = f' (external_id={external_id})' if external_id else ''
+        msg = f'pluto: run {display_id} {verb}{suffix}'
+        # Wrap the whole line (not just the ID) so the codes sit at the very
+        # start/end and the matchable token stays contiguous even in a TTY.
+        if sys.stdout is not None and sys.stdout.isatty():
+            msg = f'\033[32m{msg}\033[0m'  # green
+        print(msg, flush=True)
+
+    def _view_run_message(self) -> str:
+        """Build the 'View run [<id>] at <url>' log message.
+
+        Includes the display ID (green) when the server returned one. ANSI
+        codes come from ``util.ANSI``, which blanks them on non-TTY output, so
+        this matches how ``print_url`` colors the URL.
+        """
+        url = print_url(self.settings.url_view)
+        display_id = self.settings._display_id
+        if display_id:
+            # Return to cyan (the INFO message color) after the green ID rather
+            # than a full reset, so the trailing "at <url>" stays cyan like the
+            # rest of the line.
+            return f'View run {ANSI.green}{display_id}{ANSI.cyan} at {url}'
+        return f'View run at {url}'
+
     def start(self) -> None:
         # Start sync process if enabled
         if self._sync_manager is not None:
@@ -474,7 +542,7 @@ class Op:
             self._iface._update_meta(sys_metric_names)
 
         # Print URL where users can view the run
-        logger.info(f'{tag}: View run at {print_url(self.settings.url_view)}')
+        logger.info(f'{tag}: {self._view_run_message()}')
 
         # Register excepthook to detect unhandled exceptions and mark runs as FAILED
         _register_excepthook()
@@ -534,7 +602,15 @@ class Op:
                 self._register_meta_sync(k, items[0], new_metric_names, new_file_meta)
 
             for item in items:
-                self._process_log_item_sync(k, item, metrics, timestamp_ms)
+                try:
+                    self._process_log_item_sync(k, item, metrics, timestamp_ms)
+                except Exception as e:
+                    # One bad item (e.g. media that can't be encoded/staged)
+                    # must not abort the rest of the batch or crash the caller's
+                    # training loop -- logging is best-effort. Drop just this
+                    # item, loudly, and keep going so sibling metrics/files in
+                    # the same call still reach the server.
+                    self._warn_dropped_item(k, item, e)
 
         if metrics:
             self._sync_manager.enqueue_metrics(metrics, timestamp_ms, self._step)
@@ -542,6 +618,35 @@ class Op:
         # Register new metric/file names with server (required for dashboard display)
         if (new_metric_names or new_file_meta) and self._iface:
             self._iface._update_meta(num=new_metric_names, df=dict(new_file_meta))
+
+    def _warn_dropped_item(self, key: str, value: Any, exc: Exception) -> None:
+        """Report a log item dropped due to an unexpected error.
+
+        Surfaced at the native API so every entry point (direct log(), and the
+        wandb/neptune/lightning shims alike) gets the same visibility -- a shim
+        catching exceptions is then only defense-in-depth, not the sole signal.
+        Logged once per (key, exc-type) at error, then at debug, so a failure
+        that recurs every step is shouted once rather than flooding.
+        """
+        seen = (key, type(exc).__name__)
+        detail = (
+            f'{tag}: dropped {key!r} ({type(value).__name__}): '
+            f'{type(exc).__name__}: {exc}'
+        )
+        if seen in self._dropped_item_warned:
+            logger.debug(detail)
+            return
+        self._dropped_item_warned.add(seen)
+        logger.error(f'{detail} (further occurrences at debug)')
+        # Telemetry: report once per (key, exc-type) so we can spot and fix
+        # these in the wild (ships the exception + traceback). Self-gates on
+        # PLUTO_DISABLE_TELEMETRY / CI and never raises.
+        try:
+            from pluto import sentry
+
+            sentry.capture_exception(exc)
+        except Exception:
+            pass
 
     def _is_numeric_value(self, value: Any) -> bool:
         """Check if value is a numeric type (int, float, or tensor)."""
@@ -631,6 +736,7 @@ class Op:
                 log_name=log_name,
                 timestamp_ms=timestamp_ms,
                 step=self._step,
+                caption=file_obj._caption,
             )
             logger.debug(
                 f'{tag}: enqueued file {file_obj._name}{file_obj._ext} for sync'
@@ -751,7 +857,7 @@ class Op:
 
             if update_status:
                 # Print URL where users can view the completed run
-                logger.info(f'{tag}: View run at {print_url(self.settings.url_view)}')
+                logger.info(f'{tag}: {self._view_run_message()}')
             else:
                 logger.debug(f'{tag}: closed (run status unchanged)')
         except (Exception, KeyboardInterrupt) as e:
@@ -888,6 +994,7 @@ class Op:
             run.update_config({'epochs': 100})
             run.update_config({'lr': 0.01, 'model': 'resnet50'})
         """
+        config = to_native_config(config)
         if self.config is None:
             self.config = {}
         self.config = deep_merge(self.config, config)

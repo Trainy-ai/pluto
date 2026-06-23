@@ -1,0 +1,115 @@
+{
+  "version": 1,
+  "package": "pluto",
+  "package_version": "0.0.25",
+  "public_api": [
+    "Artifact",
+    "Audio",
+    "Data",
+    "File",
+    "Graph",
+    "Histogram",
+    "Image",
+    "Settings",
+    "System",
+    "Table",
+    "Text",
+    "Video",
+    "alert",
+    "finish",
+    "generate_run_id",
+    "init",
+    "login",
+    "logout",
+    "query",
+    "setup",
+    "watch"
+  ],
+  "pages": [
+    {
+      "slug": "initialization",
+      "file": "initialization.mdx",
+      "title": "Initialization & lifecycle",
+      "group": "Core",
+      "symbols": [
+        "pluto.init.init",
+        "pluto.init.finish",
+        "pluto.sets.setup",
+        "pluto.auth.login",
+        "pluto.auth.logout",
+        "pluto.util.generate_run_id"
+      ]
+    },
+    {
+      "slug": "run",
+      "file": "run.mdx",
+      "title": "Run object",
+      "group": "Core",
+      "symbols": [
+        "pluto.op.Op.log",
+        "pluto.op.Op.watch",
+        "pluto.op.Op.alert",
+        "pluto.op.Op.finish",
+        "pluto.op.Op.add_tags",
+        "pluto.op.Op.remove_tags"
+      ]
+    },
+    {
+      "slug": "data",
+      "file": "data.mdx",
+      "title": "Structured data",
+      "group": "Data types",
+      "symbols": [
+        "pluto.data.Data",
+        "pluto.data.Graph",
+        "pluto.data.Histogram",
+        "pluto.data.Table"
+      ]
+    },
+    {
+      "slug": "media",
+      "file": "media.mdx",
+      "title": "Files & media",
+      "group": "Data types",
+      "symbols": [
+        "pluto.file.File",
+        "pluto.file.Image",
+        "pluto.file.Audio",
+        "pluto.file.Video",
+        "pluto.file.Text",
+        "pluto.file.Artifact"
+      ]
+    },
+    {
+      "slug": "config",
+      "file": "config.mdx",
+      "title": "Settings & system",
+      "group": "Configuration",
+      "symbols": [
+        "pluto.sets.Settings",
+        "pluto.sys.System"
+      ]
+    },
+    {
+      "slug": "query",
+      "file": "query.mdx",
+      "title": "Query API",
+      "group": "Query",
+      "symbols": [
+        "pluto.query.Client",
+        "pluto.query.list_projects",
+        "pluto.query.list_runs",
+        "pluto.query.get_run",
+        "pluto.query.get_metric_names",
+        "pluto.query.get_metrics",
+        "pluto.query.get_statistics",
+        "pluto.query.compare_runs",
+        "pluto.query.leaderboard",
+        "pluto.query.get_files",
+        "pluto.query.download_file",
+        "pluto.query.get_logs",
+        "pluto.query.QueryError"
+      ]
+    }
+  ]
+}

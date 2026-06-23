@@ -4,7 +4,7 @@ import re
 import signal
 from datetime import datetime
 
-from .util import clean_dict, find_node
+from .util import clean_dict, config_json_default, find_node
 
 logger = logging.getLogger(f'{__name__.split(".")[0]}')
 tag = 'API'
@@ -40,7 +40,9 @@ def make_compat_start_v1(config, settings, info, tags=None):
         'runName': settings._op_name,
         'projectName': settings.project,
         'externalId': settings._external_id,  # User-provided run ID for multi-node
-        'config': json.dumps(config) if config is not None else None,
+        'config': json.dumps(config, default=config_json_default)
+        if config is not None
+        else None,
         'loggerSettings': json.dumps(clean_dict(settings.to_dict())),
         'systemMetadata': json.dumps(info) if info is not None else None,
         'tags': tags if tags else None,
@@ -97,7 +99,9 @@ def make_compat_update_config_v1(settings, config):
     return json.dumps(
         {
             'runId': settings._op_id,
-            'config': json.dumps(config) if config else None,
+            'config': json.dumps(config, default=config_json_default)
+            if config
+            else None,
         }
     ).encode()
 
@@ -166,6 +170,9 @@ def make_compat_file_v1(file, timestamp, step):
                 'logName': k,
                 'step': step,
             }
+            caption = getattr(f, '_caption', None)
+            if caption is not None:
+                i['caption'] = caption
             batch.append(i)
     return json.dumps({'files': batch}).encode()
 

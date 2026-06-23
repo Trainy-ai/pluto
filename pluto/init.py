@@ -5,9 +5,10 @@ from typing import Any, Dict, Optional, Union
 import pluto
 
 from . import sentry as _sentry
+from ._fs import get_fs_type, is_network_fs
 from .op import Op
 from .sets import Settings, _classify_run_id, _is_display_id, setup
-from .util import deep_merge, gen_id, get_char
+from .util import deep_merge, gen_id, get_char, to_native_config
 
 logger = logging.getLogger(f'{__name__.split(".")[0]}')
 tag = 'Init'
@@ -56,6 +57,36 @@ class OpInit:
 
     def setup(self, settings) -> None:
         self.settings = settings
+
+
+def _warn_if_network_staging_dir(settings: Settings) -> None:
+    """Warn once if the sync DB will live on a network filesystem.
+
+    WAL-mode SQLite locking is unreliable on NFS/Lustre/SMB and degrades into
+    "locking protocol" retries that throttle logging. Detection is best-effort
+    and Linux-only; on other platforms this is a no-op (see pluto/_fs.py).
+    """
+    # The sync DB lives under the run dir (settings.get_dir()) unless an
+    # explicit path override is set.
+    db_path = settings.sync_process_db_path
+    staging_dir = os.path.dirname(db_path) if db_path else settings.get_dir()
+    try:
+        if not is_network_fs(staging_dir):
+            return
+        fstype = get_fs_type(staging_dir) or 'network'
+        logger.warning(
+            '%s: pluto staging directory %r is on a network filesystem (%s). '
+            'WAL-mode SQLite locking is unreliable there and can cause '
+            '"locking protocol" retries that slow down logging. Point it at '
+            'node-local storage via pluto.init(dir=...) or the PLUTO_DIR '
+            'environment variable (e.g. /tmp).',
+            tag,
+            staging_dir,
+            fstype,
+        )
+    except Exception as e:
+        # Detection must never break init().
+        logger.debug('%s: network-fs check skipped: %s', tag, e)
 
 
 def init(
@@ -165,6 +196,10 @@ def init(
     )  # datetime.now().strftime("%Y%m%d"), str(int(time.time()))
     # settings._op_id = id if id else gen_id(seed=settings.project)
 
+    # Warn (once) if the sync DB will live on a network filesystem. Done after
+    # project/_op_name are set so get_dir() resolves the real run directory.
+    _warn_if_network_staging_dir(settings)
+
     # Classify run_id: display ID → resume, numeric → resume, other → externalId
     # Parameter takes precedence over environment variable (already handled in setup())
     if run_id is not None:
@@ -193,6 +228,12 @@ def init(
         settings._inherit_config = inherit_config
     if inherit_tags is not None:
         settings._inherit_tags = inherit_tags
+
+    # Normalize the config to JSON-native types up front (e.g. OmegaConf
+    # DictConfig -> dict, resolving interpolations). Done before the fork
+    # deep-merge below so its `isinstance(config, dict)` check works, and so
+    # everything downstream (storage, serialization) sees clean native data.
+    config = to_native_config(config)
 
     # Deep-merge inherited parent config with user config (client-side).
     # The server only does a shallow merge, so we fetch the parent config,
@@ -240,7 +281,7 @@ def init(
         return op
     except Exception as e:
         _sentry.capture_exception(e)
-        logger.critical('%s: failed, %s', tag, e)  # add early logger
+        logger.critical('%s: failed, %s', tag, e, exc_info=True)  # add early logger
         raise e
 
 

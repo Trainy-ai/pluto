@@ -1,0 +1,38 @@
+name: api-docs
+
+on:
+    push:
+        branches:
+            - main
+            - 'releases/**'
+    pull_request:
+        branches:
+            - main
+            - 'releases/**'
+    workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  check:
+    # Verifies the committed docs-api/ MDX matches the current public API
+    # docstrings. Regenerate with `python scripts/gen_api_docs.py` if this fails.
+    permissions:
+      contents: read
+    runs-on: ubicloud-standard-2
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
+        with:
+          python-version: "3.10"
+
+      # griffe parses pluto statically (via AST), so the runtime deps
+      # (httpx/numpy/torch) are not required to generate docs.
+      - name: Install griffe
+        run: pip install griffe==2.0.2
+
+      - name: Check API docs are up to date
+        run: python scripts/gen_api_docs.py --check

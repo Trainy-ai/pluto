@@ -9,6 +9,7 @@ SIGKILL, and other failure modes.
 import json
 import logging
 import os
+import random
 import sqlite3
 import threading
 import time
@@ -41,9 +42,30 @@ HEALTH_METRIC_KEYS = [
     'retry_failures',
 ]
 
-# Default number of retries for transient SQLite errors (database is locked)
-_SQLITE_RETRY_COUNT = 5
-_SQLITE_RETRY_BASE_DELAY = 0.1  # seconds
+# Bounded exponential backoff for transient SQLite errors under concurrent
+# access. Delays grow as base * 2**attempt but are capped at MAX_DELAY, and we
+# sleep a *jittered* fraction of that window ("full jitter"). Jitter matters
+# because the training process and the sync process retry independently against
+# the same DB — without it they back off in lockstep and keep colliding.
+_SQLITE_RETRY_COUNT = 6
+_SQLITE_RETRY_BASE_DELAY = 0.05  # seconds
+_SQLITE_RETRY_MAX_DELAY = 1.0  # cap on a single backoff sleep
+
+# Substrings (lowercased) that mark a sqlite3.OperationalError as transient and
+# therefore safe to retry rather than surface:
+#   "database is locked"        -> SQLITE_BUSY   (another connection holds a lock)
+#   "database table is locked"  -> SQLITE_LOCKED (table-level contention)
+#   "database is busy"          -> SQLITE_BUSY variants
+#   "locking protocol"          -> SQLITE_PROTOCOL (WAL lock-handoff race; shows
+#                                  up on slow/network filesystems like NFS where
+#                                  POSIX locking degrades). Previously this fell
+#                                  through the 'locked' check and was re-raised,
+#                                  dropping the record and logging on every hit.
+_TRANSIENT_SQLITE_SUBSTRINGS = (
+    'locked',
+    'locking protocol',
+    'database is busy',
+)
 
 # Global counters for observability — tracks cumulative retry/failure stats
 # across the process lifetime without any thread-safety overhead (GIL-protected).
@@ -53,8 +75,19 @@ _retry_stats = {
 }
 
 
+def _is_transient_sqlite_error(error: sqlite3.OperationalError) -> bool:
+    """True if the error is transient lock contention that's safe to retry."""
+    message = str(error).lower()
+    return any(sub in message for sub in _TRANSIENT_SQLITE_SUBSTRINGS)
+
+
 def _retry_on_locked(func: F) -> F:
-    """Retry a method on sqlite3.OperationalError (database is locked)."""
+    """Retry a method on transient sqlite3.OperationalError (lock contention).
+
+    Uses bounded exponential backoff with full jitter. Non-transient
+    OperationalErrors (e.g. malformed SQL, schema errors) are re-raised
+    immediately rather than retried.
+    """
 
     @wraps(func)
     def wrapper(*args: Any, **kwargs: Any) -> Any:
@@ -63,16 +96,20 @@ def _retry_on_locked(func: F) -> F:
             try:
                 return func(*args, **kwargs)
             except sqlite3.OperationalError as e:
-                if 'locked' not in str(e).lower():
+                if not _is_transient_sqlite_error(e):
                     raise
                 last_error = e
                 _retry_stats['total_retries'] += 1
-                delay = _SQLITE_RETRY_BASE_DELAY * (2**attempt)
+                window = min(
+                    _SQLITE_RETRY_MAX_DELAY, _SQLITE_RETRY_BASE_DELAY * (2**attempt)
+                )
+                delay = random.uniform(0, window)
                 logger.debug(
-                    '%s: %s retrying after "database is locked" '
-                    '(attempt %d/%d, wait %.1fs)',
+                    '%s: %s retrying after transient SQLite error "%s" '
+                    '(attempt %d/%d, wait %.3fs)',
                     tag,
                     func.__name__,
+                    e,
                     attempt + 1,
                     _SQLITE_RETRY_COUNT,
                     delay,
@@ -125,6 +162,7 @@ class FileRecord:
     last_attempt_at: Optional[float]
     error_message: Optional[str]
     presigned_url: Optional[str]
+    caption: Optional[str] = None
 
 
 @dataclass
@@ -156,15 +194,26 @@ class SyncStore:
     - Health diagnostics (queue depth, write latency, WAL size)
     """
 
-    SCHEMA_VERSION = 1
+    # v2: added file_uploads.caption (backfilled via _add_column_if_missing)
+    SCHEMA_VERSION = 2
+
+    # SQLite's own busy handler wait. Kept deliberately short because we layer
+    # application-level exponential backoff (see _retry_on_locked) on top: a
+    # long busy_timeout stacks *under* every retry attempt, so e.g. a 30s
+    # timeout x N retries can stall a single write into tens of seconds. That
+    # stacking is what throttled training to ~50s/batch on NFS. With a short
+    # timeout, control returns to the jittered backoff loop quickly instead.
+    DEFAULT_BUSY_TIMEOUT_MS = 5000
 
     def __init__(
         self,
         db_path: str,
         parent_pid: Optional[int] = None,
+        busy_timeout_ms: int = DEFAULT_BUSY_TIMEOUT_MS,
     ) -> None:
         self.db_path = db_path
         self.parent_pid = parent_pid
+        self.busy_timeout_ms = busy_timeout_ms
         self._lock = threading.Lock()
 
         # Write latency tracking (running stats, no memory growth)
@@ -183,7 +232,7 @@ class SyncStore:
         )
         self.conn.execute('PRAGMA journal_mode=WAL')
         self.conn.execute('PRAGMA synchronous=NORMAL')  # Good balance of safety/speed
-        self.conn.execute('PRAGMA busy_timeout=30000')  # Wait up to 30s for locks
+        self.conn.execute(f'PRAGMA busy_timeout={int(self.busy_timeout_ms)}')
         self.conn.row_factory = sqlite3.Row
 
         self._init_schema()
@@ -209,10 +258,12 @@ class SyncStore:
                     (self.SCHEMA_VERSION,),
                 )
             elif row['version'] != self.SCHEMA_VERSION:
-                # Handle migrations in future versions
-                logger.warning(
-                    f'{tag}: Schema version mismatch: {row["version"]} != '
-                    f'{self.SCHEMA_VERSION}'
+                logger.info(
+                    f'{tag}: migrating schema {row["version"]} -> {self.SCHEMA_VERSION}'
+                )
+                cursor.execute(
+                    'UPDATE schema_version SET version = ?',
+                    (self.SCHEMA_VERSION,),
                 )
 
             # Run metadata (which runs are active, their sync state)
@@ -271,6 +322,7 @@ class SyncStore:
                     file_name TEXT,
                     file_ext TEXT,
                     log_name TEXT,
+                    caption TEXT,
                     timestamp_ms INTEGER NOT NULL,
                     step INTEGER,
                     status INTEGER DEFAULT 0,
@@ -282,8 +334,25 @@ class SyncStore:
                 )
             """)
 
+            # Additive migrations for DBs created before a column existed.
+            # CREATE TABLE IF NOT EXISTS above is a no-op on an existing table,
+            # so backfill new columns here. Idempotent (skips if present).
+            self._add_column_if_missing(cursor, 'file_uploads', 'caption', 'TEXT')
+
             self.conn.commit()
 
+    def _add_column_if_missing(
+        self, cursor: Any, table: str, column: str, decl: str
+    ) -> None:
+        """Add a column to an existing table if it isn't already present.
+
+        SQLite's ALTER TABLE has no IF NOT EXISTS, so check PRAGMA first.
+        """
+        existing = {r['name'] for r in cursor.execute(f'PRAGMA table_info({table})')}
+        if column not in existing:
+            cursor.execute(f'ALTER TABLE {table} ADD COLUMN {column} {decl}')
+
+    @_retry_on_locked
     def register_run(
         self,
         run_id: str,
@@ -324,6 +393,7 @@ class SyncStore:
             )
         self._record_write(start)
 
+    @_retry_on_locked
     def mark_run_finished(self, run_id: str) -> None:
         """Mark a run as finished (training complete, flush pending)."""
         with self._lock:
@@ -336,6 +406,7 @@ class SyncStore:
                 (time.time(), run_id),
             )
 
+    @_retry_on_locked
     def mark_run_synced(self, run_id: str) -> None:
         """Mark a run as fully synced (all data uploaded)."""
         with self._lock:
@@ -622,6 +693,7 @@ class SyncStore:
         log_name: str,
         timestamp_ms: int,
         step: Optional[int] = None,
+        caption: Optional[str] = None,
     ) -> int:
         """Add a file to the upload queue. Returns file record ID."""
         now = time.time()
@@ -631,9 +703,10 @@ class SyncStore:
                 """
                 INSERT INTO file_uploads (
                     run_id, local_path, file_type, file_size,
-                    timestamp_ms, step, created_at, file_name, file_ext, log_name
+                    timestamp_ms, step, created_at, file_name, file_ext,
+                    log_name, caption
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     run_id,
@@ -646,6 +719,7 @@ class SyncStore:
                     file_name,
                     file_ext,
                     log_name,
+                    caption,
                 ),
             )
             return cursor.lastrowid or 0
@@ -688,6 +762,7 @@ class SyncStore:
                         last_attempt_at=row['last_attempt_at'],
                         error_message=row['error_message'],
                         presigned_url=row['remote_url'],
+                        caption=(row['caption'] if 'caption' in row.keys() else None),
                     )
                 )
             return records
@@ -755,6 +830,7 @@ class SyncStore:
                 params,
             )
 
+    @_retry_on_locked
     def update_file_presigned_url(self, file_id: int, url: str) -> None:
         """Store presigned URL for a file."""
         with self._lock:
