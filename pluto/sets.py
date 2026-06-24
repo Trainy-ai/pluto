@@ -79,6 +79,9 @@ class Settings:
     x_file_stream_transmit_interval: int = 2**3
     x_sys_sampling_interval: int = 2**2
     x_sys_label: str = 'sys'
+    x_nccl_ras_enabled: bool = True
+    x_nccl_ras_addr: str = '127.0.0.1:28028'
+    x_nccl_ras_log_type: str = 'RAS'
     x_thread_join_timeout_seconds: int = 30
     x_grad_label: str = 'grad'
     x_param_label: str = 'param'

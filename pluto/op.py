@@ -29,6 +29,7 @@ from .data import Data
 from .file import Artifact, Audio, File, Image, Text, Video
 from .iface import ServerInterface
 from .log import setup_logger, teardown_logger
+from .nccl_ras import NcclRasMonitor
 from .store import DataStore
 from .sync import SyncProcessManager
 from .sync.store import HEALTH_METRIC_KEYS
@@ -301,6 +302,7 @@ class Op:
         self.settings = settings
         self.tags: List[str] = tags if tags else []  # Use provided tags or empty list
         self._monitor = OpMonitor(op=self)
+        self._ras_monitor = NcclRasMonitor(op=self)
         self._resumed: bool = False  # Whether this run was resumed (multi-node)
         self._resume: bool = resume  # Whether resume was explicitly requested
         self._sync_manager: Optional[SyncProcessManager] = None
@@ -530,6 +532,8 @@ class Op:
 
         # Always start the monitor for system metrics and heartbeats
         self._monitor.start()
+        # Start NCCL RAS log polling (rank 0 only; no-op otherwise)
+        self._ras_monitor.start()
 
         # Register system metric names with server (required for dashboard display)
         if self._iface:
@@ -813,6 +817,8 @@ class Op:
         is_distributed = _is_distributed_environment()
 
         try:
+            # Stop the RAS monitor first so it stops enqueuing into the sync store
+            self._ras_monitor.stop()
             # Stop the monitor (system metrics and heartbeats)
             self._monitor.stop(code)
 
