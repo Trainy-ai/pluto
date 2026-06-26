@@ -47,10 +47,13 @@ class QueryError(Exception):
 
 
 # wandb-compatible vocabulary for the ``filters`` query (the ``/api/runs/list``
-# ``filter`` param). The server (pluto-server ``lib/queries/run-filter.ts``) is
-# the authority on detailed semantics; the client does a light structural check
-# so obvious mistakes fail fast with a clear ``ValueError`` instead of an opaque
-# HTTP 400.
+# ``filter`` param). The server defines this grammar canonically in
+# ``lib/queries/run-filter-grammar.ts`` and publishes it as the
+# ``RunFilterGrammar`` OpenAPI component; these constants are the client mirror,
+# kept honest by ``tests/test_contract.py`` (drift fails CI). The server is the
+# authority on detailed semantics; the client does a light structural check so
+# obvious mistakes fail fast with a clear ``ValueError`` instead of an HTTP 400.
+_FILTER_BOOL_OPS = {'$and', '$or', '$not'}
 _FILTER_LEAF_OPS = {
     '$eq',
     '$ne',

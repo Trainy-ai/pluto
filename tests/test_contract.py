@@ -22,7 +22,13 @@ import os
 import httpx
 import pytest
 
-from pluto.query import _resolve_url_api
+from pluto.query import (
+    _FILTER_BOOL_OPS,
+    _FILTER_FIELD_PREFIXES,
+    _FILTER_FIELDS,
+    _FILTER_LEAF_OPS,
+    _resolve_url_api,
+)
 
 
 def _fetch_openapi() -> dict:
@@ -69,3 +75,46 @@ def test_list_runs_still_documents_core_params():
     params = _list_runs_params()
     for p in ('projectName', 'limit', 'sort', 'offset'):
         assert p in params, f'/api/runs/list missing documented param: {p}'
+
+
+def _grammar() -> dict:
+    """The server's published RunFilterGrammar component (its `properties`)."""
+    spec = _fetch_openapi()
+    schemas = spec.get('components', {}).get('schemas', {})
+    grammar = schemas.get('RunFilterGrammar')
+    if grammar is None:
+        pytest.skip(
+            'OpenAPI spec has no RunFilterGrammar component yet; pending the '
+            'pluto-server grammar-publish change being deployed to this host.'
+        )
+    return grammar.get('properties', {})
+
+
+def _published(props: dict, key: str) -> set:
+    enum = props.get(key, {}).get('items', {}).get('enum')
+    if enum is None:
+        pytest.skip(f'RunFilterGrammar.{key} has no items.enum in the spec')
+    return set(enum)
+
+
+@pytest.mark.parametrize(
+    'prop,client',
+    [
+        ('booleanOperators', _FILTER_BOOL_OPS),
+        ('leafOperators', _FILTER_LEAF_OPS),
+        ('fields', _FILTER_FIELDS),
+        ('fieldPrefixes', set(_FILTER_FIELD_PREFIXES)),
+    ],
+)
+def test_client_filter_vocab_matches_server(prop, client):
+    """The client's filter vocabulary must equal the server's published grammar.
+
+    Drift (a field/operator added on one side only) fails here with the exact
+    set difference, instead of surfacing as a runtime 400.
+    """
+    server = _published(_grammar(), prop)
+    assert client == server, (
+        f'{prop} drift between client and server.\n'
+        f'  server-only: {sorted(server - client)}\n'
+        f'  client-only: {sorted(client - server)}'
+    )
