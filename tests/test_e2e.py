@@ -13,6 +13,7 @@ Requires:
 import importlib.util
 import io
 import time
+import uuid
 from typing import Callable, List, TypeVar
 
 import httpx
@@ -428,6 +429,83 @@ def test_e2e_list_runs_search():
     runs = pq.list_runs(TESTING_PROJECT_NAME, search=task_name)
     found_ids = [r['id'] for r in runs]
     assert run_id in found_ids, f'Run {run_id} (name={task_name}) not found via search'
+
+
+def _two_tagged_runs() -> tuple:
+    """Create two finished runs (A older than B) sharing a unique tag.
+
+    Returns ``(tag, id_a, id_b)`` once both are listable under the tag. The
+    unique tag scopes subsequent list queries to exactly these two runs, so
+    concurrent writes to the shared ``testing-ci`` project (parallel matrix
+    legs, ``-n auto`` workers) can't shift the sort/pagination window. A >1s
+    gap guarantees distinct ``createdAt`` even at second precision.
+    """
+    tag = f'e2e-page-{uuid.uuid4().hex[:12]}'
+    run_a = pluto.init(project=TESTING_PROJECT_NAME, name=get_task_name(), tags=[tag])
+    id_a = run_a.settings._op_id
+    run_a.finish()
+    time.sleep(1.1)
+    run_b = pluto.init(project=TESTING_PROJECT_NAME, name=get_task_name(), tags=[tag])
+    id_b = run_b.settings._op_id
+    run_b.finish()
+
+    # Tags sync asynchronously; poll until both runs are listable under the tag.
+    def _both_listed() -> bool:
+        ids = {
+            r['id'] for r in pq.list_runs(TESTING_PROJECT_NAME, tags=[tag], limit=200)
+        }
+        return {id_a, id_b} <= ids
+
+    assert _poll(
+        fn=_both_listed, check=lambda ok: ok
+    ), f'tagged runs {id_a},{id_b} not both listable under {tag}'
+    return tag, id_a, id_b
+
+
+def test_e2e_list_runs_sort_created_desc():
+    """Verify sort='-createdAt' orders newest-first within a controlled set."""
+    tag, id_a, id_b = _two_tagged_runs()
+    runs = pq.list_runs(TESTING_PROJECT_NAME, tags=[tag], sort='-createdAt', limit=200)
+    ids = [r['id'] for r in runs]
+    # Exactly our two runs match the tag; B (later) must come before A.
+    assert ids == [id_b, id_a], f'sort=-createdAt not newest-first: {ids}'
+
+
+def test_e2e_list_runs_offset_pagination():
+    """Verify offset advances the page within a controlled, stable set."""
+    tag, id_a, id_b = _two_tagged_runs()
+    page1 = pq.list_runs(TESTING_PROJECT_NAME, tags=[tag], sort='-createdAt', limit=1)
+    page2 = pq.list_runs(
+        TESTING_PROJECT_NAME, tags=[tag], sort='-createdAt', limit=1, offset=1
+    )
+    assert [r['id'] for r in page1] == [id_b], 'page 1 should be the newest run'
+    assert [r['id'] for r in page2] == [id_a], 'offset=1 should skip to the older run'
+
+
+def test_e2e_list_runs_filter():
+    """Verify the wandb-style `filters` query filters by a config value."""
+    marker = f'e2e-ff-{int(time.time())}'
+    run = pluto.init(
+        project=TESTING_PROJECT_NAME,
+        name=get_task_name(),
+        config={'e2e_filter_marker': marker},
+    )
+    run_id = run.settings._op_id
+    run.finish()
+
+    def _query():
+        runs = pq.list_runs(
+            TESTING_PROJECT_NAME,
+            filters={'config.e2e_filter_marker': marker},
+            limit=200,
+        )
+        ids = [r['id'] for r in runs]
+        return run_id in ids
+
+    # Field values are indexed asynchronously; poll for eventual consistency.
+    assert _poll(
+        fn=_query, check=lambda found: found
+    ), f'Run {run_id} not found via filters on config.e2e_filter_marker'
 
 
 # ---------------------------------------------------------------------------

@@ -1,0 +1,26 @@
+name: contract-test (prod)
+
+# Runs the OpenAPI schema contract test against production.
+
+on:
+  push:
+    branches:
+      - main
+      - 'releases/**'
+  pull_request:
+    branches:
+      - main
+      - 'releases/**'
+  workflow_dispatch:
+
+# Must grant at least what the called workflow's job requests (contents: read);
+# a called workflow cannot receive more token permission than its caller.
+permissions:
+  contents: read
+
+jobs:
+  prod:
+    uses: ./.github/workflows/contract-test.yml
+    with:
+      url_api: https://pluto-api.trainy.ai
+    secrets: inherit

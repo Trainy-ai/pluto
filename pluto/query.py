@@ -18,6 +18,7 @@ Usage::
     runs = client.list_runs("my-project")
 """
 
+import json
 import logging
 import os
 import time
@@ -43,6 +44,94 @@ class QueryError(Exception):
     def __init__(self, message: str, status_code: Optional[int] = None):
         self.status_code = status_code
         super().__init__(message)
+
+
+# wandb-compatible vocabulary for the ``filters`` query (the ``/api/runs/list``
+# ``filter`` param). The server defines this grammar canonically in
+# ``lib/queries/run-filter-grammar.ts`` and publishes it as the
+# ``RunFilterGrammar`` OpenAPI component; these constants are the client mirror,
+# kept honest by ``tests/test_contract.py`` (drift fails CI). The server is the
+# authority on detailed semantics; the client does a light structural check so
+# obvious mistakes fail fast with a clear ``ValueError`` instead of an HTTP 400.
+_FILTER_BOOL_OPS = {'$and', '$or', '$not'}
+_FILTER_LEAF_OPS = {
+    '$eq',
+    '$ne',
+    '$gt',
+    '$gte',
+    '$lt',
+    '$lte',
+    '$in',
+    '$nin',
+    '$regex',
+}
+# Recognised leaf field names (exact) plus dotted-prefix families.
+_FILTER_FIELDS = {
+    'state',
+    'status',
+    'heartbeat_at',
+    'heartbeatAt',
+    'created_at',
+    'createdAt',
+    'updated_at',
+    'updatedAt',
+    'name',
+    'displayName',
+    'display_name',
+    'tags',
+}
+_FILTER_FIELD_PREFIXES = (
+    'config.',
+    'systemMetadata.',
+    'summaryMetrics.',
+    'summary_metrics.',
+)
+
+# Server clamps offset to this range (MAX_JSON_SORT_OFFSET).
+_MAX_OFFSET = 100_000
+
+
+def _validate_filters(node: Any, _depth: int = 0) -> None:
+    """Light structural validation of a wandb-style ``filters`` dict.
+
+    Recursively checks boolean operators (``$and``/``$or``/``$not``), leaf
+    operators, and field names against the supported vocabulary, raising
+    ``ValueError`` on anything unrecognised. The server enforces full semantics.
+    """
+    if _depth > 50:
+        raise ValueError('filters nested too deeply')
+    if not isinstance(node, dict):
+        raise ValueError(f'filters node must be a dict, got {type(node).__name__}')
+    for key, value in node.items():
+        if key in ('$and', '$or'):
+            if not isinstance(value, list):
+                raise ValueError(f'{key} expects a list')
+            for child in value:
+                _validate_filters(child, _depth + 1)
+        elif key == '$not':
+            _validate_filters(value, _depth + 1)
+        elif key.startswith('$'):
+            raise ValueError(f'unknown boolean operator: {key!r}')
+        else:
+            _validate_filter_field(key)
+            if isinstance(value, dict) and any(k.startswith('$') for k in value):
+                for op in value:
+                    if op not in _FILTER_LEAF_OPS:
+                        raise ValueError(
+                            f'unknown leaf operator {op!r} on field {key!r}; '
+                            f'expected one of {sorted(_FILTER_LEAF_OPS)}'
+                        )
+
+
+def _validate_filter_field(field_name: str) -> None:
+    if field_name in _FILTER_FIELDS:
+        return
+    if any(
+        field_name.startswith(p) and len(field_name) > len(p)
+        for p in _FILTER_FIELD_PREFIXES
+    ):
+        return
+    raise ValueError(f'unknown filter field: {field_name!r}')
 
 
 class Client:
@@ -115,6 +204,9 @@ class Client:
         search: Optional[str] = None,
         tags: Optional[List[str]] = None,
         limit: int = 50,
+        sort: Optional[str] = None,
+        offset: int = 0,
+        filters: Optional[Dict[str, Any]] = None,
     ) -> List[Dict[str, Any]]:
         """List runs in a project.
 
@@ -124,17 +216,74 @@ class Client:
             tags: Filter by tags (AND logic). Only runs matching *all*
                 specified tags are returned.
             limit: Maximum number of runs to return (max 200).
+            sort: Server-side ordering as ``[+|-]<field>`` (``-`` = descending).
+                Accepts built-in columns (``createdAt``, ``updatedAt``,
+                ``name``, ``status`` and their snake_case aliases),
+                ``config.<key>.value`` / ``systemMetadata.<key>.value``,
+                ``summary_metrics.<name>`` (LAST aggregation), and
+                ``heartbeat_at`` (last logged data point). Defaults to
+                ``createdAt desc`` server-side.
+            offset: Skip-based pagination offset (0–100,000). Combine with
+                ``limit`` to page; advance ``offset`` until a short page is
+                returned.
+            filters: A wandb-compatible MongoDB-style query (the OR-capable
+                filter surface). Boolean ``$and``/``$or``/``$not`` combine leaf
+                terms; each leaf is ``{field: value}`` (equality) or
+                ``{field: {$op: value}}`` with ops ``$eq``, ``$ne``, ``$gt``,
+                ``$gte``, ``$lt``, ``$lte``, ``$in``, ``$nin``, ``$regex``.
+                Fields: ``state``/``status``, ``heartbeat_at``,
+                ``created_at``/``updated_at``, ``name``, ``tags``,
+                ``config.<key>``, ``summaryMetrics.<key>``.
+                ``$or``/``$not`` and ``heartbeat_at``/``summaryMetrics.*`` leaves
+                require ``project``.
+
+        ``filters`` AND-combines with ``search``/``tags``. To find interrupted
+        spot jobs to retry, find the *alive* set and exclude it — or directly
+        select non-completed runs that have gone stale::
+
+            # wandb-style "alive" set (running OR reported data in the last hour):
+            list_runs(project, filters={"$or": [
+                {"state": "running"},
+                {"heartbeat_at": {"$gte": cutoff_iso}},
+            ]})
+
+            # retry candidates directly (not completed AND stale):
+            list_runs(project, filters={"$and": [
+                {"status": {"$ne": "COMPLETED"}},
+                {"heartbeat_at": {"$lt": cutoff_iso}},
+            ]})
 
         Returns:
             List of run dicts with keys: ``id``, ``name``, ``displayId``,
             ``status``, ``tags``, ``config``, ``createdAt``, ``updatedAt``,
             ``url``.
+
+        Raises:
+            ValueError: If ``filters`` uses an unrecognised operator or field.
         """
         params: Dict[str, Any] = {'projectName': project, 'limit': min(limit, 200)}
         if search is not None:
             params['search'] = search
         if tags is not None:
             params['tags'] = ','.join(tags)
+        if filters is not None:
+            _validate_filters(filters)
+            params['filter'] = json.dumps(filters)
+        if sort is not None:
+            params['sort'] = sort
+        if offset:
+            clamped = max(0, min(offset, _MAX_OFFSET))
+            if clamped != offset:
+                logger.debug(
+                    '%s: offset %d clamped to %d (max %d)',
+                    tag,
+                    offset,
+                    clamped,
+                    _MAX_OFFSET,
+                )
+            # A negative offset clamps to 0; don't send a redundant offset=0.
+            if clamped:
+                params['offset'] = clamped
         return self._get('/api/runs/list', params=params)['runs']
 
     def get_run(
@@ -549,9 +698,20 @@ def list_runs(
     search: Optional[str] = None,
     tags: Optional[List[str]] = None,
     limit: int = 50,
+    sort: Optional[str] = None,
+    offset: int = 0,
+    filters: Optional[Dict[str, Any]] = None,
 ) -> List[Dict[str, Any]]:
     """List runs in a project. See :meth:`Client.list_runs`."""
-    return _get_client().list_runs(project, search=search, tags=tags, limit=limit)
+    return _get_client().list_runs(
+        project,
+        search=search,
+        tags=tags,
+        limit=limit,
+        sort=sort,
+        offset=offset,
+        filters=filters,
+    )
 
 
 def get_run(project: str, run_id: Union[int, str]) -> Dict[str, Any]:

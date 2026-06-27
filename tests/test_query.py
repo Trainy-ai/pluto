@@ -207,6 +207,91 @@ class TestListRuns:
         call_args = client._client.get.call_args
         assert call_args[1]['params']['limit'] == 200
 
+    def test_sort(self, client, mock_response):
+        client._client.get.return_value = mock_response(200, {'runs': []})
+        client.list_runs('proj', sort='-createdAt')
+        call_args = client._client.get.call_args
+        assert call_args[1]['params']['sort'] == '-createdAt'
+
+    def test_offset(self, client, mock_response):
+        client._client.get.return_value = mock_response(200, {'runs': []})
+        client.list_runs('proj', offset=100)
+        call_args = client._client.get.call_args
+        assert call_args[1]['params']['offset'] == 100
+
+    def test_offset_zero_omitted(self, client, mock_response):
+        client._client.get.return_value = mock_response(200, {'runs': []})
+        client.list_runs('proj')
+        call_args = client._client.get.call_args
+        assert 'offset' not in call_args[1]['params']
+
+    def test_offset_clamped(self, client, mock_response):
+        client._client.get.return_value = mock_response(200, {'runs': []})
+        client.list_runs('proj', offset=10**9)
+        call_args = client._client.get.call_args
+        assert call_args[1]['params']['offset'] == 100_000
+
+    def test_negative_offset_omitted(self, client, mock_response):
+        client._client.get.return_value = mock_response(200, {'runs': []})
+        client.list_runs('proj', offset=-5)
+        call_args = client._client.get.call_args
+        assert 'offset' not in call_args[1]['params']
+
+    def test_filters_serialized_as_json(self, client, mock_response):
+        client._client.get.return_value = mock_response(200, {'runs': []})
+        flt = {
+            '$or': [
+                {'state': 'running'},
+                {'heartbeat_at': {'$gte': '2026-06-22T00:00:00Z'}},
+            ]
+        }
+        client.list_runs('proj', filters=flt)
+        params = client._client.get.call_args[1]['params']
+        assert json.loads(params['filter']) == flt
+
+    def test_filters_config_leaf(self, client, mock_response):
+        client._client.get.return_value = mock_response(200, {'runs': []})
+        client.list_runs('proj', filters={'config.lr': {'$gt': 0.001}})
+        params = client._client.get.call_args[1]['params']
+        assert json.loads(params['filter']) == {'config.lr': {'$gt': 0.001}}
+
+    def test_filters_unknown_field_raises(self, client, mock_response):
+        client._client.get.return_value = mock_response(200, {'runs': []})
+        with pytest.raises(ValueError, match='unknown filter field'):
+            client.list_runs('proj', filters={'bogus': 1})
+
+    def test_filters_unknown_operator_raises(self, client, mock_response):
+        client._client.get.return_value = mock_response(200, {'runs': []})
+        with pytest.raises(ValueError, match='unknown leaf operator'):
+            client.list_runs('proj', filters={'config.lr': {'$bogus': 1}})
+
+    def test_filters_unknown_boolean_op_raises(self, client, mock_response):
+        client._client.get.return_value = mock_response(200, {'runs': []})
+        with pytest.raises(ValueError, match='unknown boolean operator'):
+            client.list_runs('proj', filters={'$xor': [{'state': 'running'}]})
+
+
+class TestValidateFilters:
+    def test_accepts_nested_boolean(self):
+        from pluto.query import _validate_filters
+
+        _validate_filters(
+            {
+                '$and': [
+                    {'$or': [{'status': 'RUNNING'}, {'status': 'FAILED'}]},
+                    {'$not': {'config.lr': {'$lt': 0.1}}},
+                    {'tags': {'$in': ['a', 'b']}},
+                    {'summaryMetrics.loss': {'$lte': 0.5}},
+                ]
+            }
+        )
+
+    def test_and_or_require_list(self):
+        from pluto.query import _validate_filters
+
+        with pytest.raises(ValueError, match=r'\$or expects a list'):
+            _validate_filters({'$or': {'state': 'running'}})
+
 
 # ---------------------------------------------------------------------------
 # get_run
@@ -520,7 +605,13 @@ class TestModuleFunctions:
 
         assert result == [{'id': 1}]
         mock_client_instance.list_runs.assert_called_once_with(
-            'my-project', search=None, tags=None, limit=50
+            'my-project',
+            search=None,
+            tags=None,
+            limit=50,
+            sort=None,
+            offset=0,
+            filters=None,
         )
 
         # Clean up

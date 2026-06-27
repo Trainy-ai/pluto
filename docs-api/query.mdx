@@ -44,6 +44,9 @@ list_runs(
     search: Optional[str] = None,
     tags: Optional[List[str]] = None,
     limit: int = 50,
+    sort: Optional[str] = None,
+    offset: int = 0,
+    filters: Optional[Dict[str, Any]] = None,
 ) -> List[Dict[str, Any]]
 ```
 
@@ -55,8 +58,15 @@ List runs in a project.
 | `search` | `Optional[str]` | Full-text search on run name. |
 | `tags` | `Optional[List[str]]` | Filter by tags (AND logic). Only runs matching *all* specified tags are returned. |
 | `limit` | `int` | Maximum number of runs to return (max 200). |
+| `sort` | `Optional[str]` | Server-side ordering as `[+\|-]<field>` (`-` = descending). Accepts built-in columns (`createdAt`, `updatedAt`, `name`, `status` and their snake_case aliases), `config.<key>.value` / `systemMetadata.<key>.value`, `summary_metrics.<name>` (LAST aggregation), and `heartbeat_at` (last logged data point). Defaults to `createdAt desc` server-side. |
+| `offset` | `int` | Skip-based pagination offset (0–100,000). Combine with `limit` to page; advance `offset` until a short page is returned. |
+| `filters` | `Optional[Dict[str, Any]]` | A wandb-compatible MongoDB-style query (the OR-capable filter surface). Boolean `$and`/`$or`/`$not` combine leaf terms; each leaf is `{field: value}` (equality) or `{field: {$op: value}}` with ops `$eq`, `$ne`, `$gt`, `$gte`, `$lt`, `$lte`, `$in`, `$nin`, `$regex`. Fields: `state`/`status`, `heartbeat_at`, `created_at`/`updated_at`, `name`, `tags`, `config.<key>`, `summaryMetrics.<key>`. `$or`/`$not` and `heartbeat_at`/`summaryMetrics.*` leaves require `project`. |
 
 **Returns:** `List[Dict[str, Any]]` — List of run dicts with keys: `id`, `name`, `displayId`, `status`, `tags`, `config`, `createdAt`, `updatedAt`, `url`.
+
+**Raises:**
+
+- `ValueError` — If `filters` uses an unrecognised operator or field.
 
 #### `Client.get_run`
 
@@ -275,6 +285,9 @@ list_runs(
     search: Optional[str] = None,
     tags: Optional[List[str]] = None,
     limit: int = 50,
+    sort: Optional[str] = None,
+    offset: int = 0,
+    filters: Optional[Dict[str, Any]] = None,
 ) -> List[Dict[str, Any]]
 ```
 
