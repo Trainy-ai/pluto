@@ -856,15 +856,29 @@ def filter_corpus():
         f'have {ready}, want {all_ids}'
     )
     # And until a numeric comparison on config is live (sentinel matches all).
-    _poll(
+    # Assert this too: if it times out while config.batch already indexed, the
+    # parametrized leaf-operator tests would otherwise flake on a still-catching-up
+    # server instead of failing here with a clear message.
+    numeric_ready = _poll(
         fn=lambda: _query(
             {'$and': [{'config.batch': batch}, {'config.lr': {'$gte': 0.0}}]}
         ),
         check=lambda got: all_ids <= got,
     )
+    assert all_ids <= numeric_ready, (
+        f'config.lr numeric filter not indexed for all runs in batch={batch}: '
+        f'have {numeric_ready}, want {all_ids}'
+    )
 
     # Best-effort: discover a scalar systemMetadata field to filter on.
-    snap = pq.get_run(TESTING_PROJECT_NAME, corpus['runs']['alpha']['id'])
+    # systemMetadata is populated asynchronously by the server, so poll rather
+    # than read once right after finish() — otherwise the snapshot can be empty
+    # and test_e2e_filter_field_system_metadata silently skips.
+    snap = _poll_run(
+        TESTING_PROJECT_NAME,
+        corpus['runs']['alpha']['id'],
+        check=lambda r: _first_scalar(r.get('systemMetadata') or {}) is not None,
+    )
     corpus['sys_meta'] = _first_scalar(snap.get('systemMetadata') or {})
 
     return corpus
@@ -957,6 +971,24 @@ def test_e2e_filter_boolean_not(filter_corpus):
     )
 
 
+# ----- compound leaf forms (documented operator behaviors) ------------------
+
+
+def test_e2e_filter_implicit_and_multiple_keys(filter_corpus):
+    """Multiple keys in one object are implicitly ANDed.
+
+    Per the docs: ``{"config.lr": {"$gt": ...}, "config.model": ...}``.
+    """
+    case = {'config.lr': {'$gte': 0.01}, 'config.group': 'beta'}
+    _assert_filter(filter_corpus, case, ['beta'])
+
+
+def test_e2e_filter_range_on_single_field(filter_corpus):
+    """Two operators on one field form a range (docs: heartbeat_at range)."""
+    # 0.005 < lr < 0.05 selects only beta (lr=0.01).
+    _assert_filter(filter_corpus, {'config.lr': {'$gt': 0.005, '$lt': 0.05}}, ['beta'])
+
+
 # ----- documented fields ----------------------------------------------------
 
 
@@ -981,8 +1013,12 @@ def test_e2e_filter_field_name(filter_corpus):
 
 
 def test_e2e_filter_field_tags(filter_corpus):
-    """`tags` field: $in selects runs carrying the tag."""
+    """`tags` field: $in = "has any of these" (docs)."""
+    # Single tag selects its run; multiple tags select the union (has-any).
     _assert_filter(filter_corpus, {'tags': {'$in': ['alpha']}}, ['alpha'])
+    _assert_filter(
+        filter_corpus, {'tags': {'$in': ['alpha', 'beta']}}, ['alpha', 'beta']
+    )
 
 
 def test_e2e_filter_field_config_string(filter_corpus):
