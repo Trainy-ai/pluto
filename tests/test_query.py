@@ -270,6 +270,30 @@ class TestListRuns:
         with pytest.raises(ValueError, match='unknown boolean operator'):
             client.list_runs('proj', filters={'$xor': [{'state': 'running'}]})
 
+    def test_filters_validated_before_http(self, client, mock_response):
+        # An invalid filter must raise before any request is issued.
+        client._client.get.return_value = mock_response(200, {'runs': []})
+        with pytest.raises(ValueError):
+            client.list_runs('proj', filters={'bogus': 1})
+        client._client.get.assert_not_called()
+
+    def test_filters_combine_with_search_and_tags(self, client, mock_response):
+        client._client.get.return_value = mock_response(200, {'runs': []})
+        client.list_runs(
+            'proj', search='exp', tags=['a', 'b'], filters={'state': 'running'}
+        )
+        params = client._client.get.call_args[1]['params']
+        assert params['search'] == 'exp'
+        assert params['tags'] == 'a,b'
+        assert json.loads(params['filter']) == {'state': 'running'}
+
+    def test_filters_in_operator_list_roundtrips(self, client, mock_response):
+        client._client.get.return_value = mock_response(200, {'runs': []})
+        flt = {'config.lr': {'$in': [0.1, 0.01, 0.001]}}
+        client.list_runs('proj', filters=flt)
+        params = client._client.get.call_args[1]['params']
+        assert json.loads(params['filter']) == flt
+
 
 class TestValidateFilters:
     def test_accepts_nested_boolean(self):
@@ -291,6 +315,111 @@ class TestValidateFilters:
 
         with pytest.raises(ValueError, match=r'\$or expects a list'):
             _validate_filters({'$or': {'state': 'running'}})
+
+
+class TestFilterValidation:
+    """Exhaustive structural validation of the wandb-style ``filters`` grammar.
+
+    Covers every documented leaf operator, exact field, and field prefix, plus
+    the guard branches in ``_validate_filters`` / ``_validate_filter_field``
+    that the happy-path tests above don't reach. The vocabulary mirrored here
+    is kept equal to the server's published grammar by ``test_contract.py``.
+    """
+
+    @pytest.mark.parametrize(
+        'op', ['$eq', '$ne', '$gt', '$gte', '$lt', '$lte', '$in', '$nin', '$regex']
+    )
+    def test_each_leaf_operator_accepted(self, op):
+        from pluto.query import _FILTER_LEAF_OPS, _validate_filters
+
+        assert op in _FILTER_LEAF_OPS  # guard against silent vocab drift
+        value = ['a', 'b'] if op in ('$in', '$nin') else 1
+        _validate_filters({'config.x': {op: value}})
+
+    @pytest.mark.parametrize(
+        'field',
+        [
+            'state',
+            'status',
+            'heartbeat_at',
+            'heartbeatAt',
+            'created_at',
+            'createdAt',
+            'updated_at',
+            'updatedAt',
+            'name',
+            'displayName',
+            'display_name',
+            'tags',
+        ],
+    )
+    def test_each_exact_field_accepted(self, field):
+        from pluto.query import _FILTER_FIELDS, _validate_filters
+
+        assert field in _FILTER_FIELDS  # guard against silent vocab drift
+        _validate_filters({field: 'x'})
+
+    @pytest.mark.parametrize(
+        'prefix', ['config.', 'systemMetadata.', 'summaryMetrics.', 'summary_metrics.']
+    )
+    def test_each_field_prefix_accepted(self, prefix):
+        from pluto.query import _FILTER_FIELD_PREFIXES, _validate_filters
+
+        assert prefix in _FILTER_FIELD_PREFIXES  # guard against silent vocab drift
+        _validate_filters({f'{prefix}key': 1})
+
+    def test_bare_prefix_without_suffix_rejected(self):
+        from pluto.query import _validate_filters
+
+        # A prefix with no key after it isn't a valid field.
+        with pytest.raises(ValueError, match='unknown filter field'):
+            _validate_filters({'config.': 1})
+
+    def test_plain_equality_leaves_accepted(self):
+        from pluto.query import _validate_filters
+
+        _validate_filters({'name': 'foo'})
+        _validate_filters({'state': 'running'})
+        _validate_filters({'tags': ['a', 'b']})
+
+    def test_depth_limit_rejected(self):
+        from pluto.query import _validate_filters
+
+        node: dict = {'config.x': 1}
+        for _ in range(60):
+            node = {'$not': node}
+        with pytest.raises(ValueError, match='nested too deeply'):
+            _validate_filters(node)
+
+    def test_non_dict_node_in_list_rejected(self):
+        from pluto.query import _validate_filters
+
+        with pytest.raises(ValueError, match='must be a dict'):
+            _validate_filters({'$and': [123]})
+
+    def test_top_level_non_dict_rejected(self):
+        from pluto.query import _validate_filters
+
+        with pytest.raises(ValueError, match='must be a dict'):
+            _validate_filters([{'state': 'running'}])
+
+    def test_and_requires_list(self):
+        from pluto.query import _validate_filters
+
+        with pytest.raises(ValueError, match=r'\$and expects a list'):
+            _validate_filters({'$and': {'state': 'running'}})
+
+    def test_not_recurses_into_child(self):
+        from pluto.query import _validate_filters
+
+        with pytest.raises(ValueError, match='unknown filter field'):
+            _validate_filters({'$not': {'bogus': 1}})
+
+    def test_invalid_operator_deep_inside_or(self):
+        from pluto.query import _validate_filters
+
+        with pytest.raises(ValueError, match='unknown leaf operator'):
+            _validate_filters({'$or': [{'config.x': {'$bogus': 1}}]})
 
 
 # ---------------------------------------------------------------------------

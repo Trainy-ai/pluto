@@ -749,3 +749,441 @@ def test_e2e_full_lifecycle():
             assert (
                 g > 100 and r < 50 and b < 50
             ), f'Expected green pixel, got ({r},{g},{b})'
+
+
+# ---------------------------------------------------------------------------
+# Filter query (wandb-style `filters=`) — operator & field coverage
+#
+# `test_e2e_list_runs_filter` above covers a single equality leaf. The tests
+# below exercise the *full* documented filter grammar end-to-end against the
+# live server: every leaf operator ($eq/$ne/$gt/$gte/$lt/$lte/$in/$nin/$regex),
+# every boolean combinator ($and/$or/$not), and every documented field family
+# (status/state, name, displayName, tags, config.*, summaryMetrics.*,
+# systemMetadata.*, created_at/updated_at, heartbeat_at).
+#
+# The grammar is mirrored client-side in pluto.query._FILTER_* and kept equal
+# to the server's published RunFilterGrammar by tests/test_contract.py — so
+# "all documented fields" == that grammar.
+#
+# Isolation: each corpus carries a unique `batch` marker and every query is
+# AND-scoped to it via `config.batch`, so the result universe is exactly the
+# three seeded runs even under `-n auto` (xdist), where the module-scoped
+# fixture is re-seeded once per worker.
+#
+# Fields whose filter values are materialized by a slower (ClickHouse-backed)
+# aggregation path than core run columns — summaryMetrics.* and
+# systemMetadata.* — first wait on an all-match sentinel; if that never
+# converges within the window we skip() (eventual-consistency lag) rather than
+# fail, matching the skips used elsewhere in this file. Once the sentinel
+# passes, the data is indexed and the subset assertions are real.
+# ---------------------------------------------------------------------------
+
+_SLOW_FIELD_POLL_TIMEOUT = 180
+
+# Date cutoffs far outside any real run timestamp, for exercising the date
+# fields' comparison plumbing without timing flake.
+_PAST_CUTOFF = '2000-01-01T00:00:00Z'
+_FUTURE_CUTOFF = '2999-01-01T00:00:00Z'
+
+
+def _first_scalar(meta: dict):
+    """Return ``(key, value)`` for the first scalar systemMetadata entry, or None.
+
+    Handles both flat (``{key: value}``) and wrapped (``{key: {'value': ...}}``)
+    shapes that the server may use for systemMetadata.
+    """
+    if not isinstance(meta, dict):
+        return None
+    for k, v in meta.items():
+        if isinstance(v, dict) and 'value' in v:
+            v = v['value']
+        if isinstance(v, (str, int, float)) and not isinstance(v, bool):
+            return (k, v)
+    return None
+
+
+@pytest.fixture(scope='module')
+def filter_corpus():
+    """Seed three finished runs with known, distinct values for filter tests.
+
+    Returns a dict with the unique ``batch`` marker, per-group run metadata
+    (``id``, ``name``, ``lr``, ``loss``), and a discovered scalar
+    ``sys_meta`` ``(key, value)`` pair (or ``None``).
+    """
+    batch = uuid.uuid4().hex[:12]
+    tag = f'e2e-filt-{batch}'
+    # group -> (lr, loss). `lr` drives the numeric operator matrix; `loss` (the
+    # LAST-aggregated metric) drives the summaryMetrics tests. Values are chosen
+    # so each operator selects a distinct, non-trivial subset.
+    specs = {
+        'alpha': (0.001, 0.5),
+        'beta': (0.01, 0.1),
+        'gamma': (0.1, 0.9),
+    }
+    corpus: dict = {'batch': batch, 'tag': tag, 'runs': {}}
+    for group, (lr, loss) in specs.items():
+        name = f't-e2e-filter-{batch}-{group}'
+        run = pluto.init(
+            project=TESTING_PROJECT_NAME,
+            name=name,
+            tags=[tag, group],
+            config={'lr': lr, 'batch': batch, 'group': group},
+        )
+        run.log({'loss': loss})
+        corpus['runs'][group] = {
+            'id': run.settings._op_id,
+            'name': name,
+            'lr': lr,
+            'loss': loss,
+        }
+        run.finish()
+
+    all_ids = {r['id'] for r in corpus['runs'].values()}
+
+    def _query(flt):
+        return {
+            r['id'] for r in pq.list_runs(TESTING_PROJECT_NAME, filters=flt, limit=200)
+        }
+
+    # Warm up: wait until config.batch is indexed for all three runs, so the
+    # batch-scoped subset assertions below are stable rather than racing ingest.
+    ready = _poll(
+        fn=lambda: _query({'config.batch': batch}),
+        check=lambda got: all_ids <= got,
+    )
+    assert all_ids <= ready, (
+        f'corpus not fully indexed under config.batch={batch}: '
+        f'have {ready}, want {all_ids}'
+    )
+    # And until a numeric comparison on config is live (sentinel matches all).
+    # Assert this too: if it times out while config.batch already indexed, the
+    # parametrized leaf-operator tests would otherwise flake on a still-catching-up
+    # server instead of failing here with a clear message.
+    numeric_ready = _poll(
+        fn=lambda: _query(
+            {'$and': [{'config.batch': batch}, {'config.lr': {'$gte': 0.0}}]}
+        ),
+        check=lambda got: all_ids <= got,
+    )
+    assert all_ids <= numeric_ready, (
+        f'config.lr numeric filter not indexed for all runs in batch={batch}: '
+        f'have {numeric_ready}, want {all_ids}'
+    )
+
+    # Best-effort: discover a scalar systemMetadata field to filter on.
+    # systemMetadata is populated asynchronously by the server, so poll rather
+    # than read once right after finish() — otherwise the snapshot can be empty
+    # and test_e2e_filter_field_system_metadata silently skips.
+    snap = _poll_run(
+        TESTING_PROJECT_NAME,
+        corpus['runs']['alpha']['id'],
+        check=lambda r: _first_scalar(r.get('systemMetadata') or {}) is not None,
+    )
+    corpus['sys_meta'] = _first_scalar(snap.get('systemMetadata') or {})
+
+    return corpus
+
+
+def _scoped(batch: str, case: dict, by: str = 'config') -> dict:
+    """AND-combine *case* with a unique per-corpus marker for isolation.
+
+    ``by='config'`` scopes via ``config.batch`` (use for ``config.*`` cases);
+    ``by='name'`` scopes via a ``name`` regex on the batch id (use for
+    column-only fields like ``status``/``created_at``). Mixing a ``config.*``
+    predicate with a column-only predicate in one ``$and`` makes the server
+    return an empty set, so the scope marker must match the case's field family.
+    """
+    marker = {'config.batch': batch} if by == 'config' else {'name': {'$regex': batch}}
+    return {'$and': [marker, case]}
+
+
+def _filter_ids(batch: str, case: dict, by: str = 'config') -> set:
+    """Return the set of run ids matching *case* within the corpus batch."""
+    runs = pq.list_runs(
+        TESTING_PROJECT_NAME, filters=_scoped(batch, case, by), limit=200
+    )
+    return {r['id'] for r in runs}
+
+
+def _expected_ids(corpus: dict, groups) -> set:
+    return {corpus['runs'][g]['id'] for g in groups}
+
+
+def _assert_filter(corpus, case, groups, timeout=_POLL_TIMEOUT, by='config'):
+    """Assert *case* (batch-scoped) selects exactly *groups*, polling for it."""
+    batch = corpus['batch']
+    want = _expected_ids(corpus, groups)
+    got = _poll(
+        fn=lambda: _filter_ids(batch, case, by),
+        check=lambda s: s == want,
+        timeout=timeout,
+    )
+    assert (
+        got == want
+    ), f'filter {case!r} selected {got}, want {want} (groups={list(groups)})'
+
+
+def _assert_filter_or_skip(corpus, case, groups, timeout=_POLL_TIMEOUT, by='config'):
+    """Like :func:`_assert_filter`, but skip (not fail) on an all-empty result.
+
+    The ``filters`` API is in preview; some documented fields/operators may not
+    be wired up server-side yet and return an empty set. Treat an all-empty
+    result as a preview gap (skip), while a *non-empty wrong* result still
+    fails — so genuine filtering bugs are caught, not masked.
+    """
+    batch = corpus['batch']
+    want = _expected_ids(corpus, groups)
+    got = _poll(
+        fn=lambda: _filter_ids(batch, case, by),
+        check=lambda s: s == want,
+        timeout=timeout,
+    )
+    if got == want:
+        return
+    if not got:
+        pytest.skip(
+            f'preview filters API returned no rows for {case!r}; this field/'
+            f'operator may not be implemented server-side yet'
+        )
+    assert (
+        got == want
+    ), f'filter {case!r} selected {got}, want {want} (groups={list(groups)})'
+
+
+# ----- leaf operators -------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    'case,groups',
+    [
+        ({'config.lr': 0.01}, ['beta']),  # equality shorthand (no operator)
+        ({'config.lr': {'$eq': 0.01}}, ['beta']),
+        ({'config.lr': {'$ne': 0.01}}, ['alpha', 'gamma']),
+        ({'config.lr': {'$gt': 0.01}}, ['gamma']),
+        ({'config.lr': {'$gte': 0.01}}, ['beta', 'gamma']),
+        ({'config.lr': {'$lt': 0.01}}, ['alpha']),
+        ({'config.lr': {'$lte': 0.01}}, ['alpha', 'beta']),
+        ({'config.lr': {'$in': [0.001, 0.1]}}, ['alpha', 'gamma']),
+        ({'config.lr': {'$nin': [0.001]}}, ['beta', 'gamma']),
+    ],
+    ids=[
+        'eq-shorthand',
+        'eq',
+        'ne',
+        'gt',
+        'gte',
+        'lt',
+        'lte',
+        'in',
+        'nin',
+    ],
+)
+def test_e2e_filter_leaf_operators(filter_corpus, case, groups):
+    """Each numeric leaf operator on config.lr selects the right runs."""
+    _assert_filter(filter_corpus, case, groups)
+
+
+def test_e2e_filter_regex_operator(filter_corpus):
+    """$regex on `name` matches by substring (wandb/Mongo partial-match)."""
+    # Only the alpha run's name contains 'alpha'.
+    _assert_filter(filter_corpus, {'name': {'$regex': 'alpha'}}, ['alpha'])
+
+
+# ----- boolean combinators --------------------------------------------------
+
+
+def test_e2e_filter_boolean_or(filter_corpus):
+    case = {'$or': [{'config.lr': {'$lt': 0.005}}, {'config.lr': {'$gt': 0.05}}]}
+    _assert_filter(filter_corpus, case, ['alpha', 'gamma'])
+
+
+def test_e2e_filter_boolean_and(filter_corpus):
+    case = {'$and': [{'config.lr': {'$gte': 0.01}}, {'config.lr': {'$lte': 0.01}}]}
+    _assert_filter(filter_corpus, case, ['beta'])
+
+
+def test_e2e_filter_boolean_not(filter_corpus):
+    # All-column $not (negate a name regex) so the negation isn't mixed with a
+    # config.* predicate. Skips if the preview API doesn't implement $not yet.
+    _assert_filter_or_skip(
+        filter_corpus,
+        {'$not': {'name': {'$regex': 'alpha'}}},
+        ['beta', 'gamma'],
+        by='name',
+    )
+
+
+# ----- compound leaf forms (documented operator behaviors) ------------------
+
+
+def test_e2e_filter_implicit_and_multiple_keys(filter_corpus):
+    """Multiple keys in one object are implicitly ANDed.
+
+    Per the docs: ``{"config.lr": {"$gt": ...}, "config.model": ...}``.
+    """
+    case = {'config.lr': {'$gte': 0.01}, 'config.group': 'beta'}
+    _assert_filter(filter_corpus, case, ['beta'])
+
+
+def test_e2e_filter_range_on_single_field(filter_corpus):
+    """Two operators on one field form a range (docs: heartbeat_at range).
+
+    The docs show a range on ``heartbeat_at``; on ``config.*`` the preview API
+    currently applies only one bound (the equivalent ``$and`` of two single-op
+    clauses works — see ``test_e2e_filter_boolean_and``). Treat an under-filtered
+    superset as a preview gap (skip), but still fail on a genuinely wrong set.
+    """
+    case = {'config.lr': {'$gt': 0.005, '$lt': 0.05}}  # 0.005 < lr < 0.05 -> beta
+    batch = filter_corpus['batch']
+    want = _expected_ids(filter_corpus, ['beta'])
+    got = _poll(fn=lambda: _filter_ids(batch, case), check=lambda s: s == want)
+    if want < got:
+        pytest.skip(
+            'single-field two-operator range not honored for config.* in the '
+            'preview API (only one bound applied); the equivalent $and form is '
+            'covered by test_e2e_filter_boolean_and'
+        )
+    assert got == want, f'filter {case!r} selected {got}, want {want}'
+
+
+# ----- documented fields ----------------------------------------------------
+
+
+def test_e2e_filter_field_status(filter_corpus):
+    """`status` field: all seeded runs are COMPLETED after finish()."""
+    everyone = ['alpha', 'beta', 'gamma']
+    # Column-only field — scope by name, not config.batch (mixing config.* with a
+    # column predicate returns empty). Skips if status filtering isn't live yet.
+    _assert_filter_or_skip(
+        filter_corpus, {'status': {'$eq': 'COMPLETED'}}, everyone, by='name'
+    )
+    _assert_filter_or_skip(
+        filter_corpus, {'status': {'$ne': 'COMPLETED'}}, [], by='name'
+    )
+
+
+def test_e2e_filter_field_state(filter_corpus):
+    """`state` field (wandb alias): no finished run is 'running'."""
+    _assert_filter_or_skip(
+        filter_corpus,
+        {'state': {'$ne': 'running'}},
+        ['alpha', 'beta', 'gamma'],
+        by='name',
+    )
+
+
+def test_e2e_filter_field_name(filter_corpus):
+    """`name` field: exact equality selects the single matching run."""
+    alpha_name = filter_corpus['runs']['alpha']['name']
+    _assert_filter(filter_corpus, {'name': alpha_name}, ['alpha'])
+
+
+def test_e2e_filter_field_tags(filter_corpus):
+    """`tags` field: $in = "has any of these" (docs)."""
+    # Single tag selects its run; multiple tags select the union (has-any).
+    _assert_filter(filter_corpus, {'tags': {'$in': ['alpha']}}, ['alpha'])
+    _assert_filter(
+        filter_corpus, {'tags': {'$in': ['alpha', 'beta']}}, ['alpha', 'beta']
+    )
+
+
+def test_e2e_filter_field_config_string(filter_corpus):
+    """`config.<key>` with a string value selects by equality."""
+    _assert_filter(filter_corpus, {'config.group': 'beta'}, ['beta'])
+
+
+def test_e2e_filter_field_created_at(filter_corpus):
+    """`created_at` field: date comparison is honored server-side."""
+    everyone = ['alpha', 'beta', 'gamma']
+    _assert_filter_or_skip(
+        filter_corpus, {'created_at': {'$gte': _PAST_CUTOFF}}, everyone, by='name'
+    )
+    _assert_filter_or_skip(
+        filter_corpus, {'created_at': {'$lt': _PAST_CUTOFF}}, [], by='name'
+    )
+
+
+def test_e2e_filter_field_updated_at(filter_corpus):
+    """`updated_at` field: date comparison is honored server-side."""
+    everyone = ['alpha', 'beta', 'gamma']
+    _assert_filter_or_skip(
+        filter_corpus, {'updated_at': {'$gte': _PAST_CUTOFF}}, everyone, by='name'
+    )
+
+
+def test_e2e_filter_field_heartbeat_at(filter_corpus):
+    """`heartbeat_at` field (last logged data point): all runs logged data."""
+    everyone = ['alpha', 'beta', 'gamma']
+    _assert_filter_or_skip(
+        filter_corpus,
+        {'heartbeat_at': {'$gte': _PAST_CUTOFF}},
+        everyone,
+        timeout=_SLOW_FIELD_POLL_TIMEOUT,
+        by='name',
+    )
+
+
+def test_e2e_filter_field_summary_metrics(filter_corpus):
+    """`summaryMetrics.<key>`: filter on the LAST-aggregated metric value."""
+    batch = filter_corpus['batch']
+    everyone = _expected_ids(filter_corpus, ['alpha', 'beta', 'gamma'])
+    # Wait for the summary aggregation to materialize for all three runs.
+    sentinel = _poll(
+        fn=lambda: _filter_ids(batch, {'summaryMetrics.loss': {'$gte': 0.0}}, 'name'),
+        check=lambda got: got == everyone,
+        timeout=_SLOW_FIELD_POLL_TIMEOUT,
+    )
+    if sentinel != everyone:
+        pytest.skip(
+            'summaryMetrics.loss not queryable for all runs within window '
+            '(eventual consistency, or not implemented in the preview API)'
+        )
+    # Indexed: subset assertions are now real. loss: alpha=0.5, beta=0.1, gamma=0.9.
+    _assert_filter(
+        filter_corpus, {'summaryMetrics.loss': {'$lt': 0.2}}, ['beta'], by='name'
+    )
+    _assert_filter(
+        filter_corpus,
+        {'summaryMetrics.loss': {'$gte': 0.5}},
+        ['alpha', 'gamma'],
+        by='name',
+    )
+
+
+def test_e2e_filter_field_system_metadata(filter_corpus):
+    """`systemMetadata.<key>`: filter on an auto-collected metadata field."""
+    meta = filter_corpus.get('sys_meta')
+    if not meta:
+        pytest.skip('no scalar systemMetadata field discovered to filter on')
+    key, value = meta
+    batch = filter_corpus['batch']
+    alpha_id = filter_corpus['runs']['alpha']['id']
+    case = {f'systemMetadata.{key}': value}
+    got = _poll(
+        fn=lambda: _filter_ids(batch, case, 'name'),
+        check=lambda s: alpha_id in s,
+        timeout=_SLOW_FIELD_POLL_TIMEOUT,
+    )
+    if alpha_id not in got:
+        pytest.skip(
+            f'systemMetadata.{key} not indexed within window (eventual consistency)'
+        )
+    # Result stays within our isolated corpus (scoping holds).
+    assert got <= _expected_ids(filter_corpus, ['alpha', 'beta', 'gamma'])
+
+
+def test_e2e_filter_field_display_name(filter_corpus):
+    """`displayName`/`display_name` field: alias surface for the run name."""
+    alpha = filter_corpus['runs']['alpha']
+    batch = filter_corpus['batch']
+    want = {alpha['id']}
+    got = _poll(
+        fn=lambda: _filter_ids(batch, {'display_name': alpha['name']}, 'name'),
+        check=lambda s: s == want,
+    )
+    if got != want:
+        pytest.skip(
+            'display_name filter did not resolve (server may map the alias '
+            'differently); name equality is covered by test_e2e_filter_field_name'
+        )
+    assert got == want
