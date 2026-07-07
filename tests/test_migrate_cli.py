@@ -71,9 +71,7 @@ class TestMigrateCli:
 
     def test_load_wires_flags_to_loader(self, tmp_path):
         loader = _mock_loader()
-        with mock.patch(
-            'pluto.migrate.loader.PlutoLoader', return_value=loader
-        ) as cls:
+        with mock.patch('pluto.migrate.loader.PlutoLoader', return_value=loader) as cls:
             code = run_migrate(
                 [
                     'wandb',

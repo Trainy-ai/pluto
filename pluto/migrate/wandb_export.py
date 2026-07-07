@@ -178,9 +178,7 @@ class WandbExporter:
         self, run: Any, tmp_dir: Path, created_ms: Optional[int]
     ) -> None:
         summary_dict = getattr(getattr(run, 'summary', None), '_json_dict', None) or {}
-        summary_dict = {
-            k: v for k, v in summary_dict.items() if not k.startswith('_')
-        }
+        summary_dict = {k: v for k, v in summary_dict.items() if not k.startswith('_')}
         updated_ms = parse_iso_ms(getattr(run, 'heartbeat_at', None)) or created_ms
         write_json_atomic(
             tmp_dir / 'run.json',
@@ -340,9 +338,7 @@ class WandbExporter:
                 message = raw_line.rstrip('\n')
                 if not message.strip():
                     continue
-                timestamp_ms, message = self._parse_console_line(
-                    message, fallback_ms
-                )
+                timestamp_ms, message = self._parse_console_line(message, fallback_ms)
                 writer.write_row(
                     **base,
                     attribute_path='console',

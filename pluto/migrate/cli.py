@@ -57,9 +57,7 @@ def _add_export_flags(parser: argparse.ArgumentParser) -> None:
     )
 
 
-def _add_load_flags(
-    parser: argparse.ArgumentParser, with_input: bool = True
-) -> None:
+def _add_load_flags(parser: argparse.ArgumentParser, with_input: bool = True) -> None:
     if with_input:
         parser.add_argument(
             '--input', required=True, help='export directory to load from'

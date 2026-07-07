@@ -36,9 +36,7 @@ from pluto.migrate.state import mark_run_exported, write_json_atomic  # noqa: E4
 
 STAGING_API_KEY = os.environ.get('PLUTO_STAGING_API_KEY')
 URL_APP = os.environ.get('PLUTO_STAGING_URL_APP', 'https://pluto-dev.trainy.ai')
-URL_API = os.environ.get(
-    'PLUTO_STAGING_URL_API', 'https://pluto-api-dev.trainy.ai'
-)
+URL_API = os.environ.get('PLUTO_STAGING_URL_API', 'https://pluto-api-dev.trainy.ai')
 URL_INGEST = os.environ.get(
     'PLUTO_STAGING_URL_INGEST', 'https://pluto-ingest-dev.trainy.ai'
 )
@@ -147,9 +145,7 @@ def test_migration_round_trip_against_staging(tmp_path, staging_env):
     rows = []
     while time.time() < deadline:
         data = client.get_metrics(PROJECT, match[0]['id'], metric_names=['loss'])
-        rows = (
-            data.to_dict('records') if hasattr(data, 'to_dict') else list(data)
-        )
+        rows = data.to_dict('records') if hasattr(data, 'to_dict') else list(data)
         if len(rows) >= len(METRIC_POINTS):
             break
         time.sleep(5)

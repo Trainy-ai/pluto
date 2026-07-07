@@ -66,9 +66,7 @@ class PlutoLoader:
             run_id = manifest['run_id']
             if self.run_ids is not None and run_id not in self.run_ids:
                 continue
-            external_id = (
-                f'wandb::{manifest["entity"]}/{manifest["project"]}/{run_id}'
-            )
+            external_id = f'wandb::{manifest["entity"]}/{manifest["project"]}/{run_id}'
             if cache.is_loaded(external_id) and not self.force_resume:
                 logger.info(f'{tag}: {external_id} already loaded, skipping')
                 skipped += 1
@@ -83,9 +81,7 @@ class PlutoLoader:
                 if 'already exists' in str(e):
                     # Another machine (or a crashed load after finish) already
                     # created this run — record and move on.
-                    logger.warning(
-                        f'{tag}: {external_id} exists on server, skipping'
-                    )
+                    logger.warning(f'{tag}: {external_id} exists on server, skipping')
                     cache.mark_loaded(external_id, {'pluto_run_id': None})
                     skipped += 1
                     continue
@@ -94,16 +90,12 @@ class PlutoLoader:
             try:
                 self._replay_run(run_dir, manifest, op)
                 op.finish(code=0 if manifest.get('state') == 'finished' else 1)
-                cache.mark_loaded(
-                    external_id, {'pluto_run_id': op.settings._op_id}
-                )
+                cache.mark_loaded(external_id, {'pluto_run_id': op.settings._op_id})
                 loaded += 1
                 logger.info(f'{tag}: loaded {external_id}')
             except Exception as e:
                 logger.error(f'{tag}: load failed for {external_id}: {e}')
-                failed.append(
-                    {'run_id': run_id, 'error': f'{type(e).__name__}: {e}'}
-                )
+                failed.append({'run_id': run_id, 'error': f'{type(e).__name__}: {e}'})
                 try:
                     op.finish(code=1)
                 except Exception:
@@ -157,9 +149,7 @@ class PlutoLoader:
             op.update_config({'wandb': wandb_block})
         return op
 
-    def _replay_run(
-        self, run_dir: Path, manifest: Dict[str, Any], op: Any
-    ) -> None:
+    def _replay_run(self, run_dir: Path, manifest: Dict[str, Any], op: Any) -> None:
         from pluto.migrate.schema import iter_part_tables
 
         # (attribute_type, step, timestamp_ms) of the group being buffered;
@@ -291,9 +281,7 @@ class PlutoLoader:
         except Exception:
             return
         while pending > self.max_pending:
-            logger.info(
-                f'{tag}: {pending} records pending upload, throttling loader'
-            )
+            logger.info(f'{tag}: {pending} records pending upload, throttling loader')
             time.sleep(0.5)
             pending = op._sync_manager.get_pending_count()
 

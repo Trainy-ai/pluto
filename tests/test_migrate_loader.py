@@ -183,9 +183,9 @@ class TestPlutoLoader:
         _stage_run(tmp_path)
         PlutoLoader(tmp_path).load()
         metric_calls = _log_calls_with(
-            op, lambda d: set(d) & {'loss', 'acc'} and all(
-                isinstance(v, float) for v in d.values()
-            )
+            op,
+            lambda d: set(d) & {'loss', 'acc'}
+            and all(isinstance(v, float) for v in d.values()),
         )
         assert metric_calls[0].args[0] == {'loss': 1.0, 'acc': 0.1}
         assert metric_calls[0].kwargs == {'step': 0, 'timestamp': T0_MS / 1000}
