@@ -211,7 +211,16 @@ MetaFiles = Dict[str, List[str]]
 LoggedNumbers = Dict[str, Any]
 LoggedData = Dict[str, List[Data]]
 LoggedFiles = Dict[str, List[File]]
-QueueItem = Tuple[Dict[str, Any], Optional[int]]
+QueueItem = Tuple[Dict[str, Any], Optional[int], Optional[float]]
+
+
+class RunExistsError(RuntimeError):
+    """A run with the given externalId already exists (init without resume).
+
+    Typed so callers that intentionally reuse external ids (e.g.
+    pluto.migrate re-loading after a crash) can catch the collision and
+    retry with ``resume=True`` instead of string-matching the message.
+    """
 
 
 class OpMonitor:
@@ -342,7 +351,7 @@ class Op:
                     make_compat_start_v1(
                         self.config,
                         self.settings,
-                        self.settings._sys.get_info(),
+                        self._start_info(),
                         self.tags,
                     ),
                     client=tmp_iface.client_api,
@@ -374,7 +383,7 @@ class Op:
                     )
                 else:
                     external_id = self.settings._external_id
-                    raise RuntimeError(
+                    raise RunExistsError(
                         f"Run with externalId '{external_id}' already exists. "
                         f'This often happens when random.seed() or '
                         f'L.seed_everything() makes run IDs deterministic. '
@@ -431,6 +440,16 @@ class Op:
         self._dropped_item_warned: set = set()
         atexit.register(self.finish)
 
+    def _start_info(self) -> Dict[str, Any]:
+        """System info for the run-create payload.
+
+        Suppressed under disable_system_metrics so a backfill host's
+        hardware isn't recorded as the imported run's systemMetadata.
+        """
+        if self.settings.disable_system_metrics:
+            return {}
+        return self.settings._sys.get_info()
+
     def _init_sync_manager(self) -> None:
         """Initialize the sync process manager."""
         # Generate run_id for sync process
@@ -463,6 +482,7 @@ class Op:
             'sync_process_retry_backoff': self.settings.sync_process_retry_backoff,
             'sync_process_batch_size': self.settings.sync_process_batch_size,
             'sync_process_file_batch_size': self.settings.sync_process_file_batch_size,
+            'disable_system_metrics': self.settings.disable_system_metrics,
         }
 
         self._sync_manager = SyncProcessManager(
@@ -583,7 +603,7 @@ class Op:
                     '%s: dropping log data due to database error: %s', tag, e
                 )
         elif self.settings.mode == 'perf':
-            self._queue.put((data, step), block=False)
+            self._queue.put((data, step, timestamp), block=False)
         else:
             # Legacy offline mode (sync_process_enabled=False)
             # Data stored locally in SQLite only, not uploaded to server
@@ -665,6 +685,33 @@ class Op:
                 for message, log_type, ts, line_number in lines
             ]
         )
+
+    def _log_metrics_batch(
+        self, groups: List[Tuple[Dict[str, Any], int, float]]
+    ) -> None:
+        """Enqueue many numeric metric groups in one transaction (backfill path).
+
+        ``groups`` are ``(metrics, step, timestamp_seconds)`` tuples with
+        numeric values only. Used by ``pluto.migrate`` loaders, where one
+        SQLite transaction per step would dominate replay time; live
+        training goes through :meth:`log`.
+        """
+        if self._sync_manager is None or not groups:
+            return
+        new_metric_names: List[str] = []
+        new_file_meta: Dict[str, List[str]] = defaultdict(list)
+        items: List[Tuple[Dict[str, Any], int, int]] = []
+        for metrics, step, timestamp in groups:
+            clean: Dict[str, Any] = {}
+            for key, value in metrics.items():
+                key = get_char(key)
+                self._register_meta_sync(key, value, new_metric_names, new_file_meta)
+                clean[key] = value
+            self._step = step
+            items.append((clean, int(timestamp * 1000), step))
+        self._sync_manager.enqueue_metrics_batch(items)
+        if new_metric_names and self._iface:
+            self._iface._update_meta(num=new_metric_names)
 
     def _warn_dropped_item(self, key: str, value: Any, exc: Exception) -> None:
         """Report a log item dropped due to an unexpected error.

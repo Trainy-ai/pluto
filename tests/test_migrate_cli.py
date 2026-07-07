@@ -113,6 +113,72 @@ class TestMigrateCli:
         exporter.export.assert_called_once()
         loader.load.assert_called_once()
 
+    def test_artifact_max_size_zero_means_zero_cap(self, tmp_path):
+        exporter = _mock_exporter()
+        with mock.patch(
+            'pluto.migrate.wandb_export.WandbExporter', return_value=exporter
+        ) as cls:
+            run_migrate(
+                [
+                    'wandb',
+                    'export',
+                    '--entity',
+                    'acme',
+                    '--project',
+                    'vision',
+                    '--output',
+                    str(tmp_path),
+                    '--artifact-max-size-mb',
+                    '0',
+                ]
+            )
+        # 0 is an explicit cap (skip everything), not "unlimited"
+        assert cls.call_args.kwargs['artifact_max_bytes'] == 0
+
+    def test_all_still_loads_when_some_exports_failed(self, tmp_path):
+        exporter = _mock_exporter(
+            {'exported': 499, 'skipped': 0, 'failed': [{'run_id': 'x', 'error': 'e'}]}
+        )
+        loader = _mock_loader()
+        with (
+            mock.patch(
+                'pluto.migrate.wandb_export.WandbExporter', return_value=exporter
+            ),
+            mock.patch('pluto.migrate.loader.PlutoLoader', return_value=loader),
+        ):
+            code = run_migrate(
+                [
+                    'wandb',
+                    'all',
+                    '--entity',
+                    'acme',
+                    '--project',
+                    'vision',
+                    '--output',
+                    str(tmp_path),
+                ]
+            )
+        loader.load.assert_called_once()  # staged runs still load
+        assert code == 1  # but the failure is reported
+
+    def test_all_rejects_dry_run(self, tmp_path):
+        with mock.patch('pluto.migrate.wandb_export.WandbExporter') as cls:
+            code = run_migrate(
+                [
+                    'wandb',
+                    'all',
+                    '--entity',
+                    'acme',
+                    '--project',
+                    'vision',
+                    '--output',
+                    str(tmp_path),
+                    '--dry-run',
+                ]
+            )
+        assert code == 2
+        cls.assert_not_called()  # must not silently do a full export
+
     def test_failures_produce_nonzero_exit(self, tmp_path):
         exporter = _mock_exporter(
             {'exported': 0, 'skipped': 0, 'failed': [{'run_id': 'x', 'error': 'e'}]}

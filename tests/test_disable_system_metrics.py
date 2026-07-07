@@ -23,6 +23,7 @@ def _make_op(tmp_path) -> Op:
     settings = Settings()
     settings.mode = 'noop'
     settings.dir = str(tmp_path)
+    settings.meta = []  # shadow the class-level shared list (test isolation)
     os.makedirs(os.path.join(settings.get_dir(), 'files'), exist_ok=True)
     op = Op(config={}, settings=settings)
     op._sync_manager = mock.MagicMock()
@@ -62,6 +63,42 @@ class TestDisableSystemMetrics:
         op.start()
         op._iface._update_meta.assert_not_called()
         op.settings._sys.monitor.assert_not_called()
+
+
+class TestDisableSystemMetricsPropagation:
+    def test_flag_forwarded_to_sync_process_settings(self, tmp_path):
+        op = _make_op(tmp_path)
+        op.settings.update_host()  # populate url_* like setup() does
+        op.settings.disable_system_metrics = True
+        op.settings._op_id = 1
+        with mock.patch('pluto.op.SyncProcessManager') as spm:
+            op._init_sync_manager()
+        settings_dict = spm.call_args.kwargs['settings_dict']
+        assert settings_dict['disable_system_metrics'] is True
+
+    def test_health_stats_not_uploaded_when_disabled(self):
+        from pluto.sync.process import _SyncUploader
+
+        uploader = _SyncUploader(
+            {'disable_system_metrics': True, 'url_num': 'http://x/ingest/metrics'},
+            mock.MagicMock(),
+        )
+        with mock.patch.object(uploader, '_post_with_retry') as post:
+            uploader.upload_health_stats({'pending': 1})
+        post.assert_not_called()
+
+    def test_start_info_suppressed_when_disabled(self, tmp_path):
+        op = _make_op(tmp_path)
+        op.settings._sys = mock.MagicMock()
+        op.settings.disable_system_metrics = True
+        assert op._start_info() == {}
+        op.settings._sys.get_info.assert_not_called()
+
+    def test_start_info_default(self, tmp_path):
+        op = _make_op(tmp_path)
+        op.settings._sys = mock.MagicMock()
+        op.settings._sys.get_info.return_value = {'host': 'gpu-box'}
+        assert op._start_info() == {'host': 'gpu-box'}
 
 
 class TestLogConsole:

@@ -5,10 +5,12 @@ Replays each exported run — run.json manifest plus parquet parts — as a
 Pluto run with the ORIGINAL wall-clock timestamps (``op.log(timestamp=)``)
 and creation time (``settings.compat`` createdAt/updatedAt). Idempotency
 is run-level: a ``run_id`` external id (``wandb::{entity}/{project}/{id}``)
-makes re-creation collide server-side, and ``loaded_runs.json`` records
-finished loads so re-runs skip them. Metrics for a given (name, step) are
-sent exactly once — the backend dedupes replayed points by highest
-timestamp, so partial re-loads with identical staged timestamps are safe.
+makes re-creation collide server-side (the loader then resumes and
+re-replays, so an interrupted load heals on the next run), and
+``loaded_runs.json`` records finished loads so re-runs skip them.
+Replayed metric points carry identical staged timestamps, so the
+backend's replace-by-time dedup makes re-replays safe for metrics;
+re-replayed media files may duplicate.
 """
 
 from __future__ import annotations
@@ -20,17 +22,26 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 import pluto
-from pluto.migrate.state import LOADED_CACHE_FILENAME, LoadedCache, read_json
+from pluto.migrate.schema import iter_part_tables, part_files
+from pluto.migrate.state import (
+    LOADED_CACHE_FILENAME,
+    LoadedCache,
+    is_run_exported,
+    read_json,
+)
+from pluto.op import RunExistsError
 
 logger = logging.getLogger(f'{__name__.split(".")[0]}')
 tag = 'migrate'
 
 CONSOLE_BATCH_SIZE = 1000
 
+# All three take (data, caption=...); table-file and inline histograms are
+# handled separately in _replay_media.
 _MEDIA_LOADERS = {
-    'image-file': lambda path, caption: pluto.Image(path, caption=caption),
-    'audio-file': lambda path, caption: pluto.Audio(path, caption=caption),
-    'video-file': lambda path, caption: pluto.Video(path, caption=caption),
+    'image-file': pluto.Image,
+    'audio-file': pluto.Audio,
+    'video-file': pluto.Video,
 }
 
 
@@ -46,6 +57,7 @@ class PlutoLoader:
         dry_run: bool = False,
         run_ids: Optional[List[str]] = None,
         force_resume: bool = False,
+        stall_timeout: float = 600.0,
     ) -> None:
         self.input_dir = Path(input_dir)
         self.dest_project = dest_project
@@ -54,6 +66,7 @@ class PlutoLoader:
         self.dry_run = dry_run
         self.run_ids = set(run_ids) if run_ids else None
         self.force_resume = force_resume
+        self.stall_timeout = stall_timeout
 
     def load(self) -> Dict[str, Any]:
         """Load all staged runs. Returns {'loaded', 'skipped', 'failed'}."""
@@ -77,18 +90,19 @@ class PlutoLoader:
 
             try:
                 op = self._init_run(manifest, external_id)
-            except RuntimeError as e:
-                if 'already exists' in str(e):
-                    # Another machine (or a crashed load after finish) already
-                    # created this run — record and move on.
-                    logger.warning(f'{tag}: {external_id} exists on server, skipping')
-                    cache.mark_loaded(external_id, {'pluto_run_id': None})
-                    skipped += 1
-                    continue
-                raise
+            except RunExistsError:
+                # The run exists server-side but isn't in loaded_runs.json —
+                # a previous load was interrupted mid-replay. Resume and
+                # re-replay (metrics dedup by identical timestamps; media
+                # from the interrupted portion may duplicate).
+                logger.warning(
+                    f'{tag}: {external_id} already exists on server '
+                    '(previous load interrupted?); resuming to re-replay'
+                )
+                op = self._init_run(manifest, external_id, resume=True)
 
             try:
-                self._replay_run(run_dir, manifest, op)
+                self._replay_run(run_dir, op)
                 op.finish(code=0 if manifest.get('state') == 'finished' else 1)
                 cache.mark_loaded(external_id, {'pluto_run_id': op.settings._op_id})
                 loaded += 1
@@ -104,15 +118,18 @@ class PlutoLoader:
         return {'loaded': loaded, 'skipped': skipped, 'failed': failed}
 
     def _discover_runs(self) -> List[Path]:
-        from pluto.migrate.state import is_run_exported
-
         return sorted(
             d
             for d in self.input_dir.glob('*/*/runs/*')
             if d.is_dir() and is_run_exported(d) and (d / 'run.json').exists()
         )
 
-    def _init_run(self, manifest: Dict[str, Any], external_id: str) -> Any:
+    def _init_run(
+        self,
+        manifest: Dict[str, Any],
+        external_id: str,
+        resume: Optional[bool] = None,
+    ) -> Any:
         tags = list(manifest.get('tags') or [])
         if 'import:wandb' not in tags:
             tags.append('import:wandb')
@@ -125,6 +142,9 @@ class PlutoLoader:
             # imported run.
             'disable_console': True,
             'disable_system_metrics': True,
+            # The historical-timestamp path only exists in the sync store;
+            # force it on even if the user's defaults disable it.
+            'sync_process_enabled': True,
         }
         op = pluto.init(
             project=self.dest_project or manifest['project'],
@@ -132,7 +152,7 @@ class PlutoLoader:
             config=manifest.get('config') or None,
             tags=tags,
             run_id=external_id,
-            resume=self.force_resume,
+            resume=self.force_resume if resume is None else resume,
             settings=settings,
         )
         wandb_block = {
@@ -149,26 +169,36 @@ class PlutoLoader:
             op.update_config({'wandb': wandb_block})
         return op
 
-    def _replay_run(self, run_dir: Path, manifest: Dict[str, Any], op: Any) -> None:
-        from pluto.migrate.schema import iter_part_tables
+    @staticmethod
+    def _sys_metric_name(name: str) -> str:
+        """Map a source-native system metric name into Pluto's sys/ namespace."""
+        if name.startswith('system.'):
+            return 'sys/' + name[len('system.') :]
+        if name.startswith('sys/'):
+            return name
+        return f'sys/{name}'
 
+    def _replay_run(self, run_dir: Path, op: Any) -> None:
         # (attribute_type, step, timestamp_ms) of the group being buffered;
         # rows are staged in write order so same-step metrics are contiguous.
         group_key: Optional[Tuple[str, int, int]] = None
         group_metrics: Dict[str, float] = {}
+        # Closed groups accumulate here and flush through one SQLite
+        # transaction per flush_every groups (op._log_metrics_batch).
+        pending_groups: List[Tuple[Dict[str, float], int, float]] = []
         console_lines: List[Tuple[str, str, float, int]] = []
-        flushes = 0
 
-        def flush_group() -> None:
-            nonlocal group_key, group_metrics, flushes
-            if group_key is None or not group_metrics:
-                group_key, group_metrics = None, {}
-                return
-            _, step, timestamp_ms = group_key
-            op.log(group_metrics, step=step, timestamp=timestamp_ms / 1000)
+        def close_group() -> None:
+            nonlocal group_key, group_metrics
+            if group_key is not None and group_metrics:
+                _, step, timestamp_ms = group_key
+                pending_groups.append((group_metrics, step, timestamp_ms / 1000))
             group_key, group_metrics = None, {}
-            flushes += 1
-            if flushes % self.flush_every == 0:
+
+        def flush_pending(force: bool = False) -> None:
+            if pending_groups and (force or len(pending_groups) >= self.flush_every):
+                op._log_metrics_batch(list(pending_groups))
+                pending_groups.clear()
                 self._wait_for_backpressure(op)
 
         for table in iter_part_tables(run_dir):
@@ -177,11 +207,15 @@ class PlutoLoader:
                 if attr_type in ('metric', 'system_metric'):
                     key = (attr_type, row['step'], row['timestamp_ms'])
                     if key != group_key:
-                        flush_group()
+                        close_group()
+                        flush_pending()
                         group_key = key
-                    group_metrics[row['attribute_path']] = row['float_value']
+                    name = row['attribute_path']
+                    if attr_type == 'system_metric':
+                        name = self._sys_metric_name(name)
+                    group_metrics[name] = row['float_value']
                     continue
-                flush_group()
+                close_group()
                 if attr_type == 'media':
                     self._replay_media(run_dir, op, row)
                 elif attr_type == 'console':
@@ -199,7 +233,8 @@ class PlutoLoader:
                 elif attr_type == 'artifact':
                     self._replay_artifact(run_dir, op, row)
 
-        flush_group()
+        close_group()
+        flush_pending(force=True)
         if console_lines:
             op._log_console(console_lines)
 
@@ -246,7 +281,7 @@ class PlutoLoader:
         else:
             make = _MEDIA_LOADERS.get(media_type)
             if make is not None:
-                value = make(str(path), caption)
+                value = make(str(path), caption=caption)
             else:  # plotly/html/object3D/unknown -> raw artifact
                 value = pluto.Artifact(str(path), caption=caption)
         op.log({name: value}, step=step, timestamp=timestamp)
@@ -275,21 +310,40 @@ class PlutoLoader:
         )
 
     def _wait_for_backpressure(self, op: Any) -> None:
-        """Bound the sync queue so huge runs don't balloon SQLite/memory."""
-        try:
-            pending = op._sync_manager.get_pending_count()
-        except Exception:
-            return
-        while pending > self.max_pending:
-            logger.info(f'{tag}: {pending} records pending upload, throttling loader')
-            time.sleep(0.5)
-            pending = op._sync_manager.get_pending_count()
+        """Bound the sync queue so huge runs don't balloon SQLite/memory.
+
+        Bounded by ``stall_timeout``: if the queue never drains (dead sync
+        process, unreachable server) the loader logs and moves on rather
+        than hanging — data stays in the sync store either way.
+        """
+        deadline = time.time() + self.stall_timeout
+        sleep_s = 0.5
+        throttled = False
+        while True:
+            try:
+                pending = op._sync_manager.get_pending_count()
+            except Exception:
+                return
+            if pending <= self.max_pending:
+                return
+            if time.time() >= deadline:
+                logger.warning(
+                    f'{tag}: sync queue still has {pending} pending records '
+                    f'after {self.stall_timeout:.0f}s; continuing (uploads '
+                    'proceed in the background)'
+                )
+                return
+            if not throttled:
+                logger.info(
+                    f'{tag}: {pending} records pending upload, throttling loader'
+                )
+                throttled = True
+            time.sleep(sleep_s)
+            sleep_s = min(sleep_s * 2, 5.0)
 
     def _print_dry_run(
         self, run_dir: Path, manifest: Dict[str, Any], external_id: str
     ) -> None:
-        from pluto.migrate.schema import part_files
-
         parts = part_files(run_dir)
         size = sum(p.stat().st_size for p in parts)
         print(

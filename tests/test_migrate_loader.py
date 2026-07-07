@@ -108,7 +108,7 @@ def _stage_run(tmp_path, run_id='abc123', state='finished'):
         )
         w.write_row(
             **base,
-            attribute_path='sys/gpu.0.gpu',
+            attribute_path='system.gpu.0.gpu',
             attribute_type='system_metric',
             step=0,
             timestamp_ms=T0_MS,
@@ -168,6 +168,8 @@ class TestPlutoLoader:
         }
         assert settings['disable_console'] is True
         assert settings['disable_system_metrics'] is True
+        # The historical-timestamp path only exists in the sync store.
+        assert settings['sync_process_enabled'] is True
 
     def test_wandb_scalars_pushed_via_update_config(self, tmp_path, mock_init):
         _, op = mock_init
@@ -178,19 +180,14 @@ class TestPlutoLoader:
         assert wandb_block['state'] == 'finished'
         assert wandb_block['summary'] == {'loss': 0.05}
 
-    def test_metrics_grouped_per_step_with_timestamps(self, tmp_path, mock_init):
+    def test_metrics_batched_per_step_with_timestamps(self, tmp_path, mock_init):
         _, op = mock_init
         _stage_run(tmp_path)
         PlutoLoader(tmp_path).load()
-        metric_calls = _log_calls_with(
-            op,
-            lambda d: set(d) & {'loss', 'acc'}
-            and all(isinstance(v, float) for v in d.values()),
-        )
-        assert metric_calls[0].args[0] == {'loss': 1.0, 'acc': 0.1}
-        assert metric_calls[0].kwargs == {'step': 0, 'timestamp': T0_MS / 1000}
-        assert metric_calls[1].args[0] == {'loss': 0.5}
-        assert metric_calls[1].kwargs == {'step': 1, 'timestamp': (T0_MS + 1000) / 1000}
+        op._log_metrics_batch.assert_called_once()
+        groups = op._log_metrics_batch.call_args.args[0]
+        assert groups[0] == ({'loss': 1.0, 'acc': 0.1}, 0, T0_MS / 1000)
+        assert groups[1] == ({'loss': 0.5}, 1, (T0_MS + 1000) / 1000)
 
     def test_media_converted_to_pluto_types(self, tmp_path, mock_init):
         _, op = mock_init
@@ -213,13 +210,14 @@ class TestPlutoLoader:
         assert hist._freq == [1, 2, 1]
         assert hist._bins == [0, 1, 2, 3]
 
-    def test_system_metrics_replayed_with_sys_names(self, tmp_path, mock_init):
+    def test_system_metrics_translated_to_sys_names(self, tmp_path, mock_init):
+        # Staged rows keep wandb's source-native 'system.*' names; the
+        # loader owns the translation to Pluto's 'sys/' namespace.
         _, op = mock_init
         _stage_run(tmp_path)
         PlutoLoader(tmp_path).load()
-        sys_calls = _log_calls_with(op, lambda d: 'sys/gpu.0.gpu' in d)
-        assert sys_calls[0].args[0] == {'sys/gpu.0.gpu': 55.0}
-        assert sys_calls[0].kwargs == {'step': 0, 'timestamp': T0_MS / 1000}
+        groups = op._log_metrics_batch.call_args.args[0]
+        assert ({'sys/gpu.0.gpu': 55.0}, 0, T0_MS / 1000) in groups
 
     def test_console_replayed_with_timestamps(self, tmp_path, mock_init):
         _, op = mock_init
@@ -256,15 +254,42 @@ class TestPlutoLoader:
         assert summary == {'loaded': 0, 'skipped': 1, 'failed': []}
         init.assert_not_called()
 
-    def test_external_id_collision_treated_as_loaded(self, tmp_path, mock_init):
+    def test_external_id_collision_resumes_and_replays(self, tmp_path, mock_init):
+        # A collision means a previous load created the run but never made
+        # it into loaded_runs.json (e.g. crashed mid-replay) — the loader
+        # must resume and re-replay, not skip and lose the remaining data.
+        from pluto.op import RunExistsError
+
         init, op = mock_init
-        init.side_effect = RuntimeError(
-            "Run with externalId 'wandb::acme/vision/abc123' already exists."
-        )
+        init.side_effect = [
+            RunExistsError(
+                "Run with externalId 'wandb::acme/vision/abc123' already exists."
+            ),
+            op,
+        ]
         _stage_run(tmp_path)
         summary = PlutoLoader(tmp_path).load()
-        assert summary == {'loaded': 0, 'skipped': 1, 'failed': []}
+        assert summary == {'loaded': 1, 'skipped': 0, 'failed': []}
+        assert init.call_count == 2
+        assert init.call_args_list[0].kwargs['resume'] is False
+        assert init.call_args_list[1].kwargs['resume'] is True
+        op._log_metrics_batch.assert_called_once()  # actually re-replayed
         assert LoadedCache(tmp_path / 'loaded_runs.json').is_loaded(EXTERNAL_ID)
+
+    def test_backpressure_throttles_then_gives_up(self, tmp_path, mock_init):
+        _, op = mock_init
+        op._sync_manager.get_pending_count.side_effect = [10, 10, 3]
+        _stage_run(tmp_path)
+        with mock.patch('pluto.migrate.loader.time.sleep') as sleep:
+            PlutoLoader(tmp_path, max_pending=5).load()
+        assert sleep.called  # throttled while pending > max_pending
+
+        op._sync_manager.get_pending_count.side_effect = None
+        op._sync_manager.get_pending_count.return_value = 10
+        (tmp_path / 'loaded_runs.json').unlink()
+        with mock.patch('pluto.migrate.loader.time.sleep'):
+            summary = PlutoLoader(tmp_path, max_pending=5, stall_timeout=0).load()
+        assert summary['loaded'] == 1  # bounded: gives up waiting, keeps going
 
     def test_dry_run_makes_no_runs(self, tmp_path, mock_init):
         init, _ = mock_init

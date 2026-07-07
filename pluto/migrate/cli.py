@@ -12,10 +12,7 @@ from __future__ import annotations
 import argparse
 from typing import List, Optional
 
-_INSTALL_HINT = (
-    "pluto migrate requires the 'migrate' extra. "
-    "Install it with: pip install 'pluto-ml[migrate]'"
-)
+from pluto.migrate import _INSTALL_HINT
 
 
 def _add_export_flags(parser: argparse.ArgumentParser) -> None:
@@ -140,7 +137,7 @@ def _run_export(args: argparse.Namespace) -> int:
         include_artifacts=not args.no_artifacts,
         artifact_max_bytes=(
             args.artifact_max_size_mb * 1024 * 1024
-            if args.artifact_max_size_mb
+            if args.artifact_max_size_mb is not None
             else None
         ),
         include_console=not args.no_console,
@@ -189,10 +186,20 @@ def cmd_migrate(args: argparse.Namespace) -> int:
     if args.action == 'load':
         return _run_load(args)
     if args.action == 'all':
-        code = _run_export(args)
-        if code != 0:
-            return code
-        return _run_load(args, input_dir=args.output)
+        if args.dry_run:
+            print(
+                'error: --dry-run is not supported with `all` (it would still '
+                'download everything). Run `export` first, then preview with '
+                '`load --dry-run`.'
+            )
+            return 2
+        export_code = _run_export(args)
+        if export_code == 2:  # missing deps — nothing was staged
+            return export_code
+        # Per-run export failures must not block loading the runs that DID
+        # stage successfully; both phases are independently resumable.
+        load_code = _run_load(args, input_dir=args.output)
+        return max(export_code, load_code)
     raise AssertionError(f'unknown action {args.action!r}')
 
 

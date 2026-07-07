@@ -18,7 +18,7 @@ import re
 import shutil
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
+from typing import Any, Dict, Iterable, List, Optional, Union
 
 from pluto.migrate.schema import PartWriter
 from pluto.migrate.state import is_run_exported, mark_run_exported, write_json_atomic
@@ -302,9 +302,11 @@ class WandbExporter:
                     continue
                 if isinstance(value, bool) or not isinstance(value, (int, float)):
                     continue
+                # Source-native name; the loader translates to Pluto's sys/
+                # namespace, so staged exports stay platform-agnostic.
                 writer.write_row(
                     **base,
-                    attribute_path='sys/' + key[len('system.') :],
+                    attribute_path=key,
                     attribute_type='system_metric',
                     step=index,
                     timestamp_ms=timestamp_ms,
@@ -338,7 +340,7 @@ class WandbExporter:
                 message = raw_line.rstrip('\n')
                 if not message.strip():
                     continue
-                timestamp_ms, message = self._parse_console_line(message, fallback_ms)
+                timestamp_ms = self._parse_console_line_time(message, fallback_ms)
                 writer.write_row(
                     **base,
                     attribute_path='console',
@@ -349,13 +351,15 @@ class WandbExporter:
                 )
 
     @staticmethod
-    def _parse_console_line(message: str, fallback_ms: int) -> Tuple[int, str]:
+    def _parse_console_line_time(message: str, fallback_ms: int) -> int:
+        """Best-effort per-line timestamp; the message itself is never altered
+        (a leading ISO prefix may be the user's own logging format)."""
         match = _CONSOLE_TS_RE.match(message)
         if match:
             parsed = parse_iso_ms(match.group(1))
             if parsed is not None:
-                return parsed, match.group(2)
-        return fallback_ms, message
+                return parsed
+        return fallback_ms
 
     def _export_artifacts(self, run: Any, writer: PartWriter, tmp_dir: Path) -> None:
         base = self._row_base(run)

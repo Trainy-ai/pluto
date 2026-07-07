@@ -22,7 +22,7 @@ import sys
 import time
 from enum import Enum
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 try:
     from filelock import FileLock
@@ -224,6 +224,26 @@ class SyncProcessManager:
             step=step,
         )
         # Update heartbeat to show we're alive
+        self.store.heartbeat(self.run_id)
+
+    def enqueue_metrics_batch(
+        self,
+        items: List[Tuple[Dict[str, Any], int, int]],
+    ) -> None:
+        """Enqueue many metric groups in one SQLite transaction.
+
+        ``items`` are ``(metrics, timestamp_ms, step)`` tuples. Used by
+        backfill tooling (pluto.migrate) where per-group ``enqueue_metrics``
+        transactions would dominate replay time.
+        """
+        if not items:
+            return
+        self.store.enqueue_batch(
+            [
+                (self.run_id, RecordType.METRIC, metrics, timestamp_ms, step)
+                for metrics, timestamp_ms, step in items
+            ]
+        )
         self.store.heartbeat(self.run_id)
 
     def enqueue_config(self, config: Dict[str, Any], timestamp_ms: int) -> None:
@@ -1148,6 +1168,10 @@ class _SyncUploader:
         to avoid circular write pressure from the health check itself.
         """
         if not self.url_num:
+            return
+        if self.settings.get('disable_system_metrics'):
+            # Backfill runs (pluto.migrate) must not receive current-time
+            # sync-health datapoints from the migration host.
             return
 
         data = {f'sys/pluto.{k}': v for k, v in stats.items()}

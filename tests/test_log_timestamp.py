@@ -31,6 +31,7 @@ def _make_op(tmp_path) -> Op:
     settings = Settings()
     settings.mode = 'noop'
     settings.dir = str(tmp_path)
+    settings.meta = []  # shadow the class-level shared list (test isolation)
     # Op.__init__ only prepares the staging dir outside noop mode.
     os.makedirs(os.path.join(settings.get_dir(), 'files'), exist_ok=True)
     op = Op(config={}, settings=settings)
@@ -87,10 +88,46 @@ class TestLogTimestampDataAndFiles:
         assert kwargs['step'] == 7
 
 
+class TestLogMetricsBatch:
+    def test_batch_enqueues_groups_in_one_call(self, tmp_path):
+        op = _make_op(tmp_path)
+        op._log_metrics_batch(
+            [
+                ({'loss': 1.0, 'acc': 0.1}, 0, TS),
+                ({'loss': 0.5}, 1, TS + 1),
+            ]
+        )
+        op._sync_manager.enqueue_metrics_batch.assert_called_once_with(
+            [
+                ({'loss': 1.0, 'acc': 0.1}, TS_MS, 0),
+                ({'loss': 0.5}, TS_MS + 1000, 1),
+            ]
+        )
+
+    def test_batch_registers_new_metric_names(self, tmp_path):
+        op = _make_op(tmp_path)
+        op._iface = mock.MagicMock()
+        op._log_metrics_batch([({'loss': 1.0}, 0, TS)])
+        op._iface._update_meta.assert_called_once_with(num=['loss'])
+
+    def test_batch_noop_without_sync_manager(self, tmp_path):
+        op = _make_op(tmp_path)
+        op._sync_manager = None
+        op._log_metrics_batch([({'loss': 1.0}, 0, TS)])  # must not raise
+
+
 class TestLogTimestampLegacyPath:
     def test_timestamp_forwarded_to_legacy_log(self, tmp_path):
         op = _make_op(tmp_path)
         op._sync_manager = None  # force legacy offline path
+        op.settings.mode = 'debug'  # not the perf queue
         with mock.patch.object(op, '_log') as legacy_log:
             op.log({'loss': 0.5}, step=2, timestamp=TS)
         legacy_log.assert_called_once_with(data={'loss': 0.5}, step=2, t=TS)
+
+    def test_timestamp_forwarded_in_perf_mode_queue(self, tmp_path):
+        op = _make_op(tmp_path)
+        op._sync_manager = None
+        op.settings.mode = 'perf'
+        op.log({'loss': 0.5}, step=2, timestamp=TS)
+        assert op._queue.get_nowait() == ({'loss': 0.5}, 2, TS)

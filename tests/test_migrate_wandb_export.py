@@ -199,18 +199,19 @@ class TestWandbExporter:
             'bins': [0, 1, 2, 3],
         }
 
-    def test_system_metric_rows_renamed_to_sys_prefix(self, tmp_path):
+    def test_system_metric_rows_keep_source_names(self, tmp_path):
+        # Staging is source-faithful; the loader owns the sys/ translation.
         _, run_dir, _ = _export(tmp_path)
         sys_rows = _rows(run_dir, 'system_metric')
         assert {
-            'attribute_path': 'sys/gpu.0.gpu',
+            'attribute_path': 'system.gpu.0.gpu',
             'step': 0,
             'timestamp_ms': int(T0 * 1000),
             'float_value': 55.0,
         }.items() <= sys_rows[0].items()
         assert {r['attribute_path'] for r in sys_rows} == {
-            'sys/gpu.0.gpu',
-            'sys/cpu',
+            'system.gpu.0.gpu',
+            'system.cpu',
         }
 
     def test_console_rows_from_output_log(self, tmp_path):
@@ -228,7 +229,9 @@ class TestWandbExporter:
         run = FakeRun(run_id='tsrun', output_log=log)
         _, run_dir, _ = _export(tmp_path, run=run)
         console = _rows(run_dir, 'console')
-        assert console[0]['string_value'] == 'first line'
+        # Timestamp parsed for the row time, but the message content is
+        # preserved verbatim — user log lines must not be rewritten.
+        assert console[0]['string_value'] == '2025-05-01T10:00:05.500Z first line'
         assert console[0]['timestamp_ms'] == CREATED_AT_MS + 5500
         assert console[1]['string_value'] == 'plain line'
         assert console[1]['timestamp_ms'] == CREATED_AT_MS
