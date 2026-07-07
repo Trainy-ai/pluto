@@ -18,7 +18,7 @@ import re
 import shutil
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Union
+from typing import Any, Dict, Iterable, List, Optional, TypedDict, Union
 
 from pluto.migrate.schema import PartWriter
 from pluto.migrate.state import is_run_exported, mark_run_exported, write_json_atomic
@@ -27,6 +27,14 @@ logger = logging.getLogger(f'{__name__.split(".")[0]}')
 tag = 'migrate'
 
 MANIFEST_FILENAME = 'manifest.json'
+
+
+class _RowBase(TypedDict):
+    """Identity columns shared by every staged row (see schema.write_row)."""
+
+    project_id: str
+    run_id: str
+
 
 # scan_history dict values whose media file lives under the run's files/
 _FILE_MEDIA_TYPES = {
@@ -199,7 +207,7 @@ class WandbExporter:
             },
         )
 
-    def _row_base(self, run: Any) -> Dict[str, str]:
+    def _row_base(self, run: Any) -> '_RowBase':
         return {'project_id': self.project_path, 'run_id': run.id}
 
     def _export_history(self, run: Any, writer: PartWriter) -> None:

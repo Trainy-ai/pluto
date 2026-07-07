@@ -140,6 +140,7 @@ class PartWriter:
             self._part_index += 1
         self._writer.write_table(table)
         self.rows_written += table.num_rows
+        assert self._part_path is not None  # set alongside _writer above
         if os.path.getsize(self._part_path) >= self._max_part_bytes:
             self._close_part()
 
