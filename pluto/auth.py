@@ -75,7 +75,12 @@ def login(settings=None, retry=False):
         )
     except Exception as e:
         tlogger.warning(f'{tag}: server not reachable; reason: {e}')
-        settings._auth = '_key'
+        # A transient failure of this best-effort validation POST must not
+        # corrupt an explicitly provided token: overwriting it with the
+        # '_key' sentinel makes every later request send 'Bearer _key',
+        # which servers reject as 401 "Invalid API key" for the whole run.
+        if not auth_was_provided:
+            settings._auth = '_key'
     try:
         r.raise_for_status()
         body = r.json()
