@@ -611,9 +611,15 @@ class Op:
             if items:
                 self._register_meta_sync(k, items[0], new_metric_names, new_file_meta)
 
-            for item in items:
+            # enumerate() gives each item its 0-based position within this
+            # (key, step) log() call — the sampleIndex the server uses to
+            # restore logged order for media lists. A scalar is wrapped in a
+            # 1-element list above, so it naturally gets sampleIndex 0.
+            for sample_index, item in enumerate(items):
                 try:
-                    self._process_log_item_sync(k, item, metrics, timestamp_ms)
+                    self._process_log_item_sync(
+                        k, item, metrics, timestamp_ms, sample_index
+                    )
                 except Exception as e:
                     # One bad item (e.g. media that can't be encoded/staged)
                     # must not abort the rest of the batch or crash the caller's
@@ -692,6 +698,7 @@ class Op:
         value: Any,
         metrics: Dict[str, Any],
         timestamp_ms: int,
+        sample_index: int = 0,
     ) -> None:
         """Process a single log item for sync process mode."""
         if self._sync_manager is None:
@@ -703,7 +710,7 @@ class Op:
             metrics[key] = value.item()
         elif isinstance(value, File):
             # Handle file types (Image, Audio, Video, Text, Artifact)
-            self._enqueue_file_sync(key, value, timestamp_ms)
+            self._enqueue_file_sync(key, value, timestamp_ms, sample_index)
         elif isinstance(value, Data):
             # Handle structured data types (Graph, Histogram, Table)
             self._sync_manager.enqueue_data(
@@ -719,6 +726,7 @@ class Op:
         log_name: str,
         file_obj: File,
         timestamp_ms: int,
+        sample_index: int = 0,
     ) -> None:
         """
         Process and enqueue a file for upload via sync process.
@@ -747,6 +755,7 @@ class Op:
                 timestamp_ms=timestamp_ms,
                 step=self._step,
                 caption=file_obj._caption,
+                sample_index=sample_index,
             )
             logger.debug(
                 f'{tag}: enqueued file {file_obj._name}{file_obj._ext} for sync'

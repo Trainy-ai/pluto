@@ -352,6 +352,7 @@ class SyncProcessManager:
         timestamp_ms: int,
         step: Optional[int] = None,
         caption: Optional[str] = None,
+        sample_index: int = 0,
     ) -> None:
         """
         Enqueue a file for upload.
@@ -370,6 +371,7 @@ class SyncProcessManager:
             timestamp_ms=timestamp_ms,
             step=step,
             caption=caption,
+            sample_index=sample_index,
         )
         # Update heartbeat to show we're alive
         self.store.heartbeat(self.run_id)
@@ -1301,6 +1303,9 @@ class _SyncUploader:
                 'time': f.timestamp_ms,
                 'logName': f.log_name,
                 'step': f.step,
+                # 0-based position within a single (logName, step) log() call so
+                # the server can restore logged order instead of sorting by name.
+                'sampleIndex': f.sample_index,
             }
             # Only include caption when set — keeps the payload identical to
             # before for un-captioned files and older servers (which ignore

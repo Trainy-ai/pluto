@@ -163,6 +163,10 @@ class FileRecord:
     error_message: Optional[str]
     presigned_url: Optional[str]
     caption: Optional[str] = None
+    # 0-based position of this file within a single (log_name, step) log() call
+    # (e.g. pluto.log({"k": [a, b, c]}) → 0, 1, 2). Lets the server restore the
+    # logged order instead of sorting by fileName. Scalars get 0.
+    sample_index: int = 0
 
 
 @dataclass
@@ -323,6 +327,7 @@ class SyncStore:
                     file_ext TEXT,
                     log_name TEXT,
                     caption TEXT,
+                    sample_index INTEGER DEFAULT 0,
                     timestamp_ms INTEGER NOT NULL,
                     step INTEGER,
                     status INTEGER DEFAULT 0,
@@ -338,6 +343,9 @@ class SyncStore:
             # CREATE TABLE IF NOT EXISTS above is a no-op on an existing table,
             # so backfill new columns here. Idempotent (skips if present).
             self._add_column_if_missing(cursor, 'file_uploads', 'caption', 'TEXT')
+            self._add_column_if_missing(
+                cursor, 'file_uploads', 'sample_index', 'INTEGER DEFAULT 0'
+            )
 
             self.conn.commit()
 
@@ -694,6 +702,7 @@ class SyncStore:
         timestamp_ms: int,
         step: Optional[int] = None,
         caption: Optional[str] = None,
+        sample_index: int = 0,
     ) -> int:
         """Add a file to the upload queue. Returns file record ID."""
         now = time.time()
@@ -704,9 +713,9 @@ class SyncStore:
                 INSERT INTO file_uploads (
                     run_id, local_path, file_type, file_size,
                     timestamp_ms, step, created_at, file_name, file_ext,
-                    log_name, caption
+                    log_name, caption, sample_index
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     run_id,
@@ -720,6 +729,7 @@ class SyncStore:
                     file_ext,
                     log_name,
                     caption,
+                    sample_index,
                 ),
             )
             return cursor.lastrowid or 0
@@ -763,6 +773,12 @@ class SyncStore:
                         error_message=row['error_message'],
                         presigned_url=row['remote_url'],
                         caption=(row['caption'] if 'caption' in row.keys() else None),
+                        sample_index=(
+                            row['sample_index']
+                            if 'sample_index' in row.keys()
+                            and row['sample_index'] is not None
+                            else 0
+                        ),
                     )
                 )
             return records
