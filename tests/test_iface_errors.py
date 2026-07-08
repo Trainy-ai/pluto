@@ -137,11 +137,18 @@ def _make_uploader(response, retry_max=4):
     return uploader
 
 
+# raise_for_status() needs a request attached to build its error, so give the
+# canned responses one (real httpx.Client always sets it).
+_REQ = httpx.Request('POST', 'https://x')
+
+
 def test_sync_post_400_is_terminal_and_surfaces_reason():
     """The sync uploader must not retry a 400 and must raise the server's
     reason (which the plain raise_for_status message would omit)."""
     resp = httpx.Response(
-        400, json={'error': 'A run can have at most one group:* tag.'}
+        400,
+        json={'error': 'A run can have at most one group:* tag.'},
+        request=_REQ,
     )
     uploader = _make_uploader(resp)
 
@@ -155,7 +162,7 @@ def test_sync_post_400_is_terminal_and_surfaces_reason():
 
 def test_sync_post_500_is_retried():
     """5xx stays retryable in the sync uploader."""
-    resp = httpx.Response(500, text='boom')
+    resp = httpx.Response(500, text='boom', request=_REQ)
     uploader = _make_uploader(resp, retry_max=2)
 
     with pytest.raises(Exception) as excinfo:

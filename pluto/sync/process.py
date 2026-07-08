@@ -1404,7 +1404,9 @@ class _SyncUploader:
         headers: Dict[str, str],
     ) -> None:
         """POST with exponential backoff retry. Respects urgent mode settings."""
-        last_error = None
+        import httpx
+
+        last_error: Optional[Exception] = None
 
         # Use urgent mode settings if enabled
         if self._urgent_mode:
@@ -1424,27 +1426,25 @@ class _SyncUploader:
                     headers=headers,
                     timeout=timeout,
                 )
+                response.raise_for_status()
+                return
+            except httpx.HTTPStatusError as e:
+                status = e.response.status_code
+                # 4xx is a client/validation error (e.g. "A run can have at most
+                # one group:* tag.") — retrying the identical payload will never
+                # succeed, so stop now and surface the server's reason. The plain
+                # HTTPStatusError message omits the response body, which is
+                # exactly where that reason lives.
+                if 400 <= status < 500:
+                    raise PlutoRequestError(
+                        _server_error_message(e.response),
+                        status_code=status,
+                    ) from e
+                # 5xx — retryable.
+                last_error = e
             except Exception as e:
                 # Network/timeout error — retryable.
                 last_error = e
-            else:
-                if response.status_code < 400:
-                    return
-                # 4xx is a client/validation error (e.g. "A run can have at
-                # most one group:* tag.") — retrying the identical payload will
-                # never succeed, so stop now and surface the server's reason.
-                # The plain raise_for_status() message omits the response body,
-                # which is exactly where that reason lives.
-                if 400 <= response.status_code < 500:
-                    raise PlutoRequestError(
-                        _server_error_message(response),
-                        status_code=response.status_code,
-                    )
-                # 5xx — retryable.
-                last_error = Exception(
-                    f'HTTP {response.status_code}: '
-                    f'{_server_error_message(response)}'
-                )
 
             if attempt < max_retries - 1:
                 wait = min(self.retry_backoff**attempt, max_backoff)
