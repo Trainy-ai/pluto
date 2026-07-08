@@ -85,12 +85,14 @@ def test_try_500_is_retried_then_gives_up():
         return _resp(500, text='boom')
 
     # raise_on_error → persistent 5xx raises after exhausting retries.
-    with pytest.raises(PlutoRequestError):
+    with pytest.raises(PlutoRequestError) as excinfo:
         iface._try(
             fake_method, 'https://x', {}, b'{}', name='create', raise_on_error=True
         )
     # initial attempt + 2 retries = 3 calls
     assert calls['n'] == 3, calls['n']
+    # The raised error carries the real status code, not None.
+    assert excinfo.value.status_code == 500
 
 
 def test_try_network_error_returns_none_not_request_error():

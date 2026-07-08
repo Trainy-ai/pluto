@@ -285,6 +285,7 @@ class ServerInterface:
         drained: Optional[List[Any]] = None,
         retry: int = 0,
         error_info: str = '',
+        last_status: Optional[int] = None,
         max_retries: Optional[int] = None,
         timeout: Optional[float] = None,
         suppress_httpx_logs: bool = False,
@@ -322,9 +323,11 @@ class ServerInterface:
             # Distinguish a persistent server error (we got HTTP responses but
             # they never succeeded) from an unreachable server (network
             # exceptions → error_info doesn't start with "HTTP"). Only the
-            # former carries a server-provided reason worth raising.
+            # former carries a server-provided reason worth raising. last_status
+            # is threaded down from the last HTTP response so the exception
+            # reports the real code (e.g. 500) rather than None.
             if raise_on_error and error_info.startswith('HTTP '):
-                raise PlutoRequestError(error_info, status_code=None)
+                raise PlutoRequestError(error_info, status_code=last_status)
 
             return None
 
@@ -344,6 +347,9 @@ class ServerInterface:
             # Capture error info for potential failure logging
             server_msg = _server_error_message(r)
             error_info = f'HTTP {r.status_code}: {server_msg[:200]}'
+            # Remember the status so a later retry-exhaustion raise carries the
+            # real code, not None (network errors below leave this untouched).
+            last_status = r.status_code
 
             target = len(drained) if drained else 'request'
             # High-frequency endpoints (the trigger/heartbeat that fires
@@ -420,6 +426,7 @@ class ServerInterface:
             drained=drained,
             retry=retry + 1,
             error_info=error_info,
+            last_status=last_status,
             max_retries=effective_max_retries,
             timeout=timeout,
             suppress_httpx_logs=suppress_httpx_logs,
