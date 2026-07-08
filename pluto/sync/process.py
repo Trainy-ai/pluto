@@ -30,6 +30,7 @@ except ImportError:
     # Fallback for environments without filelock
     FileLock = None  # type: ignore[misc, assignment]
 
+from ..iface import PlutoRequestError, _server_error_message
 from .store import FileRecord, RecordType, SyncRecord, SyncStore
 
 # Type alias for subprocess
@@ -1423,17 +1424,35 @@ class _SyncUploader:
                     headers=headers,
                     timeout=timeout,
                 )
-                response.raise_for_status()
-                return
             except Exception as e:
+                # Network/timeout error — retryable.
                 last_error = e
-                if attempt < max_retries - 1:
-                    wait = min(self.retry_backoff**attempt, max_backoff)
-                    self.log.debug(
-                        f'Request failed (attempt {attempt + 1}/{max_retries}), '
-                        f'retrying in {wait}s: {e}'
+            else:
+                if response.status_code < 400:
+                    return
+                # 4xx is a client/validation error (e.g. "A run can have at
+                # most one group:* tag.") — retrying the identical payload will
+                # never succeed, so stop now and surface the server's reason.
+                # The plain raise_for_status() message omits the response body,
+                # which is exactly where that reason lives.
+                if 400 <= response.status_code < 500:
+                    raise PlutoRequestError(
+                        _server_error_message(response),
+                        status_code=response.status_code,
                     )
-                    time.sleep(wait)
+                # 5xx — retryable.
+                last_error = Exception(
+                    f'HTTP {response.status_code}: '
+                    f'{_server_error_message(response)}'
+                )
+
+            if attempt < max_retries - 1:
+                wait = min(self.retry_backoff**attempt, max_backoff)
+                self.log.debug(
+                    f'Request failed (attempt {attempt + 1}/{max_retries}), '
+                    f'retrying in {wait}s: {last_error}'
+                )
+                time.sleep(wait)
 
         raise last_error or Exception('Request failed after retries')
 

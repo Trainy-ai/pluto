@@ -20,6 +20,35 @@ logger = logging.getLogger(f'{__name__.split(".")[0]}')
 tag = 'Interface'
 
 
+class PlutoRequestError(Exception):
+    """Raised when a Pluto write request fails with a server validation error.
+
+    Carries the server-provided reason (parsed from the JSON ``error`` field
+    when present) so callers can surface *why* the request was rejected — e.g.
+    ``"A run can have at most one group:* tag."`` — instead of a generic
+    connection error. Mirrors ``query.PlutoQueryError`` for the read path.
+    """
+
+    def __init__(self, message: str, status_code: Optional[int] = None):
+        self.status_code = status_code
+        super().__init__(message)
+
+
+def _server_error_message(r: httpx.Response) -> str:
+    """Best-effort extraction of the human-readable reason from a response.
+
+    The backend returns ``{"error": "<reason>"}`` on validation failures; fall
+    back to the raw (truncated) body when the payload isn't the expected shape.
+    """
+    try:
+        body = r.json()
+        if isinstance(body, dict) and body.get('error'):
+            return str(body['error'])
+    except Exception:
+        pass
+    return r.text[:500]
+
+
 @contextmanager
 def _suppress_sentry_breadcrumbs():
     """Prevent the host app's Sentry from capturing Pluto's internal HTTP traffic.
@@ -143,12 +172,18 @@ class ServerInterface:
         )
 
     def update_tags(self, tags: List[str]) -> None:
-        """Update tags on the server via HTTP API."""
+        """Update tags on the server via HTTP API.
+
+        Raises ``PlutoRequestError`` if the server rejects the update (e.g. a
+        validation error), so a failed ``run.update_tags(...)`` surfaces the
+        reason instead of silently no-op'ing.
+        """
         self._post_v1(
             self.settings.url_update_tags,
             self.headers,
             make_compat_update_tags_v1(self.settings, tags),
             client=self.client_api,
+            raise_on_error=True,
         )
 
     def update_config(self, config: Dict[str, Any]) -> None:
@@ -253,6 +288,7 @@ class ServerInterface:
         max_retries: Optional[int] = None,
         timeout: Optional[float] = None,
         suppress_httpx_logs: bool = False,
+        raise_on_error: bool = False,
     ):
         effective_max_retries = (
             max_retries
@@ -283,6 +319,13 @@ class ServerInterface:
                 retry_count=retry,
             )
 
+            # Distinguish a persistent server error (we got HTTP responses but
+            # they never succeeded) from an unreachable server (network
+            # exceptions → error_info doesn't start with "HTTP"). Only the
+            # former carries a server-provided reason worth raising.
+            if raise_on_error and error_info.startswith('HTTP '):
+                raise PlutoRequestError(error_info, status_code=None)
+
             return None
 
         try:
@@ -299,11 +342,10 @@ class ServerInterface:
                 return r
 
             # Capture error info for potential failure logging
-            error_info = f'HTTP {r.status_code}: {r.text[:100]}'
+            server_msg = _server_error_message(r)
+            error_info = f'HTTP {r.status_code}: {server_msg[:200]}'
 
-            status_code = r.status_code if r else 'N/A'
             target = len(drained) if drained else 'request'
-            response = r.text if r else 'N/A'
             # High-frequency endpoints (the trigger/heartbeat that fires
             # every ~4 s) set suppress_httpx_logs; route their non-200
             # responses to DEBUG so a flaky server doesn't spam WARNING.
@@ -314,11 +356,23 @@ class ServerInterface:
                 name,
                 retry + 1,
                 effective_max_retries + 1,
-                status_code,
+                r.status_code,
                 target,
                 url,
-                response,
+                server_msg,
             )
+
+            # 4xx is a client/validation error — retrying the identical payload
+            # will never succeed, so stop immediately (no wasted backoff) and,
+            # when asked, surface the server's reason to the caller.
+            if 400 <= r.status_code < 500:
+                if raise_on_error:
+                    raise PlutoRequestError(server_msg, status_code=r.status_code)
+                return None
+        except PlutoRequestError:
+            # A deliberate terminal error (4xx) — propagate, don't treat it as
+            # a transient network failure to be retried by the except below.
+            raise
         except (
             BrokenPipeError,
             ConnectionResetError,
@@ -369,6 +423,7 @@ class ServerInterface:
             max_retries=effective_max_retries,
             timeout=timeout,
             suppress_httpx_logs=suppress_httpx_logs,
+            raise_on_error=raise_on_error,
         )
 
     def _put_v1(
@@ -403,6 +458,7 @@ class ServerInterface:
         max_retries: Optional[int] = None,
         timeout: Optional[float] = None,
         suppress_httpx_logs: bool = False,
+        raise_on_error: bool = False,
     ):
         # Support both queue and direct content
         if isinstance(q, queue.Queue):
@@ -424,6 +480,7 @@ class ServerInterface:
             max_retries=max_retries,
             timeout=timeout,
             suppress_httpx_logs=suppress_httpx_logs,
+            raise_on_error=raise_on_error,
         )
 
         if (

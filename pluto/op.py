@@ -27,7 +27,7 @@ from .api import (
 from .auth import login
 from .data import Data
 from .file import Artifact, Audio, File, Image, Text, Video
-from .iface import ServerInterface
+from .iface import PlutoRequestError, ServerInterface
 from .log import setup_logger, teardown_logger
 from .store import DataStore
 from .sync import SyncProcessManager
@@ -319,31 +319,41 @@ class Op:
             if self.settings._sys == {}:
                 self.settings._sys = System(self.settings)
             tmp_iface = ServerInterface(config=config, settings=settings)
-            if (
-                settings._resume_run_id is not None
-                or settings._resume_display_id is not None
-            ):
-                # Resume existing run via /api/runs/resume
-                r = tmp_iface._post_v1(
-                    self.settings.url_resume,
-                    tmp_iface.headers,
-                    make_compat_resume_v1(self.settings),
-                    client=tmp_iface.client_api,
-                )
-            else:
-                # Create new run (or resume via externalId)
-                r = tmp_iface._post_v1(
-                    self.settings.url_start,  # create-run
-                    tmp_iface.headers,
-                    make_compat_start_v1(
-                        self.config,
-                        self.settings,
-                        self.settings._sys.get_info(),
-                        self.tags,
-                    ),
-                    client=tmp_iface.client_api,
-                )
+            try:
+                if (
+                    settings._resume_run_id is not None
+                    or settings._resume_display_id is not None
+                ):
+                    # Resume existing run via /api/runs/resume
+                    r = tmp_iface._post_v1(
+                        self.settings.url_resume,
+                        tmp_iface.headers,
+                        make_compat_resume_v1(self.settings),
+                        client=tmp_iface.client_api,
+                        raise_on_error=True,
+                    )
+                else:
+                    # Create new run (or resume via externalId)
+                    r = tmp_iface._post_v1(
+                        self.settings.url_start,  # create-run
+                        tmp_iface.headers,
+                        make_compat_start_v1(
+                            self.config,
+                            self.settings,
+                            self.settings._sys.get_info(),
+                            self.tags,
+                        ),
+                        client=tmp_iface.client_api,
+                        raise_on_error=True,
+                    )
+            except PlutoRequestError as e:
+                # The server rejected the request (e.g. a validation error such
+                # as "A run can have at most one group:* tag."). Surface the
+                # server's reason rather than a misleading connection error.
+                raise RuntimeError(f'Failed to create run: {e}') from e
             if not r:
+                # No response after retries → the server was unreachable (a
+                # 4xx/5xx would have raised PlutoRequestError above).
                 raise ConnectionError(
                     'Failed to create or resume run. Check connection to Pluto server.'
                 )
@@ -948,6 +958,10 @@ class Op:
         elif self._iface:
             try:
                 self._iface._update_tags(self.tags)
+            except PlutoRequestError as e:
+                # Server rejected the tags update (validation error) — this is
+                # not a transient failure, so surface it rather than hide it.
+                logger.warning(f'{tag}: server rejected tags update: {e}')
             except Exception as e:
                 logger.debug(f'{tag}: failed to sync tags to server: {e}')
 
@@ -978,6 +992,10 @@ class Op:
         elif self._iface:
             try:
                 self._iface._update_tags(self.tags)
+            except PlutoRequestError as e:
+                # Server rejected the tags update (validation error) — this is
+                # not a transient failure, so surface it rather than hide it.
+                logger.warning(f'{tag}: server rejected tags update: {e}')
             except Exception as e:
                 logger.debug(f'{tag}: failed to sync tags to server: {e}')
 
