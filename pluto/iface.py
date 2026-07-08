@@ -19,6 +19,16 @@ from .sets import Settings
 logger = logging.getLogger(f'{__name__.split(".")[0]}')
 tag = 'Interface'
 
+# 4xx status codes that are commonly *transient* and worth retrying like 5xx:
+#   401 Unauthorized     — auth/token validation races (e.g. the token service
+#                          timing out mid-request), which clear on retry.
+#   408 Request Timeout  — server-side timeout, not a bad request.
+#   429 Too Many Requests — rate limited; back off and retry.
+# Every other 4xx (400, 403, 404, 409, 422, ...) is a permanent client/
+# validation error — e.g. 400 "A run can have at most one group:* tag." —
+# where retrying the identical request would just fail again, so it's terminal.
+RETRYABLE_STATUS_CODES = frozenset({401, 408, 429})
+
 
 class PlutoRequestError(Exception):
     """Raised when a Pluto write request fails with a server validation error.
@@ -368,10 +378,15 @@ class ServerInterface:
                 server_msg,
             )
 
-            # 4xx is a client/validation error — retrying the identical payload
-            # will never succeed, so stop immediately (no wasted backoff) and,
-            # when asked, surface the server's reason to the caller.
-            if 400 <= r.status_code < 500:
+            # A permanent 4xx client/validation error — retrying the identical
+            # payload will never succeed, so stop immediately (no wasted backoff)
+            # and, when asked, surface the server's reason to the caller.
+            # Transient 4xx (RETRYABLE_STATUS_CODES: 401/408/429) fall through to
+            # the retry/backoff path below, same as 5xx.
+            if (
+                400 <= r.status_code < 500
+                and r.status_code not in RETRYABLE_STATUS_CODES
+            ):
                 if raise_on_error:
                     raise PlutoRequestError(server_msg, status_code=r.status_code)
                 return None

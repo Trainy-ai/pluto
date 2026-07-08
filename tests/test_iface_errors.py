@@ -95,6 +95,44 @@ def test_try_500_is_retried_then_gives_up():
     assert excinfo.value.status_code == 500
 
 
+def test_try_transient_4xx_is_retried_then_recovers():
+    """401/408/429 are transient (auth blips, timeouts, rate limits) and must
+    be retried — a 401 that clears on retry should succeed, not hard-fail."""
+    iface = _make_iface()
+    calls = {'n': 0}
+
+    def fake_method(url, content=None, headers=None, **kwargs):
+        calls['n'] += 1
+        # First two attempts flake with 401, third succeeds.
+        if calls['n'] < 3:
+            return _resp(401, text='Unauthorized')
+        return _resp(200, json_body={'ok': True})
+
+    r = iface._try(
+        fake_method, 'https://x', {}, b'{}', name='create', raise_on_error=True
+    )
+    assert r is not None and r.status_code == 200
+    assert calls['n'] == 3, 'a transient 401 must be retried, not terminal'
+
+
+def test_try_persistent_401_raises_after_retries():
+    """A 401 that never clears still raises (after exhausting retries), carrying
+    the real status code — not a first-attempt hard fail, not None."""
+    iface = _make_iface()  # x_file_stream_retry_max = 2
+    calls = {'n': 0}
+
+    def fake_method(url, content=None, headers=None, **kwargs):
+        calls['n'] += 1
+        return _resp(401, text='Unauthorized')
+
+    with pytest.raises(PlutoRequestError) as excinfo:
+        iface._try(
+            fake_method, 'https://x', {}, b'{}', name='create', raise_on_error=True
+        )
+    assert calls['n'] == 3, 'a 401 is retried (initial + 2 retries)'
+    assert excinfo.value.status_code == 401
+
+
 def test_try_network_error_returns_none_not_request_error():
     iface = _make_iface()
 

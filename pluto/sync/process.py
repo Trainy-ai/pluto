@@ -30,7 +30,11 @@ except ImportError:
     # Fallback for environments without filelock
     FileLock = None  # type: ignore[misc, assignment]
 
-from ..iface import PlutoRequestError, _server_error_message
+from ..iface import (
+    RETRYABLE_STATUS_CODES,
+    PlutoRequestError,
+    _server_error_message,
+)
 from .store import FileRecord, RecordType, SyncRecord, SyncStore
 
 # Type alias for subprocess
@@ -1430,17 +1434,17 @@ class _SyncUploader:
                 return
             except httpx.HTTPStatusError as e:
                 status = e.response.status_code
-                # 4xx is a client/validation error (e.g. "A run can have at most
-                # one group:* tag.") — retrying the identical payload will never
-                # succeed, so stop now and surface the server's reason. The plain
-                # HTTPStatusError message omits the response body, which is
-                # exactly where that reason lives.
-                if 400 <= status < 500:
+                # A permanent 4xx client/validation error (e.g. "A run can have
+                # at most one group:* tag.") — retrying the identical payload
+                # will never succeed, so stop now and surface the server's
+                # reason. The plain HTTPStatusError message omits the response
+                # body, which is exactly where that reason lives.
+                if 400 <= status < 500 and status not in RETRYABLE_STATUS_CODES:
                     raise PlutoRequestError(
                         _server_error_message(e.response),
                         status_code=status,
                     ) from e
-                # 5xx — retryable.
+                # 5xx or transient 4xx (401/408/429) — retryable.
                 last_error = e
             except Exception as e:
                 # Network/timeout error — retryable.
