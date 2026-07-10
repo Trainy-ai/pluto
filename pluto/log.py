@@ -213,6 +213,31 @@ def _stop_fd_captures() -> None:
             logger.debug('Failed to stop fd capture: %s', e)
 
 
+def flush_console_buffers() -> None:
+    """Flush every console-capture layer into the sync store. Never raises.
+
+    Op._teardown() calls this BEFORE draining/stopping the sync manager:
+    lines still sitting in the fd reader's batch buffer (up to 0.2s of
+    output) or a ConsoleHandler's buffer are otherwise enqueued at
+    teardown_logger time — after the uploader is gone — and sit in SQLite
+    unuploaded. Observed on CI as a line logged immediately before
+    finish() never reaching the server.
+
+    Stopping the fd captures here (rather than just flushing) is
+    deliberate: output written after the sync drain below can't be
+    uploaded in this run anyway, and stop() is the only deterministic
+    flush point the reader thread offers. teardown_logger's later
+    _stop_fd_captures() is then a no-op.
+    """
+    _stop_fd_captures()
+    for stream in (sys.stdout, sys.stderr):
+        if isinstance(stream, ConsoleHandler):
+            try:
+                stream.flush()
+            except Exception as e:
+                logger.debug('Failed to flush console stream: %s', e)
+
+
 def setup_logger_file(settings, logger, console, sync_manager=None):
     console.setLevel(logging.DEBUG)
     # The console logger is internal capture plumbing. If it propagated,

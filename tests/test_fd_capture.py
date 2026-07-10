@@ -288,6 +288,37 @@ class TestSetupLoggerFileIntegration:
         time.sleep(0.05)
         assert not any('post-teardown' in line for line in sm.lines)
 
+    def test_flush_console_buffers_drains_capture_before_sync_stops(self, tmp_path):
+        """Op.finish() must be able to push pending console lines into the
+        sync store BEFORE the sync manager drains and stops. Lines that are
+        still sitting in the fd reader's batch buffer (up to 0.2s of output)
+        when finish() is called would otherwise be enqueued at
+        teardown_logger time — after the uploader is gone — and sit in
+        SQLite forever. Caught in CI: the torchtitan e2e sentinel logged
+        immediately before finish() never reached the server on 3.10/3.11.
+        """
+        from pluto.log import flush_console_buffers
+
+        with _logger_env(tmp_path, 'flush_before_stop') as (sm, _log, _console):
+            os.write(2, b'logged-right-before-finish\n')
+            flush_console_buffers()
+            assert any('logged-right-before-finish' in line for line in sm.lines)
+
+    def test_flush_console_buffers_drains_wrapper_path_too(self, tmp_path):
+        """Same guarantee for the legacy sys-swap path (fd capture off):
+        a ConsoleHandler batch buffered within its flush interval must reach
+        the sync store when flush_console_buffers() runs."""
+        from pluto.log import flush_console_buffers
+
+        with _logger_env(tmp_path, 'flush_wrapper', fd_capture=False) as (
+            sm,
+            _log,
+            _console,
+        ):
+            print('wrapper-line-before-finish')
+            flush_console_buffers()
+            assert any('wrapper-line-before-finish' in line for line in sm.lines)
+
     def test_flag_off_falls_back_to_wrapper_enqueue(self, tmp_path):
         """x_console_fd_capture=False keeps the legacy sys-swap capture."""
         from pluto.log import _fd_captures

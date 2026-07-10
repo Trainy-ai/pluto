@@ -28,7 +28,7 @@ from .auth import login
 from .data import Data
 from .file import Artifact, Audio, File, Image, Text, Video
 from .iface import ServerInterface
-from .log import setup_logger, teardown_logger
+from .log import flush_console_buffers, setup_logger, teardown_logger
 from .store import DataStore
 from .sync import SyncProcessManager
 from .sync.store import HEALTH_METRIC_KEYS
@@ -815,6 +815,13 @@ class Op:
         try:
             # Stop the monitor (system metrics and heartbeats)
             self._monitor.stop(code)
+
+            # Push pending console-capture lines into the sync store while
+            # the sync process can still upload them — anything enqueued
+            # after the drain below stays in SQLite unuploaded (the capture
+            # layers batch up to 0.2s of output).
+            if self._sync_manager is not None:
+                flush_console_buffers()
 
             # Handle sync process shutdown
             if self._sync_manager is not None:
