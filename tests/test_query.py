@@ -543,6 +543,143 @@ class TestGetMetrics:
 
 
 # ---------------------------------------------------------------------------
+# get_raw_metrics
+# ---------------------------------------------------------------------------
+
+
+class TestGetRawMetrics:
+    def test_basic(self, client, mock_response):
+        rows = [
+            {
+                'logGroup': 'train',
+                'step': 0,
+                'time': '2025-01-01 00:00:00.000',
+                'value': 1.0,
+                'nonFiniteFlags': 0,
+            },
+            {
+                'logGroup': 'train',
+                'step': 0,
+                'time': '2025-01-01 00:00:01.000',
+                'value': 1.1,
+                'nonFiniteFlags': 0,
+            },
+        ]
+        client._client.get.return_value = mock_response(
+            200, {'rows': rows, 'truncated': False}
+        )
+        result = client.get_raw_metrics('proj', 42, 'train/loss')
+        params = client._client.get.call_args[1]['params']
+        assert params['logName'] == 'train/loss'
+        assert params['runId'] == 42
+        assert params['projectName'] == 'proj'
+        assert params['limit'] == 50000
+        try:
+            import pandas as pd
+
+            assert isinstance(result, pd.DataFrame)
+            assert len(result) == 2
+            assert list(result.columns) == [
+                'logGroup',
+                'step',
+                'time',
+                'value',
+                'nonFiniteFlags',
+            ]
+        except ImportError:
+            assert result == rows
+
+    def test_step_range_passed_through(self, client, mock_response):
+        client._client.get.return_value = mock_response(
+            200, {'rows': [], 'truncated': False}
+        )
+        client.get_raw_metrics('proj', 42, 'train/loss', step_min=100, step_max=200)
+        params = client._client.get.call_args[1]['params']
+        assert params['stepMin'] == 100
+        assert params['stepMax'] == 200
+
+    def test_step_range_omitted_when_none(self, client, mock_response):
+        client._client.get.return_value = mock_response(
+            200, {'rows': [], 'truncated': False}
+        )
+        client.get_raw_metrics('proj', 42, 'train/loss')
+        params = client._client.get.call_args[1]['params']
+        assert 'stepMin' not in params
+        assert 'stepMax' not in params
+
+    def test_limit_clamped_to_max(self, client, mock_response):
+        client._client.get.return_value = mock_response(
+            200, {'rows': [], 'truncated': False}
+        )
+        client.get_raw_metrics('proj', 42, 'train/loss', limit=10**9)
+        params = client._client.get.call_args[1]['params']
+        assert params['limit'] == 50000
+
+    def test_truncated_emits_warning(self, client, mock_response):
+        rows = [
+            {
+                'logGroup': 'train',
+                'step': i,
+                'time': '2025-01-01',
+                'value': float(i),
+                'nonFiniteFlags': 0,
+            }
+            for i in range(3)
+        ]
+        client._client.get.return_value = mock_response(
+            200, {'rows': rows, 'truncated': True}
+        )
+        with pytest.warns(UserWarning, match='truncated'):
+            client.get_raw_metrics('proj', 42, 'train/loss')
+
+    def test_no_warning_when_not_truncated(self, client, mock_response):
+        client._client.get.return_value = mock_response(
+            200, {'rows': [], 'truncated': False}
+        )
+        import warnings
+
+        with warnings.catch_warnings():
+            warnings.simplefilter('error')
+            client.get_raw_metrics('proj', 42, 'train/loss')
+
+    def test_empty_returns_empty_dataframe_with_columns(self, client, mock_response):
+        client._client.get.return_value = mock_response(
+            200, {'rows': [], 'truncated': False}
+        )
+        result = client.get_raw_metrics('proj', 42, 'train/loss')
+        try:
+            import pandas as pd
+
+            assert isinstance(result, pd.DataFrame)
+            assert len(result) == 0
+            assert list(result.columns) == [
+                'logGroup',
+                'step',
+                'time',
+                'value',
+                'nonFiniteFlags',
+            ]
+        except ImportError:
+            assert result == []
+
+    def test_display_id_resolves_to_numeric(self, client, mock_response):
+        client._client.get.side_effect = [
+            mock_response(200, {'id': 99, 'displayId': 'MMP-1'}),
+            mock_response(200, {'rows': [], 'truncated': False}),
+        ]
+        client.get_raw_metrics('proj', 'MMP-1', 'train/loss')
+        first_url = client._client.get.call_args_list[0][0][0]
+        assert 'by-display-id/MMP-1' in first_url
+        second_call = client._client.get.call_args_list[1]
+        assert second_call[0][0].endswith('/api/runs/metrics/raw')
+        assert second_call[1]['params']['runId'] == 99
+
+    def test_metric_name_required(self, client):
+        with pytest.raises(TypeError):
+            client.get_raw_metrics('proj', 42)  # type: ignore[call-arg]
+
+
+# ---------------------------------------------------------------------------
 # get_statistics
 # ---------------------------------------------------------------------------
 

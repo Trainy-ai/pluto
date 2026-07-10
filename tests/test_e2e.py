@@ -87,6 +87,28 @@ def _poll_metric_names(
     )
 
 
+def _poll_metric_present(
+    project: str,
+    run_id: int,
+    metric_name: str,
+    timeout: float = _POLL_TIMEOUT,
+) -> None:
+    """Poll until *metric_name* has at least one raw write for the run.
+
+    Reads the un-deduped ``mlop_metrics`` table directly via
+    ``pq.get_raw_metrics``, bypassing the ``mlop_metric_summaries_v2``
+    refreshable MV that backs ``pq.get_metric_names`` (5-minute refresh
+    interval, longer than the e2e poll window). Use this helper when a
+    test logs a metric and immediately needs to confirm it landed.
+    """
+    rows = _poll(
+        fn=lambda: pq.get_raw_metrics(project, run_id, metric_name, limit=100),
+        check=lambda r: len(r) > 0,
+        timeout=timeout,
+    )
+    assert len(rows) > 0, f"'{metric_name}' has no rows on server for run {run_id}"
+
+
 def _poll_run(
     project: str,
     run_id: int,
@@ -288,14 +310,11 @@ def test_e2e_metrics_logged():
         run.log({'train/loss': 1.0 - step * 0.1, 'train/acc': step * 0.1})
     run.finish()
 
-    # Check metric names exist (poll for eventual consistency)
-    metric_names = _poll_metric_names(
-        TESTING_PROJECT_NAME, run_id, ['train/loss', 'train/acc']
-    )
-    assert (
-        'train/loss' in metric_names
-    ), f"'train/loss' not in server metric names: {metric_names}"
-    assert 'train/acc' in metric_names
+    # Verify each metric landed in raw storage. Reads the un-deduped
+    # mlop_metrics table directly (no MV refresh latency), so this is
+    # immediate after run.finish() flushes the sync process.
+    _poll_metric_present(TESTING_PROJECT_NAME, run_id, 'train/loss')
+    _poll_metric_present(TESTING_PROJECT_NAME, run_id, 'train/acc')
 
     # Check metric values
     metrics = pq.get_metrics(TESTING_PROJECT_NAME, run_id, metric_names=['train/loss'])
@@ -553,12 +572,8 @@ def test_e2e_multiple_metrics_single_log():
     )
     run.finish()
 
-    expected = ['multi/loss', 'multi/accuracy', 'multi/lr']
-    metric_names = _poll_metric_names(TESTING_PROJECT_NAME, run_id, expected)
-    for name in expected:
-        assert (
-            name in metric_names
-        ), f"'{name}' not in server metric names: {metric_names}"
+    for name in ('multi/loss', 'multi/accuracy', 'multi/lr'):
+        _poll_metric_present(TESTING_PROJECT_NAME, run_id, name)
 
 
 # ---------------------------------------------------------------------------
@@ -716,9 +731,8 @@ def test_e2e_full_lifecycle():
     assert 'validated' in server_tags
     assert 'lifecycle' not in server_tags  # Removed
 
-    # Metrics (poll for eventual consistency)
-    metric_names = _poll_metric_names(TESTING_PROJECT_NAME, run_id, ['lifecycle/loss'])
-    assert 'lifecycle/loss' in metric_names
+    # Metrics (raw read — bypasses the summaries MV's refresh interval)
+    _poll_metric_present(TESTING_PROJECT_NAME, run_id, 'lifecycle/loss')
 
     metrics = pq.get_metrics(
         TESTING_PROJECT_NAME, run_id, metric_names=['lifecycle/loss']
