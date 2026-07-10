@@ -12,6 +12,7 @@ Requires:
 
 import importlib.util
 import io
+import logging
 import time
 import uuid
 from typing import Callable, List, TypeVar
@@ -396,22 +397,68 @@ def test_e2e_image_download(tmp_path):
 # ---------------------------------------------------------------------------
 
 
+def _poll_console_messages(run_id: int, sentinel: str) -> List[str]:
+    """Poll /api/runs/logs until a line containing *sentinel* appears."""
+
+    def _messages() -> List[str]:
+        logs = pq.get_logs(TESTING_PROJECT_NAME, run_id, limit=500)
+        return [entry.get('message', '') for entry in logs]
+
+    return _poll(fn=_messages, check=lambda ms: any(sentinel in m for m in ms))
+
+
 def test_e2e_console_logs():
     """Verify print() output is captured and queryable."""
+    sentinel = f'e2e-print-{uuid.uuid4().hex[:12]}'
     run = pluto.init(project=TESTING_PROJECT_NAME, name=get_task_name(), config={})
     run_id = run.settings._op_id
 
-    print('e2e-log-sentinel-12345')
+    print(sentinel)
     run.finish()
 
-    logs = pq.get_logs(TESTING_PROJECT_NAME, run_id, limit=100)
-    messages = [entry.get('message', '') for entry in logs]
-    found = any('e2e-log-sentinel-12345' in msg for msg in messages)
-    # Console capture may be disabled or delayed; don't hard-fail
-    if not found:
-        pytest.skip(
-            'Console log not found on server (capture may be disabled or delayed)'
-        )
+    messages = _poll_console_messages(run_id, sentinel)
+    assert any(sentinel in msg for msg in messages), (
+        f'printed line ({sentinel}) never reached the server; '
+        f'got {len(messages)} console lines'
+    )
+
+
+def test_e2e_pre_init_logging_handler_console_logs():
+    """torchtitan scenario: a logging.StreamHandler bound to fd 2 BEFORE
+    pluto.init() must still have its output reach the server.
+
+    Frameworks like torchtitan call init_logger() at process start;
+    CPython's StreamHandler binds the stream object at construction, so the
+    old sys-swap console capture never saw those writes and the run's
+    console section stayed empty. fd-level capture (pluto/_fd_capture.py)
+    fixes this; this test pins the full path: pre-bound handler → fd pipe →
+    sync store → upload → /api/runs/logs.
+
+    The handler is bound to an explicitly fd-2-backed stream because under
+    pytest sys.stderr is a capture object that does not write to fd 2 —
+    outside pytest this is exactly `logging.StreamHandler()`.
+    """
+    sentinel = f'titan-e2e-{uuid.uuid4().hex[:12]}'
+    pre_bound = io.TextIOWrapper(io.FileIO(2, 'w', closefd=False), write_through=True)
+    handler = logging.StreamHandler(pre_bound)
+    handler.setFormatter(logging.Formatter('[titan] %(message)s'))
+    titan_logger = logging.getLogger('e2e_titan_repro')
+    titan_logger.propagate = False
+    titan_logger.setLevel(logging.INFO)
+    titan_logger.addHandler(handler)
+    try:
+        run = pluto.init(project=TESTING_PROJECT_NAME, name=get_task_name(), config={})
+        run_id = run.settings._op_id
+        titan_logger.info(f'step: 10  loss: 2.31  {sentinel}')
+        run.finish()
+    finally:
+        titan_logger.removeHandler(handler)
+
+    messages = _poll_console_messages(run_id, sentinel)
+    assert any(sentinel in msg for msg in messages), (
+        f'pre-init logging handler line ({sentinel}) never reached the '
+        f'server; got {len(messages)} console lines'
+    )
 
 
 # ---------------------------------------------------------------------------
