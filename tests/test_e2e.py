@@ -12,7 +12,9 @@ Requires:
 
 import importlib.util
 import io
-import logging
+import os
+import subprocess
+import sys
 import time
 import uuid
 from typing import Callable, List, TypeVar
@@ -423,36 +425,66 @@ def test_e2e_console_logs():
     )
 
 
-def test_e2e_pre_init_logging_handler_console_logs():
-    """torchtitan scenario: a logging.StreamHandler bound to fd 2 BEFORE
-    pluto.init() must still have its output reach the server.
+# Faithful torchtitan repro, run as a real subprocess: the logging handler
+# binds sys.stderr at process start (init_logger), pluto.init() comes later
+# (inside WandBLogger in the real job), and training output goes through
+# logging — never bare print(). Run in a fresh interpreter so real fds are
+# in play (under pytest, sys.stderr is a capture object detached from fd 2)
+# and no state leaks between xdist worker tests.
+_TITAN_SCRIPT = """
+import logging, os, sys
 
-    Frameworks like torchtitan call init_logger() at process start;
-    CPython's StreamHandler binds the stream object at construction, so the
-    old sys-swap console capture never saw those writes and the run's
-    console section stayed empty. fd-level capture (pluto/_fd_capture.py)
-    fixes this; this test pins the full path: pre-bound handler → fd pipe →
-    sync store → upload → /api/runs/logs.
+# 1. torchtitan tools/logging.py init_logger(): runs before anything else
+#    and binds the current sys.stderr object into the handler.
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
+handler = logging.StreamHandler()
+handler.setFormatter(logging.Formatter('[titan] %(message)s'))
+logger.addHandler(handler)
 
-    The handler is bound to an explicitly fd-2-backed stream because under
-    pytest sys.stderr is a capture object that does not write to fd 2 —
-    outside pytest this is exactly `logging.StreamHandler()`.
+# 2. pluto.init() happens later (via the wandb compat inside WandBLogger).
+import pluto
+run = pluto.init(project=os.environ['E2E_PROJECT'], name=os.environ['E2E_NAME'])
+with open(os.environ['E2E_RUN_ID_FILE'], 'w') as f:
+    f.write(str(run.settings._op_id))
+
+# 3. All training output goes through logging -> the pre-bound handler.
+logger.info('step: 10  loss: 2.31  ' + os.environ['E2E_SENTINEL'])
+run.finish()
+"""
+
+
+def test_e2e_pre_init_logging_handler_console_logs(tmp_path):
+    """torchtitan scenario: logging configured BEFORE pluto.init() must
+    still have its output reach the server.
+
+    CPython's StreamHandler stores the sys.stderr object at construction,
+    so the old sys-swap console capture never saw these writes and the
+    run's console section stayed empty. fd-level capture
+    (pluto/_fd_capture.py) fixes this; this test pins the full path:
+    pre-bound handler → fd pipe → sync store → upload → /api/runs/logs.
     """
     sentinel = f'titan-e2e-{uuid.uuid4().hex[:12]}'
-    pre_bound = io.TextIOWrapper(io.FileIO(2, 'w', closefd=False), write_through=True)
-    handler = logging.StreamHandler(pre_bound)
-    handler.setFormatter(logging.Formatter('[titan] %(message)s'))
-    titan_logger = logging.getLogger('e2e_titan_repro')
-    titan_logger.propagate = False
-    titan_logger.setLevel(logging.INFO)
-    titan_logger.addHandler(handler)
-    try:
-        run = pluto.init(project=TESTING_PROJECT_NAME, name=get_task_name(), config={})
-        run_id = run.settings._op_id
-        titan_logger.info(f'step: 10  loss: 2.31  {sentinel}')
-        run.finish()
-    finally:
-        titan_logger.removeHandler(handler)
+    run_id_file = tmp_path / 'run_id'
+    env = {
+        **os.environ,
+        'E2E_PROJECT': TESTING_PROJECT_NAME,
+        'E2E_NAME': get_task_name(),
+        'E2E_SENTINEL': sentinel,
+        'E2E_RUN_ID_FILE': str(run_id_file),
+    }
+    proc = subprocess.run(
+        [sys.executable, '-c', _TITAN_SCRIPT],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=180,
+    )
+    assert proc.returncode == 0, (
+        f'titan-style subprocess failed (rc={proc.returncode}):\n'
+        f'stdout:\n{proc.stdout}\nstderr:\n{proc.stderr}'
+    )
+    run_id = int(run_id_file.read_text())
 
     messages = _poll_console_messages(run_id, sentinel)
     assert any(sentinel in msg for msg in messages), (
