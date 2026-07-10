@@ -1668,3 +1668,28 @@ def test_make_compat_file_v1_assigns_sample_index():
     # A single (non-list) media logs as a 1-element list → sampleIndex 0.
     solo = json.loads(make_compat_file_v1({'eval/solo': [_f('s')]}, 0, 5).decode())
     assert solo['files'][0]['sampleIndex'] == 0
+
+
+def test_make_compat_file_v1_sample_index_restarts_per_logname():
+    """Each logName's list is numbered independently — two keys logged in one
+    call each restart sampleIndex at 0 (the index is per-(logName, step), not
+    global across the payload)."""
+    import types
+
+    from pluto.api import make_compat_file_v1
+
+    def _f(name):
+        return types.SimpleNamespace(
+            _name=name,
+            _ext='.png',
+            _stat=types.SimpleNamespace(st_size=10, st_mtime=1.0),
+            _caption=None,
+        )
+
+    payload = json.loads(
+        make_compat_file_v1({'a': [_f('a0'), _f('a1')], 'b': [_f('b0')]}, 0, 5).decode()
+    )
+    per_log: dict = {}
+    for e in payload['files']:
+        per_log.setdefault(e['logName'], []).append(e['sampleIndex'])
+    assert per_log == {'a': [0, 1], 'b': [0]}
