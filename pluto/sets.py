@@ -42,6 +42,10 @@ class Settings:
     disable_progress: bool = True
     disable_console: bool = False  # disable file-based logging
     sanitize_logs: bool = True  # redact secrets before uploading console logs
+    # Capture console at the file-descriptor level (dup2 tee, like wandb's
+    # console="redirect") so logging handlers configured before init() are
+    # still captured. False falls back to the sys.stdout/sys.stderr swap.
+    x_console_fd_capture: bool = True
 
     _op_name: Optional[str] = None
     _op_id: Optional[int] = None

@@ -12,6 +12,10 @@ _input = builtins.input
 _stdout = sys.stdout
 _stderr = sys.stderr
 
+# Active fd-level captures (see pluto._fd_capture). Populated by
+# setup_logger_file, stopped in teardown_logger.
+_fd_captures: list = []
+
 colors = {
     'DEBUG': ANSI.green,
     'INFO': ANSI.cyan,
@@ -192,14 +196,31 @@ def teardown_logger(logger, console=None):
     for h in logger.handlers[:]:
         logger.removeHandler(h)
     if console:
+        _stop_fd_captures()
         builtins.input = _input
         sys.stdout = _stdout  # global _stdout
         sys.stderr = _stderr
         teardown_logger(logger=console)
 
 
+def _stop_fd_captures() -> None:
+    """Stop and forget all active fd-level captures. Never raises."""
+    while _fd_captures:
+        capture = _fd_captures.pop()
+        try:
+            capture.stop()
+        except Exception as e:
+            logger.debug('Failed to stop fd capture: %s', e)
+
+
 def setup_logger_file(settings, logger, console, sync_manager=None):
     console.setLevel(logging.DEBUG)
+    # The console logger is internal capture plumbing. If it propagated,
+    # every captured line would re-emit through the user's root handlers —
+    # duplicating terminal output, and under fd capture feeding the line
+    # straight back into the capture pipe (root handler → pre-init stderr
+    # object → fd 2).
+    console.propagate = False
 
     file_handler = logging.FileHandler(f'{settings.get_dir()}/{settings.tag}.log')
     file_formatter = logging.Formatter(
@@ -223,13 +244,87 @@ def setup_logger_file(settings, logger, console, sync_manager=None):
 
         sanitizer = SecretSanitizer()
 
+    # fd-level capture (dup2 tee over fds 1/2) catches writers that bound
+    # the original stream objects before init — logging.StreamHandlers set
+    # up by frameworks like torchtitan, C extensions, forked children. The
+    # sys.stdout/sys.stderr swap below can't see any of those (a handler
+    # holds the old object), which left the console section empty for any
+    # job that configures logging before pluto.init().
+    fd_capture_active = _start_fd_captures(settings, sync_manager, sanitizer)
+
     if settings.mode == 'debug':
         builtins.input = lambda prompt='': input_hook(prompt, logger=console)
+    # The ConsoleHandler wrappers stay even with fd capture active: they
+    # flush Python-level writes through to the fd promptly (the original
+    # sys.stdout is block-buffered when not a tty) and feed the local
+    # sys.log file. Exactly ONE layer may enqueue a given stream to the
+    # sync manager, or every Python-level line would be uploaded twice.
+    # The fd layer owns a stream only when that stream actually writes to
+    # the captured fd; when it doesn't (Jupyter's ZMQ OutStream, pytest's
+    # capture objects), its writes never reach the pipe, so the wrapper
+    # must keep enqueueing them.
+    stdout_owned_by_fd = fd_capture_active and _stream_writes_to_fd(sys.stdout, 1)
+    stderr_owned_by_fd = fd_capture_active and _stream_writes_to_fd(sys.stderr, 2)
     sys.stdout = ConsoleHandler(
-        console, sync_manager, logging.INFO, sys.stdout, 'stdout', sanitizer
+        console,
+        None if stdout_owned_by_fd else sync_manager,
+        logging.INFO,
+        sys.stdout,
+        'stdout',
+        sanitizer,
     )
     sys.stderr = ConsoleHandler(
-        console, sync_manager, logging.ERROR, sys.stderr, 'stderr', sanitizer
+        console,
+        None if stderr_owned_by_fd else sync_manager,
+        logging.ERROR,
+        sys.stderr,
+        'stderr',
+        sanitizer,
     )
 
     return logger, console
+
+
+def _stream_writes_to_fd(stream, fd: int) -> bool:
+    """True if writes to `stream` land on OS file descriptor `fd`."""
+    try:
+        return stream.fileno() == fd
+    except Exception:  # no fileno / io.UnsupportedOperation / detached
+        return False
+
+
+def _start_fd_captures(settings, sync_manager, sanitizer) -> bool:
+    """Start fd-level console capture on fds 1/2. Returns True if active.
+
+    Fails soft: any OS-level problem (exotic platform, fds not real) falls
+    back to the legacy wrapper-based capture so logging never breaks a run.
+    """
+    if sync_manager is None or not getattr(settings, 'x_console_fd_capture', True):
+        return False
+    from ._fd_capture import FdCapture
+
+    started = []
+    try:
+        # Flush Python-level buffers so pre-init output goes to the real
+        # terminal instead of being captured into this run's console.
+        for stream in (sys.stdout, sys.stderr):
+            try:
+                stream.flush()
+            except Exception:
+                pass
+        for fd, level in ((1, logging.INFO), (2, logging.ERROR)):
+            capture = FdCapture(
+                fd=fd, level=level, sync_manager=sync_manager, sanitizer=sanitizer
+            )
+            capture.start()
+            started.append(capture)
+    except Exception as e:
+        logger.debug('fd-level console capture unavailable, using fallback: %s', e)
+        for capture in started:
+            try:
+                capture.stop()
+            except Exception:
+                pass
+        return False
+    _fd_captures.extend(started)
+    return True
