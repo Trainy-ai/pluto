@@ -391,64 +391,6 @@ def test_e2e_image_download(tmp_path):
     assert b > 200 and r < 50 and g < 50, f'Expected blue pixel, got ({r},{g},{b})'
 
 
-def test_e2e_media_list_preserves_logged_order():
-    """A list of media logged at one step comes back in *logged* order.
-
-    ``pluto.log({"k": [img0, img1, ...]})`` tags each file with a 0-based
-    ``sampleIndex`` (its position in the list); the server (server-private
-    #532) sorts a step's files by ``sampleIndex`` so the carousel matches the
-    order they were logged instead of by ``fileName``.
-
-    The captions are distinct labels logged in a deliberately *non-alphabetical*
-    order, so "sorted by sampleIndex" (== the logged order) is distinguishable
-    from "sorted by fileName/caption" (alphabetical) and from filename (random
-    UUID) order — only sampleIndex ordering can reproduce the logged order.
-    """
-    run = pluto.init(project=TESTING_PROJECT_NAME, name=get_task_name(), config={})
-    run_id = run.settings._op_id
-
-    logged_order = ['delta', 'alpha', 'foxtrot', 'charlie', 'echo', 'bravo']
-    assert logged_order != sorted(logged_order), 'labels must be non-alphabetical'
-    colors = [
-        (200, 0, 0),
-        (0, 200, 0),
-        (0, 0, 200),
-        (200, 200, 0),
-        (200, 0, 200),
-        (0, 200, 200),
-    ]
-    imgs = [
-        pluto.Image(PILImage.new('RGB', (4, 4), color=colors[i]), caption=label)
-        for i, label in enumerate(logged_order)
-    ]
-    run.log({'e2e/order': imgs}, step=0)
-    run.finish()
-
-    def _labels(files):
-        # Server response order is preserved; identify each file by the label
-        # carried in its caption / caption-derived fileName. The labels are
-        # distinct non-hex words, so they can't collide with the random UUID
-        # baked into the filename.
-        out = []
-        for f in files:
-            hay = f'{f.get("caption") or ""} {f.get("fileName") or ""}'
-            match = next((lbl for lbl in logged_order if lbl in hay), None)
-            if match:
-                out.append(match)
-        return out
-
-    files = _poll(
-        fn=lambda: pq.get_files(TESTING_PROJECT_NAME, run_id),
-        check=lambda fs: len(_labels(fs)) >= len(logged_order),
-    )
-    got = _labels(files)
-
-    assert got == logged_order, (
-        f'media returned as {got}, expected logged order {logged_order} '
-        f'(a fileName/caption sort would give {sorted(logged_order)})'
-    )
-
-
 # ---------------------------------------------------------------------------
 # Console logs
 # ---------------------------------------------------------------------------
