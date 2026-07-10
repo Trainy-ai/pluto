@@ -51,7 +51,7 @@ jobs:
           rm -rf .venv
           poetry install --with dev --extras full
           pip install -e ".[dev,full]"
-          poetry run pip install pytest-cov
+          poetry run pip install pytest-cov pytest-rerunfailures
           # Deploy the wandb auto-activation .pth — poetry-core's editable
           # install doesn't copy it into site-packages on its own.
           bash dev-install.sh
@@ -62,7 +62,24 @@ jobs:
           PLUTO_API_KEY: ${{ secrets.MLOP_API_TOKEN }}
         run: |
           set -euox pipefail
+          # These smoke tests hit the live prod server, whose DB connection pool
+          # is small; under the suite's concurrency a request occasionally can't
+          # get a connection and comes back as a transient transport error (401
+          # from the auth lookup, 5xx, dropped connection, or timeout). Retry
+          # ONLY those transport errors (--only-rerun), so a genuine assertion /
+          # logic failure still fails immediately and can't be masked.
           poetry run pytest -n auto -rs -m "not distributed" tests \
+            --reruns 2 --reruns-delay 5 \
+            --only-rerun "RemoteProtocolError" \
+            --only-rerun "ReadTimeout" \
+            --only-rerun "WriteTimeout" \
+            --only-rerun "PoolTimeout" \
+            --only-rerun "ConnectError" \
+            --only-rerun "ConnectionError" \
+            --only-rerun "Server disconnected" \
+            --only-rerun "Failed to create run: HTTP" \
+            --only-rerun "Failed to create or resume" \
+            --only-rerun "returned 5[0-9][0-9]" \
             --cov=pluto \
             --cov=mlop \
             --cov-report=lcov:coverage.lcov \
