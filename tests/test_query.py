@@ -509,6 +509,63 @@ class TestGetMetrics:
         params = client._client.get.call_args[1]['params']
         assert 'logName' not in params
 
+    def test_step_range_sent_as_camel_case_params(self, client, mock_response):
+        """step_min/step_max serialize to the endpoint's stepMin/stepMax."""
+        client._client.get.return_value = mock_response(200, {'metrics': []})
+        client.get_metrics(
+            'proj', 42, metric_names=['loss'], step_min=4000, step_max=4500
+        )
+        params = client._client.get.call_args[1]['params']
+        assert params['stepMin'] == 4000
+        assert params['stepMax'] == 4500
+
+    def test_step_range_omitted_when_unset(self, client, mock_response):
+        """Neither bound is sent when not supplied — no empty params."""
+        client._client.get.return_value = mock_response(200, {'metrics': []})
+        client.get_metrics('proj', 42, metric_names=['loss'])
+        params = client._client.get.call_args[1]['params']
+        assert 'stepMin' not in params
+        assert 'stepMax' not in params
+
+    def test_step_range_bounds_are_independent(self, client, mock_response):
+        """Either bound can be given on its own."""
+        client._client.get.return_value = mock_response(200, {'metrics': []})
+        client.get_metrics('proj', 42, step_min=100)
+        params = client._client.get.call_args[1]['params']
+        assert params['stepMin'] == 100
+        assert 'stepMax' not in params
+
+        client._client.get.reset_mock()
+        client._client.get.return_value = mock_response(200, {'metrics': []})
+        client.get_metrics('proj', 42, step_max=900)
+        params = client._client.get.call_args[1]['params']
+        assert params['stepMax'] == 900
+        assert 'stepMin' not in params
+
+    def test_step_range_applied_to_every_multi_metric_request(
+        self, client, mock_response
+    ):
+        """The multi-metric path fans out to one request per metric; each one
+        must still carry the bounds (regression guard: setting them only on the
+        single-metric branch would silently drop them here and quietly return
+        the full series)."""
+        client._client.get.side_effect = [
+            mock_response(200, {'metrics': [{'logName': 'loss', 'step': 4000}]}),
+            mock_response(200, {'metrics': [{'logName': 'acc', 'step': 4000}]}),
+        ]
+        client.get_metrics(
+            'proj', 42, metric_names=['loss', 'acc'], step_min=4000, step_max=4500
+        )
+
+        assert client._client.get.call_count == 2
+        for call in client._client.get.call_args_list:
+            params = call[1]['params']
+            assert params['stepMin'] == 4000
+            assert params['stepMax'] == 4500
+        # ...and each request still targets its own metric.
+        sent = [c[1]['params']['logName'] for c in client._client.get.call_args_list]
+        assert sent == ['loss', 'acc']
+
     def test_empty_returns_empty_dataframe(self, client, mock_response):
         client._client.get.return_value = mock_response(200, {'metrics': []})
         result = client.get_metrics('proj', 42)
