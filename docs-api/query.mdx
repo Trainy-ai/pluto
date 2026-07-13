@@ -144,6 +144,10 @@ finer resolution within it.
 
 **Returns:** `Any` — `pandas.DataFrame` or `list[dict]`.
 
+**Raises:**
+
+- `ValueError` — If a step bound is negative, or `step_min` exceeds `step_max`.
+
 #### `Client.get_statistics`
 
 ```python

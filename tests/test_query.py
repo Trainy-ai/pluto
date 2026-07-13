@@ -566,6 +566,33 @@ class TestGetMetrics:
         sent = [c[1]['params']['logName'] for c in client._client.get.call_args_list]
         assert sent == ['loss', 'acc']
 
+    def test_negative_step_bounds_rejected(self, client):
+        """Negative bounds fail fast client-side (the server would 400)."""
+        with pytest.raises(ValueError, match='step_min must be non-negative'):
+            client.get_metrics('proj', 42, step_min=-1)
+        with pytest.raises(ValueError, match='step_max must be non-negative'):
+            client.get_metrics('proj', 42, step_max=-1)
+        client._client.get.assert_not_called()
+
+    def test_reversed_step_range_rejected(self, client):
+        """step_min > step_max raises instead of silently returning nothing.
+
+        The server validates each bound independently but not their ordering,
+        so a reversed range would match no rows and come back as an empty
+        result with no error — a silently wrong answer.
+        """
+        with pytest.raises(ValueError, match='cannot be greater than'):
+            client.get_metrics('proj', 42, step_min=100, step_max=50)
+        client._client.get.assert_not_called()
+
+    def test_equal_step_bounds_allowed(self, client, mock_response):
+        """step_min == step_max is a valid single-step window."""
+        client._client.get.return_value = mock_response(200, {'metrics': []})
+        client.get_metrics('proj', 42, step_min=42, step_max=42)
+        params = client._client.get.call_args[1]['params']
+        assert params['stepMin'] == 42
+        assert params['stepMax'] == 42
+
     def test_empty_returns_empty_dataframe(self, client, mock_response):
         client._client.get.return_value = mock_response(200, {'metrics': []})
         result = client.get_metrics('proj', 42)

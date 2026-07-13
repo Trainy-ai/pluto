@@ -381,7 +381,30 @@ class Client:
 
         Returns:
             ``pandas.DataFrame`` or ``list[dict]``.
+
+        Raises:
+            ValueError: If a step bound is negative, or ``step_min`` exceeds
+                ``step_max``.
         """
+        # Validate before touching the network — _resolve_run_id() below can
+        # itself issue a request for a display-ID, so checking here means an
+        # obviously-bad range costs zero round-trips.
+        #
+        # The reversed-range check is the important one: the server validates
+        # each bound independently (int >= 0) but does NOT check that min <= max,
+        # so `step_min=100, step_max=50` is accepted, matches no rows, and comes
+        # back as an empty result with no error — a silently wrong answer. Fail
+        # loudly instead. (Negative bounds the server would reject with a 400;
+        # catching them here just makes the message immediate and clearer.)
+        if step_min is not None and step_min < 0:
+            raise ValueError(f'step_min must be non-negative, got {step_min}')
+        if step_max is not None and step_max < 0:
+            raise ValueError(f'step_max must be non-negative, got {step_max}')
+        if step_min is not None and step_max is not None and step_min > step_max:
+            raise ValueError(
+                f'step_min ({step_min}) cannot be greater than step_max ({step_max})'
+            )
+
         params: Dict[str, Any] = {
             'runId': self._resolve_run_id(project, run_id),
             'projectName': project,
