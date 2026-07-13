@@ -113,6 +113,8 @@ get_metrics(
     run_id: Union[int, str],
     metric_names: Optional[List[str]] = None,
     limit: int = 10000,
+    step_min: Optional[int] = None,
+    step_max: Optional[int] = None,
 ) -> Any
 ```
 
@@ -125,12 +127,20 @@ When *pandas* is installed the return value is a
 `~pandas.DataFrame` with columns `metric`, `step`,
 `value`, `time`. Otherwise a list of dicts is returned.
 
+`step_min` / `step_max` scope the query to a step window instead
+of pulling the whole series — useful for zooming in around a spike or
+anomaly (e.g. `step_min=4000, step_max=4500`). Because the server
+samples down to `limit` points, narrowing the range also gives you
+finer resolution within it.
+
 | Parameter | Type | Description |
 | --- | --- | --- |
 | `project` | `str` | Project name. |
 | `run_id` | `Union[int, str]` | Numeric server ID (`int`) or display ID string (e.g. `"MMP-1"`). |
 | `metric_names` | `Optional[List[str]]` | Metric names to fetch. `None` fetches all. |
 | `limit` | `int` | Max data points per metric (max 10 000). |
+| `step_min` | `Optional[int]` | Lowest step to return, **inclusive**. `None` for no lower bound. |
+| `step_max` | `Optional[int]` | Highest step to return, **inclusive**. `None` for no upper bound. |
 
 **Returns:** `Any` — `pandas.DataFrame` or `list[dict]`.
 
@@ -328,10 +338,16 @@ get_metrics(
     run_id: Union[int, str],
     metric_names: Optional[List[str]] = None,
     limit: int = 10000,
+    step_min: Optional[int] = None,
+    step_max: Optional[int] = None,
 ) -> Any
 ```
 
 Fetch metric data. See `Client.get_metrics`.
+
+`step_min` / `step_max` are **inclusive** bounds that scope the query
+to a step window (e.g. `step_min=4000, step_max=4500`) instead of
+pulling the full series.
 
 ---
 
