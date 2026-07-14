@@ -44,6 +44,14 @@ def _restore_state():
     prev_original = op_module._original_sigterm_handler
     prev_ops = pluto.ops
     prev_sig = signal.getsignal(signal.SIGTERM)
+    # Start from a clean baseline. Other test files run a real pluto.init(),
+    # which installs `_sigterm_handler` on SIGTERM and can leave it there; if a
+    # test captured that as the "previous" handler, the recursion guard in
+    # _register_sigterm_handler would (correctly) refuse to re-store it and skew
+    # the assertions. Resetting here isolates us from that leakage.
+    op_module._sigterm_handler_registered = False
+    op_module._original_sigterm_handler = None
+    signal.signal(signal.SIGTERM, signal.SIG_DFL)
     try:
         yield
     finally:
