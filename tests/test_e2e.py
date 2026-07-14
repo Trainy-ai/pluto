@@ -181,9 +181,9 @@ def test_e2e_update_config():
         check=lambda r: r.get('config', {}).get('lr') == 0.01,
     )
     server_config = server_run.get('config', {})
-    assert (
-        server_config['lr'] == 0.01
-    ), f'Server has lr={server_config.get("lr")}, expected 0.01'
+    assert server_config['lr'] == 0.01, (
+        f'Server has lr={server_config.get("lr")}, expected 0.01'
+    )
     assert server_config['arch'] == 'resnet50'
     assert server_config['epochs'] == 100
 
@@ -272,9 +272,9 @@ def test_e2e_list_runs_by_tag():
 
     runs = pq.list_runs(TESTING_PROJECT_NAME, tags=[unique_tag])
     found_ids = [r['id'] for r in runs]
-    assert (
-        run_id in found_ids
-    ), f"Run {run_id} not found when filtering by tag '{unique_tag}'"
+    assert run_id in found_ids, (
+        f"Run {run_id} not found when filtering by tag '{unique_tag}'"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -295,9 +295,9 @@ def test_e2e_metrics_logged():
     metric_names = _poll_metric_names(
         TESTING_PROJECT_NAME, run_id, ['train/loss', 'train/acc']
     )
-    assert (
-        'train/loss' in metric_names
-    ), f"'train/loss' not in server metric names: {metric_names}"
+    assert 'train/loss' in metric_names, (
+        f"'train/loss' not in server metric names: {metric_names}"
+    )
     assert 'train/acc' in metric_names
 
     # Check metric values
@@ -353,9 +353,9 @@ def test_e2e_image_upload(tmp_path):
         check=lambda fs: any('red-square' in f['fileName'] for f in fs),
     )
     file_names = [f['fileName'] for f in files]
-    assert any(
-        'red-square' in name for name in file_names
-    ), f"Image 'red-square' not found in server files: {file_names}"
+    assert any('red-square' in name for name in file_names), (
+        f"Image 'red-square' not found in server files: {file_names}"
+    )
 
     # Download and verify actual image content
     try:
@@ -535,9 +535,9 @@ def _two_tagged_runs() -> tuple:
         }
         return {id_a, id_b} <= ids
 
-    assert _poll(
-        fn=_both_listed, check=lambda ok: ok
-    ), f'tagged runs {id_a},{id_b} not both listable under {tag}'
+    assert _poll(fn=_both_listed, check=lambda ok: ok), (
+        f'tagged runs {id_a},{id_b} not both listable under {tag}'
+    )
     return tag, id_a, id_b
 
 
@@ -582,9 +582,9 @@ def test_e2e_list_runs_filter():
         return run_id in ids
 
     # Field values are indexed asynchronously; poll for eventual consistency.
-    assert _poll(
-        fn=_query, check=lambda found: found
-    ), f'Run {run_id} not found via filters on config.e2e_filter_marker'
+    assert _poll(fn=_query, check=lambda found: found), (
+        f'Run {run_id} not found via filters on config.e2e_filter_marker'
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -635,9 +635,9 @@ def test_e2e_multiple_metrics_single_log():
     expected = ['multi/loss', 'multi/accuracy', 'multi/lr']
     metric_names = _poll_metric_names(TESTING_PROJECT_NAME, run_id, expected)
     for name in expected:
-        assert (
-            name in metric_names
-        ), f"'{name}' not in server metric names: {metric_names}"
+        assert name in metric_names, (
+            f"'{name}' not in server metric names: {metric_names}"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -812,9 +812,9 @@ def test_e2e_full_lifecycle():
         check=lambda fs: any('green' in f['fileName'] for f in fs),
     )
     file_names = [f['fileName'] for f in files]
-    assert any(
-        'green' in name for name in file_names
-    ), f'Image not found in server files: {file_names}'
+    assert any('green' in name for name in file_names), (
+        f'Image not found in server files: {file_names}'
+    )
 
     # Verify the image content survived the round-trip
     matched = [f for f in files if 'green' in f['fileName']][0]
@@ -825,9 +825,9 @@ def test_e2e_full_lifecycle():
             downloaded = PILImage.open(io.BytesIO(resp.content))
             assert downloaded.size == (4, 4), f'Expected 4x4, got {downloaded.size}'
             r, g, b = downloaded.convert('RGB').getpixel((0, 0))
-            assert (
-                g > 100 and r < 50 and b < 50
-            ), f'Expected green pixel, got ({r},{g},{b})'
+            assert g > 100 and r < 50 and b < 50, (
+                f'Expected green pixel, got ({r},{g},{b})'
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -949,6 +949,35 @@ def filter_corpus():
         f'have {numeric_ready}, want {all_ids}'
     )
 
+    # Warm up the name-scoped path too. The column-only field tests
+    # (status/state/created_at/updated_at/$not) scope by a `name` regex on the
+    # batch id rather than by config.batch, so their marker must be visible
+    # before they assert. Poll until it resolves all three runs; otherwise those
+    # tests race read-path/index propagation and return an empty set.
+    name_ready = _poll(
+        fn=lambda: _query({'name': {'$regex': batch}}),
+        check=lambda got: all_ids <= got,
+    )
+    assert all_ids <= name_ready, (
+        f'corpus not fully visible under name~={batch}: '
+        f'have {name_ready}, want {all_ids}'
+    )
+    # And until every run has reached COMPLETED server-side. finish() marks the
+    # run finished asynchronously via the sync process, so the status/state
+    # field tests would otherwise race the status write. Uses the slow-field
+    # window since the status update trails the run row.
+    status_ready = _poll(
+        fn=lambda: _query(
+            {'$and': [{'name': {'$regex': batch}}, {'status': {'$eq': 'COMPLETED'}}]}
+        ),
+        check=lambda got: all_ids <= got,
+        timeout=_SLOW_FIELD_POLL_TIMEOUT,
+    )
+    assert all_ids <= status_ready, (
+        f'corpus runs not all COMPLETED server-side for batch={batch}: '
+        f'have {status_ready}, want {all_ids}'
+    )
+
     # Best-effort: discover a scalar systemMetadata field to filter on.
     # systemMetadata is populated asynchronously by the server, so poll rather
     # than read once right after finish() — otherwise the snapshot can be empty
@@ -997,9 +1026,9 @@ def _assert_filter(corpus, case, groups, timeout=_POLL_TIMEOUT, by='config'):
         check=lambda s: s == want,
         timeout=timeout,
     )
-    assert (
-        got == want
-    ), f'filter {case!r} selected {got}, want {want} (groups={list(groups)})'
+    assert got == want, (
+        f'filter {case!r} selected {got}, want {want} (groups={list(groups)})'
+    )
 
 
 def _assert_filter_or_skip(corpus, case, groups, timeout=_POLL_TIMEOUT, by='config'):
@@ -1024,9 +1053,9 @@ def _assert_filter_or_skip(corpus, case, groups, timeout=_POLL_TIMEOUT, by='conf
             f'preview filters API returned no rows for {case!r}; this field/'
             f'operator may not be implemented server-side yet'
         )
-    assert (
-        got == want
-    ), f'filter {case!r} selected {got}, want {want} (groups={list(groups)})'
+    assert got == want, (
+        f'filter {case!r} selected {got}, want {want} (groups={list(groups)})'
+    )
 
 
 # ----- leaf operators -------------------------------------------------------
@@ -1083,8 +1112,9 @@ def test_e2e_filter_boolean_and(filter_corpus):
 
 def test_e2e_filter_boolean_not(filter_corpus):
     # All-column $not (negate a name regex) so the negation isn't mixed with a
-    # config.* predicate. Skips if the preview API doesn't implement $not yet.
-    _assert_filter_or_skip(
+    # config.* predicate. The server implements $not (set-complement within
+    # scope), so assert hard rather than skipping on empty.
+    _assert_filter(
         filter_corpus,
         {'$not': {'name': {'$regex': 'alpha'}}},
         ['beta', 'gamma'],
@@ -1107,10 +1137,14 @@ def test_e2e_filter_implicit_and_multiple_keys(filter_corpus):
 def test_e2e_filter_range_on_single_field(filter_corpus):
     """Two operators on one field form a range (docs: heartbeat_at range).
 
-    The docs show a range on ``heartbeat_at``; on ``config.*`` the preview API
-    currently applies only one bound (the equivalent ``$and`` of two single-op
-    clauses works — see ``test_e2e_filter_boolean_and``). Treat an under-filtered
-    superset as a preview gap (skip), but still fail on a genuinely wrong set.
+    The docs show a range on ``heartbeat_at``; on ``config.*`` older servers
+    applied only one bound of a single-field two-operator range (the equivalent
+    ``$and`` of two single-op clauses works — see
+    ``test_e2e_filter_boolean_and``). The server fix that emits one term per
+    bound lands in Trainy-ai/server-private (run-filter.ts); this test polls for
+    the correct set and passes once that fix is deployed. Until then it tolerates
+    the under-filtered superset (skip) rather than failing on the known gap, but
+    still fails on a genuinely wrong (non-superset) set.
     """
     case = {'config.lr': {'$gt': 0.005, '$lt': 0.05}}  # 0.005 < lr < 0.05 -> beta
     batch = filter_corpus['batch']
@@ -1118,8 +1152,9 @@ def test_e2e_filter_range_on_single_field(filter_corpus):
     got = _poll(fn=lambda: _filter_ids(batch, case), check=lambda s: s == want)
     if want < got:
         pytest.skip(
-            'single-field two-operator range not honored for config.* in the '
-            'preview API (only one bound applied); the equivalent $and form is '
+            'single-field two-operator range not honored for config.* on this '
+            'server (only one bound applied); fixed server-side by emitting one '
+            'term per bound — passes once deployed. The equivalent $and form is '
             'covered by test_e2e_filter_boolean_and'
         )
     assert got == want, f'filter {case!r} selected {got}, want {want}'
@@ -1132,18 +1167,15 @@ def test_e2e_filter_field_status(filter_corpus):
     """`status` field: all seeded runs are COMPLETED after finish()."""
     everyone = ['alpha', 'beta', 'gamma']
     # Column-only field — scope by name, not config.batch (mixing config.* with a
-    # column predicate returns empty). Skips if status filtering isn't live yet.
-    _assert_filter_or_skip(
-        filter_corpus, {'status': {'$eq': 'COMPLETED'}}, everyone, by='name'
-    )
-    _assert_filter_or_skip(
-        filter_corpus, {'status': {'$ne': 'COMPLETED'}}, [], by='name'
-    )
+    # column predicate returns empty). The fixture warms up until all three runs
+    # are COMPLETED server-side, so assert hard rather than skipping on empty.
+    _assert_filter(filter_corpus, {'status': {'$eq': 'COMPLETED'}}, everyone, by='name')
+    _assert_filter(filter_corpus, {'status': {'$ne': 'COMPLETED'}}, [], by='name')
 
 
 def test_e2e_filter_field_state(filter_corpus):
     """`state` field (wandb alias): no finished run is 'running'."""
-    _assert_filter_or_skip(
+    _assert_filter(
         filter_corpus,
         {'state': {'$ne': 'running'}},
         ['alpha', 'beta', 'gamma'],
@@ -1174,18 +1206,16 @@ def test_e2e_filter_field_config_string(filter_corpus):
 def test_e2e_filter_field_created_at(filter_corpus):
     """`created_at` field: date comparison is honored server-side."""
     everyone = ['alpha', 'beta', 'gamma']
-    _assert_filter_or_skip(
+    _assert_filter(
         filter_corpus, {'created_at': {'$gte': _PAST_CUTOFF}}, everyone, by='name'
     )
-    _assert_filter_or_skip(
-        filter_corpus, {'created_at': {'$lt': _PAST_CUTOFF}}, [], by='name'
-    )
+    _assert_filter(filter_corpus, {'created_at': {'$lt': _PAST_CUTOFF}}, [], by='name')
 
 
 def test_e2e_filter_field_updated_at(filter_corpus):
     """`updated_at` field: date comparison is honored server-side."""
     everyone = ['alpha', 'beta', 'gamma']
-    _assert_filter_or_skip(
+    _assert_filter(
         filter_corpus, {'updated_at': {'$gte': _PAST_CUTOFF}}, everyone, by='name'
     )
 
