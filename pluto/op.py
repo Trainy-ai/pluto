@@ -21,6 +21,7 @@ from .api import (
     make_compat_monitor_v1,
     make_compat_resume_v1,
     make_compat_start_v1,
+    make_compat_status_v1,
     make_compat_trigger_v1,
     make_compat_webhook_v1,
 )
@@ -203,6 +204,122 @@ def _unregister_excepthook():
         sys.excepthook = _original_excepthook
     _excepthook_registered = False
     logger.debug(f'{tag}: Restored original sys.excepthook')
+
+
+# SIGTERM handler state for reporting a terminal status on preemption/eviction.
+# Spot reclaim and k8s eviction deliver SIGTERM, which by default terminates the
+# process WITHOUT running atexit — so the atexit-registered finish() never fires
+# and the run would linger as RUNNING until the server-side heartbeat reaps it
+# (~90s). We install a handler that best-effort pushes TERMINATED, then chains to
+# whatever handler was previously installed so the process's actual exit
+# behaviour is unchanged (this is also what keeps the Neptune compat contract of
+# "MUST NOT affect signal handling" intact — the prior handler still runs).
+_original_sigterm_handler = None
+_sigterm_handler_registered = False
+
+
+def _sigterm_handler(signum, frame):
+    """Best-effort push TERMINATED for active runs, then chain to the previous
+    handler so the process terminates exactly as it otherwise would."""
+    import httpx
+
+    for op in list(pluto.ops or []):
+        try:
+            if op.settings._op_status != -1:
+                continue  # already terminal/finishing — don't overwrite
+            # signum maps to TERMINATED via api.STATUS (SIGTERM/SIGINT).
+            op.settings._op_status = signum
+            iface = op._iface
+            if iface is None:
+                continue
+            # Push on a *fresh* client: the signal can interrupt the main
+            # thread mid-request on iface.client_api, and httpx.Client is not
+            # re-entrant, so reusing it here could corrupt that in-flight
+            # request. Bounded + no-retry so a hung network can't eat the
+            # finite eviction grace window before SIGKILL lands.
+            with httpx.Client(
+                verify=not op.settings.insecure_disable_ssl,
+                proxy=op.settings.http_proxy or op.settings.https_proxy or None,
+                timeout=httpx.Timeout(op.settings.x_sigterm_status_timeout_seconds),
+            ) as client:
+                iface._post_v1(
+                    op.settings.url_stop,
+                    iface.headers,
+                    make_compat_status_v1(op.settings),
+                    client=client,
+                    max_retries=0,
+                    timeout=op.settings.x_sigterm_status_timeout_seconds,
+                    suppress_httpx_logs=True,
+                )
+        except Exception as e:
+            logger.debug('%s: SIGTERM status push failed: %s', tag, e)
+
+    # Chain to the previously-installed handler so we preserve exit behaviour.
+    prev = _original_sigterm_handler
+    if callable(prev):
+        prev(signum, frame)
+    elif prev == signal.SIG_IGN:
+        return  # process was ignoring SIGTERM — keep doing so
+    else:
+        # SIG_DFL, or None (handler installed outside Python): re-apply the
+        # default terminating action so we never accidentally swallow SIGTERM.
+        signal.signal(signal.SIGTERM, signal.SIG_DFL)
+        signal.raise_signal(signum)
+
+
+def _register_sigterm_handler(settings) -> None:
+    """Install the SIGTERM status handler once, if enabled and possible.
+
+    signal.signal only works in the main thread; if init() runs off the main
+    thread (some frameworks/launchers), skip silently rather than raise.
+    """
+    global _sigterm_handler_registered, _original_sigterm_handler
+
+    if _sigterm_handler_registered:
+        return
+    if not getattr(settings, 'x_sigterm_status_enabled', True):
+        return
+    if threading.current_thread() is not threading.main_thread():
+        logger.debug(f'{tag}: not on main thread, skipping SIGTERM handler')
+        return
+    try:
+        current = signal.getsignal(signal.SIGTERM)
+        # Our handler is already installed but the registered flag was cleared
+        # (e.g. a prior unregister couldn't run off the main thread). Never
+        # store our own handler as `_original` or chaining would recurse.
+        if current is _sigterm_handler:
+            _sigterm_handler_registered = True
+            return
+        _original_sigterm_handler = current
+        signal.signal(signal.SIGTERM, _sigterm_handler)
+        _sigterm_handler_registered = True
+        logger.debug(f'{tag}: Registered SIGTERM handler for TERMINATED status')
+    except (ValueError, OSError) as e:
+        logger.debug(f'{tag}: could not register SIGTERM handler: {e}')
+
+
+def _unregister_sigterm_handler() -> None:
+    """Restore the previous SIGTERM handler when no more Ops are active."""
+    global _sigterm_handler_registered, _original_sigterm_handler
+
+    if not _sigterm_handler_registered:
+        return
+    # signal.signal only works on the main thread. If teardown runs off-thread
+    # (e.g. Neptune compat's threaded finish), leave the handler installed and
+    # the flag set rather than clearing state we couldn't actually restore —
+    # clearing it would let a later register() treat our handler as `_original`
+    # and recurse on SIGTERM.
+    if threading.current_thread() is not threading.main_thread():
+        logger.debug(f'{tag}: not on main thread, skipping SIGTERM unregistration')
+        return
+    try:
+        if _original_sigterm_handler is not None:
+            signal.signal(signal.SIGTERM, _original_sigterm_handler)
+        _sigterm_handler_registered = False
+        _original_sigterm_handler = None
+        logger.debug(f'{tag}: Restored original SIGTERM handler')
+    except (ValueError, OSError) as e:
+        logger.debug(f'{tag}: could not unregister SIGTERM handler: {e}')
 
 
 MetaNames = List[str]
@@ -556,6 +673,9 @@ class Op:
 
         # Register excepthook to detect unhandled exceptions and mark runs as FAILED
         _register_excepthook()
+
+        # Register SIGTERM handler to report TERMINATED on preemption/eviction
+        _register_sigterm_handler(self.settings)
 
         # set globals
         if pluto.ops is None:
@@ -927,6 +1047,7 @@ class Op:
                 ]  # TODO: make more efficient
                 if not pluto.ops:
                     _unregister_excepthook()
+                    _unregister_sigterm_handler()
 
     def watch(self, module, **kwargs):
         from .compat.torch import _watch_torch
