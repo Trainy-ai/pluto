@@ -394,6 +394,80 @@ def test_e2e_image_download(tmp_path):
     assert b > 200 and r < 50 and g < 50, f'Expected blue pixel, got ({r},{g},{b})'
 
 
+def test_e2e_media_list_order_regression_guard():
+    """Guard the SDK's ``sampleIndex`` contribution end-to-end, via the HTTP
+    files path the SDK actually uses (``GET /api/runs/files`` → ``queryRunFiles``).
+
+    Logs 6 images with distinct captions in a deliberately *non-alphabetical*
+    order, then reads them back and classifies the returned order:
+
+    - **logged order** → OK. Either the server sorted by ``sampleIndex`` (once
+      server-private #532 is deployed), or — before that — the step-only query
+      returned insert order, which equals the logged order for a fresh
+      single-part upload. Both are correct outcomes.
+    - **alphabetical** → the server fell back to ``fileName`` ordering. On a
+      #532 server that can only happen if the SDK stopped sending
+      ``sampleIndex`` → this is the regression we want to catch → **fail**.
+    - **anything else** → the pre-#532 step-only path's within-step order is
+      undefined (e.g. after a ClickHouse part merge); not a regression signal →
+      **skip** (so this can never flake on the undefined pre-#532 case).
+
+    Note: a fresh single-list upload can't force a *pre*-#532 failure (the SDK
+    uploads in ``sampleIndex`` order, so insert order == logged order); the
+    deterministic pre-vs-post-fix ordering test lives server-side in #532, which
+    seeds ClickHouse with ``fileName`` reversed vs ``sampleIndex``.
+    """
+    run = pluto.init(project=TESTING_PROJECT_NAME, name=get_task_name(), config={})
+    run_id = run.settings._op_id
+
+    logged_order = ['delta', 'alpha', 'foxtrot', 'charlie', 'echo', 'bravo']
+    colors = [
+        (200, 0, 0),
+        (0, 200, 0),
+        (0, 0, 200),
+        (200, 200, 0),
+        (200, 0, 200),
+        (0, 200, 200),
+    ]
+    imgs = [
+        pluto.Image(PILImage.new('RGB', (4, 4), color=colors[i]), caption=label)
+        for i, label in enumerate(logged_order)
+    ]
+    run.log({'e2e/order': imgs}, step=0)
+    run.finish()
+
+    def _labels(files):
+        # Server response order preserved; identify each file by the label in
+        # its caption / caption-derived fileName (distinct non-hex words, so no
+        # collision with the random UUID in the filename).
+        out = []
+        for f in files:
+            hay = f'{f.get("caption") or ""} {f.get("fileName") or ""}'
+            match = next((lbl for lbl in logged_order if lbl in hay), None)
+            if match:
+                out.append(match)
+        return out
+
+    files = _poll(
+        fn=lambda: pq.get_files(TESTING_PROJECT_NAME, run_id),
+        check=lambda fs: len(_labels(fs)) >= len(logged_order),
+    )
+    got = _labels(files)
+
+    if got == logged_order:
+        return  # correct order
+    if got == sorted(logged_order):
+        pytest.fail(
+            f'media returned in fileName/alphabetical order {got}; expected '
+            f'logged order {logged_order}. The server fell back to fileName — '
+            f'the SDK is not sending sampleIndex (regression).'
+        )
+    pytest.skip(
+        f'media order is undefined on this server (pre-#532 step-only path / '
+        f'merge), got {got} — not a regression signal'
+    )
+
+
 # ---------------------------------------------------------------------------
 # Console logs
 # ---------------------------------------------------------------------------

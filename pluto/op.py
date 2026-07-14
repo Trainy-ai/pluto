@@ -27,7 +27,7 @@ from .api import (
 from .auth import login
 from .data import Data
 from .file import Artifact, Audio, File, Image, Text, Video
-from .iface import ServerInterface
+from .iface import PlutoRequestError, ServerInterface
 from .log import flush_console_buffers, setup_logger, teardown_logger
 from .store import DataStore
 from .sync import SyncProcessManager
@@ -319,31 +319,41 @@ class Op:
             if self.settings._sys == {}:
                 self.settings._sys = System(self.settings)
             tmp_iface = ServerInterface(config=config, settings=settings)
-            if (
-                settings._resume_run_id is not None
-                or settings._resume_display_id is not None
-            ):
-                # Resume existing run via /api/runs/resume
-                r = tmp_iface._post_v1(
-                    self.settings.url_resume,
-                    tmp_iface.headers,
-                    make_compat_resume_v1(self.settings),
-                    client=tmp_iface.client_api,
-                )
-            else:
-                # Create new run (or resume via externalId)
-                r = tmp_iface._post_v1(
-                    self.settings.url_start,  # create-run
-                    tmp_iface.headers,
-                    make_compat_start_v1(
-                        self.config,
-                        self.settings,
-                        self.settings._sys.get_info(),
-                        self.tags,
-                    ),
-                    client=tmp_iface.client_api,
-                )
+            try:
+                if (
+                    settings._resume_run_id is not None
+                    or settings._resume_display_id is not None
+                ):
+                    # Resume existing run via /api/runs/resume
+                    r = tmp_iface._post_v1(
+                        self.settings.url_resume,
+                        tmp_iface.headers,
+                        make_compat_resume_v1(self.settings),
+                        client=tmp_iface.client_api,
+                        raise_on_error=True,
+                    )
+                else:
+                    # Create new run (or resume via externalId)
+                    r = tmp_iface._post_v1(
+                        self.settings.url_start,  # create-run
+                        tmp_iface.headers,
+                        make_compat_start_v1(
+                            self.config,
+                            self.settings,
+                            self.settings._sys.get_info(),
+                            self.tags,
+                        ),
+                        client=tmp_iface.client_api,
+                        raise_on_error=True,
+                    )
+            except PlutoRequestError as e:
+                # The server rejected the request (e.g. a validation error such
+                # as "A run can have at most one group:* tag."). Surface the
+                # server's reason rather than a misleading connection error.
+                raise RuntimeError(f'Failed to create run: {e}') from e
             if not r:
+                # No response after retries → the server was unreachable (a
+                # 4xx/5xx would have raised PlutoRequestError above).
                 raise ConnectionError(
                     'Failed to create or resume run. Check connection to Pluto server.'
                 )
@@ -601,9 +611,15 @@ class Op:
             if items:
                 self._register_meta_sync(k, items[0], new_metric_names, new_file_meta)
 
-            for item in items:
+            # enumerate() gives each item its 0-based position within this
+            # (key, step) log() call — the sampleIndex the server uses to
+            # restore logged order for media lists. A scalar is wrapped in a
+            # 1-element list above, so it naturally gets sampleIndex 0.
+            for sample_index, item in enumerate(items):
                 try:
-                    self._process_log_item_sync(k, item, metrics, timestamp_ms)
+                    self._process_log_item_sync(
+                        k, item, metrics, timestamp_ms, sample_index
+                    )
                 except Exception as e:
                     # One bad item (e.g. media that can't be encoded/staged)
                     # must not abort the rest of the batch or crash the caller's
@@ -682,6 +698,7 @@ class Op:
         value: Any,
         metrics: Dict[str, Any],
         timestamp_ms: int,
+        sample_index: int = 0,
     ) -> None:
         """Process a single log item for sync process mode."""
         if self._sync_manager is None:
@@ -693,7 +710,7 @@ class Op:
             metrics[key] = value.item()
         elif isinstance(value, File):
             # Handle file types (Image, Audio, Video, Text, Artifact)
-            self._enqueue_file_sync(key, value, timestamp_ms)
+            self._enqueue_file_sync(key, value, timestamp_ms, sample_index)
         elif isinstance(value, Data):
             # Handle structured data types (Graph, Histogram, Table)
             self._sync_manager.enqueue_data(
@@ -709,6 +726,7 @@ class Op:
         log_name: str,
         file_obj: File,
         timestamp_ms: int,
+        sample_index: int = 0,
     ) -> None:
         """
         Process and enqueue a file for upload via sync process.
@@ -737,6 +755,7 @@ class Op:
                 timestamp_ms=timestamp_ms,
                 step=self._step,
                 caption=file_obj._caption,
+                sample_index=sample_index,
             )
             logger.debug(
                 f'{tag}: enqueued file {file_obj._name}{file_obj._ext} for sync'
@@ -955,6 +974,10 @@ class Op:
         elif self._iface:
             try:
                 self._iface._update_tags(self.tags)
+            except PlutoRequestError as e:
+                # Server rejected the tags update (validation error) — this is
+                # not a transient failure, so surface it rather than hide it.
+                logger.warning(f'{tag}: server rejected tags update: {e}')
             except Exception as e:
                 logger.debug(f'{tag}: failed to sync tags to server: {e}')
 
@@ -985,6 +1008,10 @@ class Op:
         elif self._iface:
             try:
                 self._iface._update_tags(self.tags)
+            except PlutoRequestError as e:
+                # Server rejected the tags update (validation error) — this is
+                # not a transient failure, so surface it rather than hide it.
+                logger.warning(f'{tag}: server rejected tags update: {e}')
             except Exception as e:
                 logger.debug(f'{tag}: failed to sync tags to server: {e}')
 

@@ -30,6 +30,11 @@ except ImportError:
     # Fallback for environments without filelock
     FileLock = None  # type: ignore[misc, assignment]
 
+from ..iface import (
+    RETRYABLE_STATUS_CODES,
+    PlutoRequestError,
+    _server_error_message,
+)
 from .store import FileRecord, RecordType, SyncRecord, SyncStore
 
 # Type alias for subprocess
@@ -347,6 +352,7 @@ class SyncProcessManager:
         timestamp_ms: int,
         step: Optional[int] = None,
         caption: Optional[str] = None,
+        sample_index: int = 0,
     ) -> None:
         """
         Enqueue a file for upload.
@@ -365,6 +371,7 @@ class SyncProcessManager:
             timestamp_ms=timestamp_ms,
             step=step,
             caption=caption,
+            sample_index=sample_index,
         )
         # Update heartbeat to show we're alive
         self.store.heartbeat(self.run_id)
@@ -1296,6 +1303,9 @@ class _SyncUploader:
                 'time': f.timestamp_ms,
                 'logName': f.log_name,
                 'step': f.step,
+                # 0-based position within a single (logName, step) log() call so
+                # the server can restore logged order instead of sorting by name.
+                'sampleIndex': f.sample_index,
             }
             # Only include caption when set — keeps the payload identical to
             # before for un-captioned files and older servers (which ignore
@@ -1403,7 +1413,9 @@ class _SyncUploader:
         headers: Dict[str, str],
     ) -> None:
         """POST with exponential backoff retry. Respects urgent mode settings."""
-        last_error = None
+        import httpx
+
+        last_error: Optional[Exception] = None
 
         # Use urgent mode settings if enabled
         if self._urgent_mode:
@@ -1425,15 +1437,31 @@ class _SyncUploader:
                 )
                 response.raise_for_status()
                 return
-            except Exception as e:
+            except httpx.HTTPStatusError as e:
+                status = e.response.status_code
+                # A permanent 4xx client/validation error (e.g. "A run can have
+                # at most one group:* tag.") — retrying the identical payload
+                # will never succeed, so stop now and surface the server's
+                # reason. The plain HTTPStatusError message omits the response
+                # body, which is exactly where that reason lives.
+                if 400 <= status < 500 and status not in RETRYABLE_STATUS_CODES:
+                    raise PlutoRequestError(
+                        _server_error_message(e.response),
+                        status_code=status,
+                    ) from e
+                # 5xx or transient 4xx (401/408/429) — retryable.
                 last_error = e
-                if attempt < max_retries - 1:
-                    wait = min(self.retry_backoff**attempt, max_backoff)
-                    self.log.debug(
-                        f'Request failed (attempt {attempt + 1}/{max_retries}), '
-                        f'retrying in {wait}s: {e}'
-                    )
-                    time.sleep(wait)
+            except Exception as e:
+                # Network/timeout error — retryable.
+                last_error = e
+
+            if attempt < max_retries - 1:
+                wait = min(self.retry_backoff**attempt, max_backoff)
+                self.log.debug(
+                    f'Request failed (attempt {attempt + 1}/{max_retries}), '
+                    f'retrying in {wait}s: {last_error}'
+                )
+                time.sleep(wait)
 
         raise last_error or Exception('Request failed after retries')
 
