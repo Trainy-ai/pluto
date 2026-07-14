@@ -104,18 +104,26 @@ def main() -> None:
     name_marker = poll_ids({'name': {'$regex': batch}}, all_ids)
     print(f'[name ~= {batch}]                  -> {name_marker}')
 
-    # Each column-only leaf, name-scoped exactly as the e2e tests build it.
+    # Each column-only leaf, name-scoped exactly as the e2e tests build it,
+    # paired with the run groups it should match. $not(name~=alpha) excludes the
+    # alpha run, so it must be graded against {beta, gamma} — not all three, or
+    # it would always time out and falsely report GAP.
+    everyone = {'alpha', 'beta', 'gamma'}
     checks = {
-        'status == COMPLETED': {'status': {'$eq': 'COMPLETED'}},
-        'state != running': {'state': {'$ne': 'running'}},
-        'created_at >= 2000': {'created_at': {'$gte': PAST_CUTOFF}},
-        'updated_at >= 2000': {'updated_at': {'$gte': PAST_CUTOFF}},
-        '$not(name ~= alpha)': {'$not': {'name': {'$regex': 'alpha'}}},
+        'status == COMPLETED': ({'status': {'$eq': 'COMPLETED'}}, everyone),
+        'state != running': ({'state': {'$ne': 'running'}}, everyone),
+        'created_at >= 2000': ({'created_at': {'$gte': PAST_CUTOFF}}, everyone),
+        'updated_at >= 2000': ({'updated_at': {'$gte': PAST_CUTOFF}}, everyone),
+        '$not(name ~= alpha)': (
+            {'$not': {'name': {'$regex': 'alpha'}}},
+            {'beta', 'gamma'},
+        ),
     }
     print()
-    for label, case in checks.items():
-        got = poll_ids(scoped(batch, case), all_ids)
-        ok = 'OK ' if all_ids <= got else 'GAP'
+    for label, (case, groups) in checks.items():
+        want = {ids[g] for g in groups}
+        got = poll_ids(scoped(batch, case), want)
+        ok = 'OK ' if want <= got else 'GAP'
         print(f'[{ok}] name-scoped {label:<22} -> {got}')
 
     print('\nInterpretation:')

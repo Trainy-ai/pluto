@@ -181,9 +181,9 @@ def test_e2e_update_config():
         check=lambda r: r.get('config', {}).get('lr') == 0.01,
     )
     server_config = server_run.get('config', {})
-    assert server_config['lr'] == 0.01, (
-        f'Server has lr={server_config.get("lr")}, expected 0.01'
-    )
+    assert (
+        server_config['lr'] == 0.01
+    ), f'Server has lr={server_config.get("lr")}, expected 0.01'
     assert server_config['arch'] == 'resnet50'
     assert server_config['epochs'] == 100
 
@@ -272,9 +272,9 @@ def test_e2e_list_runs_by_tag():
 
     runs = pq.list_runs(TESTING_PROJECT_NAME, tags=[unique_tag])
     found_ids = [r['id'] for r in runs]
-    assert run_id in found_ids, (
-        f"Run {run_id} not found when filtering by tag '{unique_tag}'"
-    )
+    assert (
+        run_id in found_ids
+    ), f"Run {run_id} not found when filtering by tag '{unique_tag}'"
 
 
 # ---------------------------------------------------------------------------
@@ -295,9 +295,9 @@ def test_e2e_metrics_logged():
     metric_names = _poll_metric_names(
         TESTING_PROJECT_NAME, run_id, ['train/loss', 'train/acc']
     )
-    assert 'train/loss' in metric_names, (
-        f"'train/loss' not in server metric names: {metric_names}"
-    )
+    assert (
+        'train/loss' in metric_names
+    ), f"'train/loss' not in server metric names: {metric_names}"
     assert 'train/acc' in metric_names
 
     # Check metric values
@@ -353,9 +353,9 @@ def test_e2e_image_upload(tmp_path):
         check=lambda fs: any('red-square' in f['fileName'] for f in fs),
     )
     file_names = [f['fileName'] for f in files]
-    assert any('red-square' in name for name in file_names), (
-        f"Image 'red-square' not found in server files: {file_names}"
-    )
+    assert any(
+        'red-square' in name for name in file_names
+    ), f"Image 'red-square' not found in server files: {file_names}"
 
     # Download and verify actual image content
     try:
@@ -535,9 +535,9 @@ def _two_tagged_runs() -> tuple:
         }
         return {id_a, id_b} <= ids
 
-    assert _poll(fn=_both_listed, check=lambda ok: ok), (
-        f'tagged runs {id_a},{id_b} not both listable under {tag}'
-    )
+    assert _poll(
+        fn=_both_listed, check=lambda ok: ok
+    ), f'tagged runs {id_a},{id_b} not both listable under {tag}'
     return tag, id_a, id_b
 
 
@@ -582,9 +582,9 @@ def test_e2e_list_runs_filter():
         return run_id in ids
 
     # Field values are indexed asynchronously; poll for eventual consistency.
-    assert _poll(fn=_query, check=lambda found: found), (
-        f'Run {run_id} not found via filters on config.e2e_filter_marker'
-    )
+    assert _poll(
+        fn=_query, check=lambda found: found
+    ), f'Run {run_id} not found via filters on config.e2e_filter_marker'
 
 
 # ---------------------------------------------------------------------------
@@ -635,9 +635,9 @@ def test_e2e_multiple_metrics_single_log():
     expected = ['multi/loss', 'multi/accuracy', 'multi/lr']
     metric_names = _poll_metric_names(TESTING_PROJECT_NAME, run_id, expected)
     for name in expected:
-        assert name in metric_names, (
-            f"'{name}' not in server metric names: {metric_names}"
-        )
+        assert (
+            name in metric_names
+        ), f"'{name}' not in server metric names: {metric_names}"
 
 
 # ---------------------------------------------------------------------------
@@ -812,9 +812,9 @@ def test_e2e_full_lifecycle():
         check=lambda fs: any('green' in f['fileName'] for f in fs),
     )
     file_names = [f['fileName'] for f in files]
-    assert any('green' in name for name in file_names), (
-        f'Image not found in server files: {file_names}'
-    )
+    assert any(
+        'green' in name for name in file_names
+    ), f'Image not found in server files: {file_names}'
 
     # Verify the image content survived the round-trip
     matched = [f for f in files if 'green' in f['fileName']][0]
@@ -825,9 +825,9 @@ def test_e2e_full_lifecycle():
             downloaded = PILImage.open(io.BytesIO(resp.content))
             assert downloaded.size == (4, 4), f'Expected 4x4, got {downloaded.size}'
             r, g, b = downloaded.convert('RGB').getpixel((0, 0))
-            assert g > 100 and r < 50 and b < 50, (
-                f'Expected green pixel, got ({r},{g},{b})'
-            )
+            assert (
+                g > 100 and r < 50 and b < 50
+            ), f'Expected green pixel, got ({r},{g},{b})'
 
 
 # ---------------------------------------------------------------------------
@@ -1026,9 +1026,9 @@ def _assert_filter(corpus, case, groups, timeout=_POLL_TIMEOUT, by='config'):
         check=lambda s: s == want,
         timeout=timeout,
     )
-    assert got == want, (
-        f'filter {case!r} selected {got}, want {want} (groups={list(groups)})'
-    )
+    assert (
+        got == want
+    ), f'filter {case!r} selected {got}, want {want} (groups={list(groups)})'
 
 
 def _assert_filter_or_skip(corpus, case, groups, timeout=_POLL_TIMEOUT, by='config'):
@@ -1053,9 +1053,9 @@ def _assert_filter_or_skip(corpus, case, groups, timeout=_POLL_TIMEOUT, by='conf
             f'preview filters API returned no rows for {case!r}; this field/'
             f'operator may not be implemented server-side yet'
         )
-    assert got == want, (
-        f'filter {case!r} selected {got}, want {want} (groups={list(groups)})'
-    )
+    assert (
+        got == want
+    ), f'filter {case!r} selected {got}, want {want} (groups={list(groups)})'
 
 
 # ----- leaf operators -------------------------------------------------------
