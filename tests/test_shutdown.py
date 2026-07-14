@@ -11,6 +11,7 @@ These tests verify:
 7. Scoped httpx log suppression during Pluto's HTTP calls
 """
 
+import json
 import logging
 import os
 import signal
@@ -19,10 +20,14 @@ import sys
 import textwrap
 import threading
 import time
+import types
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from unittest.mock import MagicMock, patch
 
 import pytest
 
+import pluto
+from pluto import op as op_module
 from pluto.file import Artifact, File
 
 
@@ -664,12 +669,12 @@ class TestHttpxLoggingSuppression:
             crumbs = events[0].get('breadcrumbs', {}).get('values', [])
             trigger_crumbs = [b for b in crumbs if 'trigger' in str(b)]
 
-            assert (
-                len(trigger_crumbs) == 0
-            ), f'{len(trigger_crumbs)} trigger breadcrumbs leaked to Sentry'
-            assert (
-                logging.getLogger('httpx').level < logging.WARNING
-            ), 'httpx logger level was not restored after _try()'
+            assert len(trigger_crumbs) == 0, (
+                f'{len(trigger_crumbs)} trigger breadcrumbs leaked to Sentry'
+            )
+            assert logging.getLogger('httpx').level < logging.WARNING, (
+                'httpx logger level was not restored after _try()'
+            )
         finally:
             srv.shutdown()
             client.close()
@@ -960,6 +965,80 @@ _TORCHRUN_SHM_SCRIPT = textwrap.dedent("""\
 """)
 
 
+# Child that installs the real SIGTERM handler (as Op.start() does) pointed at
+# a local status server, then idles. Used by the SIGTERM->TERMINATED e2e test to
+# exercise the real signal -> handler -> HTTP path in a separate process (a real
+# SIGTERM in-process would kill the test runner via the chained default handler).
+_SIGTERM_STATUS_SCRIPT = textwrap.dedent("""\
+    import os
+    import sys
+    import time
+
+    import pluto
+    from pluto import op as op_module
+    from pluto.iface import ServerInterface
+    from pluto.sets import Settings
+
+    settings = Settings()
+    settings._op_id = 4242
+    settings._op_name = "sigterm-status-e2e"
+    settings.project = "signal-test"
+    settings._auth = "test-token"
+    settings._op_status = -1  # RUNNING
+    base = "http://127.0.0.1:" + os.environ["PLUTO_TEST_STATUS_PORT"]
+    settings.url_app = base
+    settings.url_api = base
+    settings.url_ingest = base
+    settings.url_py = base
+    settings.update_url()
+
+    op = type("_Op", (), {})()
+    op.settings = settings
+    op._iface = ServerInterface({}, settings)
+
+    if pluto.ops is None:
+        pluto.ops = []
+    pluto.ops.append(op)
+
+    op_module._register_sigterm_handler(settings)
+
+    sys.stdout.write("READY\\n")
+    sys.stdout.flush()
+    while True:
+        time.sleep(0.1)
+""")
+
+
+def _make_status_server():
+    """Local HTTP server that records the last POST to /api/runs/status/update."""
+    received = {'status': None, 'runId': None, 'count': 0}
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            length = int(self.headers.get('Content-Length', 0))
+            body = self.rfile.read(length) if length else b''
+            if '/api/runs/status/update' in self.path:
+                try:
+                    data = json.loads(body or b'{}')
+                except Exception:
+                    data = {}
+                received['status'] = data.get('status')
+                received['runId'] = data.get('runId')
+                received['count'] += 1
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.end_headers()
+            self.wfile.write(b'{}')
+
+        def log_message(self, *args):
+            pass  # Silence request logs during tests
+
+    server = HTTPServer(('127.0.0.1', 0), Handler)
+    port = server.server_address[1]
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server, port, received
+
+
 try:
     import torch  # noqa: F401
 
@@ -971,10 +1050,13 @@ except ImportError:
 class TestSignalTerminationIntegration:
     """Integration tests: send real signals to a subprocess, assert it exits.
 
-    Pluto does NOT register signal handlers — it relies on default signal
-    behavior (immediate process termination) plus atexit-registered finish().
-    These tests verify the process actually dies when signalled, and that
-    daemon threads (heartbeat, monitor) don't prevent termination.
+    Pluto installs a SIGTERM handler that best-effort reports TERMINATED to the
+    server (when an iface exists) and then *chains to the previously-installed
+    handler* — so the process still terminates exactly as it would by default.
+    SIGINT is left to Python's default (KeyboardInterrupt + atexit finish()).
+    These tests verify the process actually dies when signalled (daemon
+    heartbeat/monitor threads don't prevent it), and that the SIGTERM path
+    reports the terminal status before exiting.
     """
 
     _DEADLINE = 10
@@ -1027,15 +1109,52 @@ class TestSignalTerminationIntegration:
             start = time.monotonic()
             proc.wait(timeout=self._DEADLINE)
             elapsed = time.monotonic() - start
-            assert (
-                elapsed < self._DEADLINE
-            ), f'Process took {elapsed:.1f}s to exit after SIGTERM'
-            # Default SIGTERM kills with negative signal code
+            assert elapsed < self._DEADLINE, (
+                f'Process took {elapsed:.1f}s to exit after SIGTERM'
+            )
+            # Chained to the default handler → still dies from SIGTERM.
             assert proc.returncode == -signal.SIGTERM
         finally:
             if proc.poll() is None:
                 proc.kill()
                 proc.wait()
+
+    def test_sigterm_reports_terminated_status(self):
+        """Real SIGTERM → handler POSTs TERMINATED to the server, then the
+        process still exits via the chained default handler.
+
+        This is the end-to-end proof (no mocks) that a real signal to a real
+        process reaches the real status-update endpoint with the right payload —
+        the piece the unit tests, which call the handler directly, can't cover.
+        """
+        server, port, received = _make_status_server()
+        proc = subprocess.Popen(
+            [sys.executable, '-c', _SIGTERM_STATUS_SCRIPT],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env={**os.environ, 'PLUTO_TEST_STATUS_PORT': str(port)},
+        )
+        try:
+            self._wait_ready(proc)
+            proc.send_signal(signal.SIGTERM)
+            proc.wait(timeout=self._DEADLINE)
+            # Chained to the default handler → still dies from SIGTERM.
+            assert proc.returncode == -signal.SIGTERM
+            # The handler POSTs synchronously before exiting; poll briefly in
+            # case the server thread hasn't recorded it yet.
+            deadline = time.monotonic() + 5
+            while received['status'] is None and time.monotonic() < deadline:
+                time.sleep(0.05)
+            assert received['status'] == 'TERMINATED', (
+                f'expected TERMINATED status update, got {received!r}\n'
+                + (proc.stderr.read() or b'').decode()
+            )
+            assert received['runId'] == 4242
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait()
+            server.shutdown()
 
     def test_sigint_kills_process(self):
         """SIGINT must kill the process promptly."""
@@ -1046,9 +1165,9 @@ class TestSignalTerminationIntegration:
             start = time.monotonic()
             proc.wait(timeout=self._DEADLINE)
             elapsed = time.monotonic() - start
-            assert (
-                elapsed < self._DEADLINE
-            ), f'Process took {elapsed:.1f}s to exit after SIGINT'
+            assert elapsed < self._DEADLINE, (
+                f'Process took {elapsed:.1f}s to exit after SIGINT'
+            )
         finally:
             if proc.poll() is None:
                 proc.kill()
@@ -1147,3 +1266,183 @@ class TestSignalTerminationIntegration:
                 proc.wait()
             if os.path.exists(fill_path):
                 os.remove(fill_path)
+
+
+def _make_sigterm_op(status=-1, op_id=123):
+    """A fake Op with just what the SIGTERM handler touches."""
+    settings = types.SimpleNamespace(
+        _op_id=op_id,
+        _op_status=status,
+        url_stop='http://server/api/runs/status/update',
+        x_sigterm_status_timeout_seconds=5.0,
+        # Read when the handler builds its fresh httpx client.
+        insecure_disable_ssl=False,
+        http_proxy=None,
+        https_proxy=None,
+    )
+    return types.SimpleNamespace(settings=settings, _iface=MagicMock())
+
+
+class TestSigtermStatusHandler:
+    """Unit tests for the SIGTERM -> TERMINATED status handler (pluto/op.py).
+
+    These drive the handler and (un)register helpers directly — they do NOT
+    raise a real SIGTERM (that end-to-end path is covered by
+    TestSignalTerminationIntegration, which isolates it in a subprocess). Every
+    case uses a callable or SIG_IGN previous handler so the SIG_DFL chain can't
+    terminate the test runner.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _restore_state(self):
+        """Snapshot/restore module + process signal state so tests never leak a
+        handler into the runner or each other."""
+        prev_registered = op_module._sigterm_handler_registered
+        prev_original = op_module._original_sigterm_handler
+        prev_ops = pluto.ops
+        prev_sig = signal.getsignal(signal.SIGTERM)
+        # Start from a clean baseline. Other tests run a real pluto.init(), which
+        # installs _sigterm_handler on SIGTERM and can leave it there; capturing
+        # that as the "previous" handler would trip the recursion guard in
+        # _register_sigterm_handler and skew these assertions.
+        op_module._sigterm_handler_registered = False
+        op_module._original_sigterm_handler = None
+        signal.signal(signal.SIGTERM, signal.SIG_DFL)
+        try:
+            yield
+        finally:
+            op_module._sigterm_handler_registered = prev_registered
+            op_module._original_sigterm_handler = prev_original
+            pluto.ops = prev_ops
+            signal.signal(signal.SIGTERM, prev_sig)
+
+    def test_handler_pushes_terminated_and_chains(self):
+        o = _make_sigterm_op(status=-1)
+        pluto.ops = [o]
+        prev = MagicMock()
+        op_module._original_sigterm_handler = prev
+        op_module._sigterm_handler_registered = True
+
+        op_module._sigterm_handler(signal.SIGTERM, None)
+
+        assert o.settings._op_status == signal.SIGTERM.value  # -> TERMINATED
+        o._iface._post_v1.assert_called_once()
+        kwargs = o._iface._post_v1.call_args.kwargs
+        assert kwargs['max_retries'] == 0
+        assert kwargs['timeout'] == 5.0
+        assert kwargs['suppress_httpx_logs'] is True
+        prev.assert_called_once_with(signal.SIGTERM, None)  # chained
+
+    def test_handler_skips_terminal_ops(self):
+        o = _make_sigterm_op(status=0)  # already COMPLETED
+        pluto.ops = [o]
+        op_module._original_sigterm_handler = MagicMock()
+        op_module._sigterm_handler_registered = True
+
+        op_module._sigterm_handler(signal.SIGTERM, None)
+
+        assert o.settings._op_status == 0  # untouched
+        o._iface._post_v1.assert_not_called()
+
+    def test_handler_survives_push_failure_and_still_chains(self):
+        o = _make_sigterm_op(status=-1)
+        o._iface._post_v1.side_effect = RuntimeError('network down')
+        pluto.ops = [o]
+        prev = MagicMock()
+        op_module._original_sigterm_handler = prev
+        op_module._sigterm_handler_registered = True
+
+        op_module._sigterm_handler(signal.SIGTERM, None)  # must not raise
+
+        prev.assert_called_once()
+
+    def test_handler_sig_ign_returns_without_reraising(self):
+        o = _make_sigterm_op(status=-1)
+        pluto.ops = [o]
+        op_module._original_sigterm_handler = signal.SIG_IGN
+        op_module._sigterm_handler_registered = True
+
+        # Previous handler ignored SIGTERM: still push status, but do not re-raise.
+        op_module._sigterm_handler(signal.SIGTERM, None)
+
+        o._iface._post_v1.assert_called_once()
+
+    def test_handler_no_iface_is_safe(self):
+        o = _make_sigterm_op(status=-1)
+        o._iface = None
+        pluto.ops = [o]
+        op_module._original_sigterm_handler = MagicMock()
+        op_module._sigterm_handler_registered = True
+
+        op_module._sigterm_handler(signal.SIGTERM, None)  # must not raise
+
+        assert o.settings._op_status == signal.SIGTERM.value
+
+    def test_register_and_unregister_restores_previous_handler(self):
+        op_module._sigterm_handler_registered = False
+        original = signal.getsignal(signal.SIGTERM)
+
+        op_module._register_sigterm_handler(
+            types.SimpleNamespace(x_sigterm_status_enabled=True)
+        )
+        assert op_module._sigterm_handler_registered is True
+        assert signal.getsignal(signal.SIGTERM) is op_module._sigterm_handler
+        assert op_module._original_sigterm_handler == original
+
+        op_module._unregister_sigterm_handler()
+        assert op_module._sigterm_handler_registered is False
+        assert signal.getsignal(signal.SIGTERM) == original
+
+    def test_register_is_idempotent(self):
+        op_module._sigterm_handler_registered = False
+        op_module._register_sigterm_handler(
+            types.SimpleNamespace(x_sigterm_status_enabled=True)
+        )
+        first_original = op_module._original_sigterm_handler
+        # A second call must not clobber the saved original with our own handler.
+        op_module._register_sigterm_handler(
+            types.SimpleNamespace(x_sigterm_status_enabled=True)
+        )
+        assert op_module._original_sigterm_handler == first_original
+
+    def test_register_respects_disabled_setting(self):
+        op_module._sigterm_handler_registered = False
+        before = signal.getsignal(signal.SIGTERM)
+
+        op_module._register_sigterm_handler(
+            types.SimpleNamespace(x_sigterm_status_enabled=False)
+        )
+
+        assert op_module._sigterm_handler_registered is False
+        assert signal.getsignal(signal.SIGTERM) == before
+
+    def test_register_never_stores_self_as_original(self):
+        """Recursion guard: if our handler is already installed but the flag was
+        cleared (e.g. an off-thread unregister), re-registering must NOT record
+        our own handler as `_original` (which would recurse when chaining)."""
+        signal.signal(signal.SIGTERM, op_module._sigterm_handler)
+        op_module._sigterm_handler_registered = False
+        op_module._original_sigterm_handler = signal.SIG_DFL  # sentinel prior
+
+        op_module._register_sigterm_handler(
+            types.SimpleNamespace(x_sigterm_status_enabled=True)
+        )
+
+        assert op_module._sigterm_handler_registered is True
+        assert op_module._original_sigterm_handler is not op_module._sigterm_handler
+
+    def test_unregister_off_main_thread_is_noop(self):
+        """Off the main thread, signal.signal can't restore the handler, so
+        state must stay consistent (still registered, handler still installed)
+        rather than clearing the flag while the handler remains live."""
+        signal.signal(signal.SIGTERM, op_module._sigterm_handler)
+        op_module._sigterm_handler_registered = True
+        op_module._original_sigterm_handler = signal.SIG_DFL
+
+        t = threading.Thread(target=op_module._unregister_sigterm_handler)
+        t.start()
+        t.join()
+
+        assert op_module._sigterm_handler_registered is True
+        assert signal.getsignal(signal.SIGTERM) is op_module._sigterm_handler
+        assert op_module._original_sigterm_handler == signal.SIG_DFL
