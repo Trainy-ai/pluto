@@ -221,6 +221,8 @@ _sigterm_handler_registered = False
 def _sigterm_handler(signum, frame):
     """Best-effort push TERMINATED for active runs, then chain to the previous
     handler so the process terminates exactly as it otherwise would."""
+    import httpx
+
     for op in list(pluto.ops or []):
         try:
             if op.settings._op_status != -1:
@@ -230,17 +232,25 @@ def _sigterm_handler(signum, frame):
             iface = op._iface
             if iface is None:
                 continue
-            # Bounded, no-retry POST: a hung network must not eat the finite
-            # eviction grace window before SIGKILL lands.
-            iface._post_v1(
-                op.settings.url_stop,
-                iface.headers,
-                make_compat_status_v1(op.settings),
-                client=iface.client_api,
-                max_retries=0,
-                timeout=op.settings.x_sigterm_status_timeout_seconds,
-                suppress_httpx_logs=True,
-            )
+            # Push on a *fresh* client: the signal can interrupt the main
+            # thread mid-request on iface.client_api, and httpx.Client is not
+            # re-entrant, so reusing it here could corrupt that in-flight
+            # request. Bounded + no-retry so a hung network can't eat the
+            # finite eviction grace window before SIGKILL lands.
+            with httpx.Client(
+                verify=not op.settings.insecure_disable_ssl,
+                proxy=op.settings.http_proxy or op.settings.https_proxy or None,
+                timeout=httpx.Timeout(op.settings.x_sigterm_status_timeout_seconds),
+            ) as client:
+                iface._post_v1(
+                    op.settings.url_stop,
+                    iface.headers,
+                    make_compat_status_v1(op.settings),
+                    client=client,
+                    max_retries=0,
+                    timeout=op.settings.x_sigterm_status_timeout_seconds,
+                    suppress_httpx_logs=True,
+                )
         except Exception as e:
             logger.debug('%s: SIGTERM status push failed: %s', tag, e)
 
@@ -273,7 +283,14 @@ def _register_sigterm_handler(settings) -> None:
         logger.debug(f'{tag}: not on main thread, skipping SIGTERM handler')
         return
     try:
-        _original_sigterm_handler = signal.getsignal(signal.SIGTERM)
+        current = signal.getsignal(signal.SIGTERM)
+        # Our handler is already installed but the registered flag was cleared
+        # (e.g. a prior unregister couldn't run off the main thread). Never
+        # store our own handler as `_original` or chaining would recurse.
+        if current is _sigterm_handler:
+            _sigterm_handler_registered = True
+            return
+        _original_sigterm_handler = current
         signal.signal(signal.SIGTERM, _sigterm_handler)
         _sigterm_handler_registered = True
         logger.debug(f'{tag}: Registered SIGTERM handler for TERMINATED status')
@@ -287,13 +304,22 @@ def _unregister_sigterm_handler() -> None:
 
     if not _sigterm_handler_registered:
         return
+    # signal.signal only works on the main thread. If teardown runs off-thread
+    # (e.g. Neptune compat's threaded finish), leave the handler installed and
+    # the flag set rather than clearing state we couldn't actually restore —
+    # clearing it would let a later register() treat our handler as `_original`
+    # and recurse on SIGTERM.
+    if threading.current_thread() is not threading.main_thread():
+        logger.debug(f'{tag}: not on main thread, skipping SIGTERM unregistration')
+        return
     try:
         if _original_sigterm_handler is not None:
             signal.signal(signal.SIGTERM, _original_sigterm_handler)
-    except (ValueError, OSError):
-        pass
-    _sigterm_handler_registered = False
-    logger.debug(f'{tag}: Restored original SIGTERM handler')
+        _sigterm_handler_registered = False
+        _original_sigterm_handler = None
+        logger.debug(f'{tag}: Restored original SIGTERM handler')
+    except (ValueError, OSError) as e:
+        logger.debug(f'{tag}: could not unregister SIGTERM handler: {e}')
 
 
 MetaNames = List[str]

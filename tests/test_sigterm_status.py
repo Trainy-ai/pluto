@@ -12,6 +12,7 @@ so every case uses a callable or SIG_IGN previous handler.
 """
 
 import signal
+import threading
 import types
 from unittest.mock import MagicMock
 
@@ -27,6 +28,10 @@ def _make_op(status=-1, op_id=123):
         _op_status=status,
         url_stop='http://server/api/runs/status/update',
         x_sigterm_status_timeout_seconds=5.0,
+        # Read when the handler builds its fresh httpx client.
+        insecure_disable_ssl=False,
+        http_proxy=None,
+        https_proxy=None,
     )
     return types.SimpleNamespace(settings=settings, _iface=MagicMock())
 
@@ -154,3 +159,36 @@ def test_register_respects_disabled_setting():
 
     assert op_module._sigterm_handler_registered is False
     assert signal.getsignal(signal.SIGTERM) == before
+
+
+def test_register_never_stores_self_as_original():
+    """Recursion guard: if our handler is already installed but the flag was
+    cleared (e.g. an off-thread unregister), re-registering must NOT record our
+    own handler as `_original` (which would recurse when chaining on SIGTERM)."""
+    signal.signal(signal.SIGTERM, op_module._sigterm_handler)
+    op_module._sigterm_handler_registered = False
+    op_module._original_sigterm_handler = signal.SIG_DFL  # sentinel "real" prior
+
+    op_module._register_sigterm_handler(
+        types.SimpleNamespace(x_sigterm_status_enabled=True)
+    )
+
+    assert op_module._sigterm_handler_registered is True
+    assert op_module._original_sigterm_handler is not op_module._sigterm_handler
+
+
+def test_unregister_off_main_thread_is_noop():
+    """Off the main thread, signal.signal can't restore the handler, so state
+    must stay consistent (still registered, handler still installed) rather
+    than clearing the flag while the handler remains live."""
+    signal.signal(signal.SIGTERM, op_module._sigterm_handler)
+    op_module._sigterm_handler_registered = True
+    op_module._original_sigterm_handler = signal.SIG_DFL
+
+    t = threading.Thread(target=op_module._unregister_sigterm_handler)
+    t.start()
+    t.join()
+
+    assert op_module._sigterm_handler_registered is True
+    assert signal.getsignal(signal.SIGTERM) is op_module._sigterm_handler
+    assert op_module._original_sigterm_handler == signal.SIG_DFL
