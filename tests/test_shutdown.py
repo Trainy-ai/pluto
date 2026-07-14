@@ -1039,6 +1039,24 @@ def _make_status_server():
     return server, port, received
 
 
+# Child for the *prod* SIGTERM e2e: a real pluto.init() against the real server,
+# then idle. It writes the numeric run id to a file once init() returns (by which
+# point Op.start() has already registered the SIGTERM handler), so the parent can
+# query the run's status back from prod after signalling.
+_SIGTERM_PROD_SCRIPT = textwrap.dedent("""\
+    import os
+    import time
+
+    import pluto
+
+    run = pluto.init(project=os.environ['E2E_PROJECT'], name=os.environ['E2E_NAME'])
+    with open(os.environ['E2E_RUN_ID_FILE'], 'w') as f:
+        f.write(str(run.settings._op_id))
+    while True:
+        time.sleep(0.1)
+""")
+
+
 try:
     import torch  # noqa: F401
 
@@ -1155,6 +1173,74 @@ class TestSignalTerminationIntegration:
                 proc.kill()
                 proc.wait()
             server.shutdown()
+
+    @pytest.mark.skipif(
+        not os.environ.get('PLUTO_API_KEY'),
+        reason='prod SIGTERM e2e requires PLUTO_API_KEY / network access',
+    )
+    def test_sigterm_reports_terminated_status_prod(self, tmp_path):
+        """Same thing, but against the REAL server: a full `pluto.init()` run is
+        signalled with a real SIGTERM and the production API must report the run
+        as TERMINATED.
+
+        This intentionally hits prod (project ``testing-ci``) — if it flakes,
+        that is signal the server-side status path has an issue worth fixing,
+        not merely a test problem. The local-server variant above stays hermetic
+        for fast/deterministic coverage; this one verifies the real client<->
+        server contract (endpoint, auth, payload, and the run actually
+        transitioning) end to end. Skipped without PLUTO_API_KEY.
+        """
+        import pluto.query as pq
+        from tests.utils import get_task_name
+
+        run_id_file = tmp_path / 'run_id'
+        env = {
+            **os.environ,
+            'E2E_PROJECT': 'testing-ci',
+            'E2E_NAME': get_task_name(),
+            'E2E_RUN_ID_FILE': str(run_id_file),
+        }
+        proc = subprocess.Popen(
+            [sys.executable, '-c', _SIGTERM_PROD_SCRIPT],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            env=env,
+        )
+        try:
+            # Wait for the child to finish init() against prod (it writes the
+            # run id file only after init() returns, i.e. handler registered).
+            init_deadline = time.monotonic() + 90
+            while not run_id_file.exists():
+                if proc.poll() is not None:
+                    raise AssertionError(
+                        f'child exited during init (rc={proc.returncode})'
+                    )
+                if time.monotonic() >= init_deadline:
+                    raise AssertionError('run did not initialize against prod in 90s')
+                time.sleep(0.2)
+
+            proc.send_signal(signal.SIGTERM)
+            proc.wait(timeout=30)
+            # Chained to the default handler → still dies from SIGTERM.
+            assert proc.returncode == -signal.SIGTERM
+
+            run_id = int(run_id_file.read_text())
+            # Poll prod until the run reads TERMINATED (tolerate the status
+            # update's propagation lag, like the other e2e tests do).
+            deadline = time.monotonic() + 60
+            status = None
+            while time.monotonic() < deadline:
+                status = pq.get_run('testing-ci', run_id).get('status')
+                if status == 'TERMINATED':
+                    break
+                time.sleep(2)
+            assert (
+                status == 'TERMINATED'
+            ), f'prod run {run_id} status={status!r}, expected TERMINATED'
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait()
 
     def test_sigint_kills_process(self):
         """SIGINT must kill the process promptly."""
