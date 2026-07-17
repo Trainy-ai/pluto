@@ -1023,6 +1023,31 @@ def filter_corpus():
         f'have {numeric_ready}, want {all_ids}'
     )
 
+    # Warm up the name-scoped path too. The column-only field tests
+    # (created_at/updated_at/$not) scope by a `name` regex on the batch id rather
+    # than by config.batch, so their marker must be visible before they assert.
+    # Poll until it resolves all three runs; otherwise those tests race the
+    # read-path propagation of freshly created run rows and return an empty set.
+    # (Uses the slow-field window: a fixture timeout here errors the whole
+    # module, so give the row propagation generous margin.)
+    name_ready = _poll(
+        fn=lambda: _query({'name': {'$regex': batch}}),
+        check=lambda got: all_ids <= got,
+        timeout=_SLOW_FIELD_POLL_TIMEOUT,
+    )
+    assert all_ids <= name_ready, (
+        f'corpus not fully visible under name~={batch}: '
+        f'have {name_ready}, want {all_ids}'
+    )
+    # NOTE: intentionally no status warmup here. finish() marks the run COMPLETED
+    # asynchronously (sync process), and the list/filter path's view of that
+    # status update trails the run row's visibility by more than the poll window
+    # in CI (observed: name~=batch resolves all three, but
+    # `name AND status==COMPLETED` stays empty past _SLOW_FIELD_POLL_TIMEOUT,
+    # while get_run already reports COMPLETED). So status/state filtering is
+    # treated as eventual — its tests skip-tolerate an empty set rather than
+    # gate the whole corpus on a status write that may not land in-window.
+
     # Best-effort: discover a scalar systemMetadata field to filter on.
     # systemMetadata is populated asynchronously by the server, so poll rather
     # than read once right after finish() — otherwise the snapshot can be empty
@@ -1079,10 +1104,14 @@ def _assert_filter(corpus, case, groups, timeout=_POLL_TIMEOUT, by='config'):
 def _assert_filter_or_skip(corpus, case, groups, timeout=_POLL_TIMEOUT, by='config'):
     """Like :func:`_assert_filter`, but skip (not fail) on an all-empty result.
 
-    The ``filters`` API is in preview; some documented fields/operators may not
-    be wired up server-side yet and return an empty set. Treat an all-empty
-    result as a preview gap (skip), while a *non-empty wrong* result still
-    fails — so genuine filtering bugs are caught, not masked.
+    The fields/operators these callers use ARE implemented server-side; an
+    all-empty result is an eventual/best-effort condition rather than a missing
+    feature — e.g. the async status write not yet visible on the filter path
+    (status/state), ClickHouse metric ingest lag (heartbeat/summaryMetrics), or a
+    broad predicate whose match set exceeds the server's capped candidate scope
+    (MAX_FILTER_CANDIDATES, no ordering) so the fresh corpus runs fall outside
+    the sample. Treat an all-empty result as such (skip), while a *non-empty
+    wrong* result still fails — so genuine filtering bugs are caught, not masked.
     """
     batch = corpus['batch']
     want = _expected_ids(corpus, groups)
@@ -1095,8 +1124,9 @@ def _assert_filter_or_skip(corpus, case, groups, timeout=_POLL_TIMEOUT, by='conf
         return
     if not got:
         pytest.skip(
-            f'preview filters API returned no rows for {case!r}; this field/'
-            f'operator may not be implemented server-side yet'
+            f'filters API returned no rows for {case!r} within the poll window; '
+            f'eventual/best-effort (async status write, metric-ingest lag, or '
+            f'capped candidate scope) — the field/operator is implemented'
         )
     assert (
         got == want
@@ -1157,7 +1187,11 @@ def test_e2e_filter_boolean_and(filter_corpus):
 
 def test_e2e_filter_boolean_not(filter_corpus):
     # All-column $not (negate a name regex) so the negation isn't mixed with a
-    # config.* predicate. Skips if the preview API doesn't implement $not yet.
+    # config.* predicate. The server implements $not, but it evaluates the
+    # complement against a capped candidate scope (MAX_FILTER_CANDIDATES, no
+    # ordering): on a large project the freshly created corpus runs may fall
+    # outside that sample, yielding an empty set. Skip-tolerant on empty; a
+    # non-empty *wrong* result still fails.
     _assert_filter_or_skip(
         filter_corpus,
         {'$not': {'name': {'$regex': 'alpha'}}},
@@ -1181,10 +1215,14 @@ def test_e2e_filter_implicit_and_multiple_keys(filter_corpus):
 def test_e2e_filter_range_on_single_field(filter_corpus):
     """Two operators on one field form a range (docs: heartbeat_at range).
 
-    The docs show a range on ``heartbeat_at``; on ``config.*`` the preview API
-    currently applies only one bound (the equivalent ``$and`` of two single-op
-    clauses works — see ``test_e2e_filter_boolean_and``). Treat an under-filtered
-    superset as a preview gap (skip), but still fail on a genuinely wrong set.
+    The docs show a range on ``heartbeat_at``; on ``config.*`` older servers
+    applied only one bound of a single-field two-operator range (the equivalent
+    ``$and`` of two single-op clauses works — see
+    ``test_e2e_filter_boolean_and``). The server fix that emits one term per
+    bound lands in Trainy-ai/server-private (run-filter.ts); this test polls for
+    the correct set and passes once that fix is deployed. Until then it tolerates
+    the under-filtered superset (skip) rather than failing on the known gap, but
+    still fails on a genuinely wrong (non-superset) set.
     """
     case = {'config.lr': {'$gt': 0.005, '$lt': 0.05}}  # 0.005 < lr < 0.05 -> beta
     batch = filter_corpus['batch']
@@ -1192,8 +1230,9 @@ def test_e2e_filter_range_on_single_field(filter_corpus):
     got = _poll(fn=lambda: _filter_ids(batch, case), check=lambda s: s == want)
     if want < got:
         pytest.skip(
-            'single-field two-operator range not honored for config.* in the '
-            'preview API (only one bound applied); the equivalent $and form is '
+            'single-field two-operator range not honored for config.* on this '
+            'server (only one bound applied); fixed server-side by emitting one '
+            'term per bound — passes once deployed. The equivalent $and form is '
             'covered by test_e2e_filter_boolean_and'
         )
     assert got == want, f'filter {case!r} selected {got}, want {want}'
@@ -1203,10 +1242,18 @@ def test_e2e_filter_range_on_single_field(filter_corpus):
 
 
 def test_e2e_filter_field_status(filter_corpus):
-    """`status` field: all seeded runs are COMPLETED after finish()."""
+    """`status` field: all seeded runs are COMPLETED after finish().
+
+    Skip-tolerant: `status`/`state` filtering is implemented server-side, but the
+    list/filter path's view of the async status write (sync process) trails the
+    run row by more than the poll window in CI — the run is visible by name and
+    reports COMPLETED via get_run, yet `status==COMPLETED` on the filter path can
+    stay empty. So this is eventual, like heartbeat/summaryMetrics: an all-empty
+    result skips, a non-empty *wrong* result still fails.
+    """
     everyone = ['alpha', 'beta', 'gamma']
     # Column-only field — scope by name, not config.batch (mixing config.* with a
-    # column predicate returns empty). Skips if status filtering isn't live yet.
+    # column predicate returns empty).
     _assert_filter_or_skip(
         filter_corpus, {'status': {'$eq': 'COMPLETED'}}, everyone, by='name'
     )
@@ -1216,7 +1263,11 @@ def test_e2e_filter_field_status(filter_corpus):
 
 
 def test_e2e_filter_field_state(filter_corpus):
-    """`state` field (wandb alias): no finished run is 'running'."""
+    """`state` field (wandb alias): no finished run is 'running'.
+
+    Skip-tolerant for the same reason as ``test_e2e_filter_field_status`` — the
+    status write is eventual on the filter path.
+    """
     _assert_filter_or_skip(
         filter_corpus,
         {'state': {'$ne': 'running'}},
@@ -1246,18 +1297,27 @@ def test_e2e_filter_field_config_string(filter_corpus):
 
 
 def test_e2e_filter_field_created_at(filter_corpus):
-    """`created_at` field: date comparison is honored server-side."""
+    """`created_at` field: date comparison is honored server-side.
+
+    The ``>=`` past-cutoff case matches every run, so its name-scoped result is
+    bounded by the server's capped candidate scope (MAX_FILTER_CANDIDATES, no
+    ordering) and can drop the fresh corpus runs on a large project → skip on
+    empty. The ``<`` case is deterministically empty (no run predates 2000) and
+    cap-independent, so it stays a hard assertion that the date operator filters.
+    """
     everyone = ['alpha', 'beta', 'gamma']
     _assert_filter_or_skip(
         filter_corpus, {'created_at': {'$gte': _PAST_CUTOFF}}, everyone, by='name'
     )
-    _assert_filter_or_skip(
-        filter_corpus, {'created_at': {'$lt': _PAST_CUTOFF}}, [], by='name'
-    )
+    _assert_filter(filter_corpus, {'created_at': {'$lt': _PAST_CUTOFF}}, [], by='name')
 
 
 def test_e2e_filter_field_updated_at(filter_corpus):
-    """`updated_at` field: date comparison is honored server-side."""
+    """`updated_at` field: date comparison is honored server-side.
+
+    Skip-tolerant on empty for the same capped-candidate-scope reason as
+    ``test_e2e_filter_field_created_at``.
+    """
     everyone = ['alpha', 'beta', 'gamma']
     _assert_filter_or_skip(
         filter_corpus, {'updated_at': {'$gte': _PAST_CUTOFF}}, everyone, by='name'
