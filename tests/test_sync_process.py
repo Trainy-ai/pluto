@@ -123,6 +123,43 @@ class TestSyncStore:
         assert by_name['cat'].caption == 'a fluffy orange cat'
         assert by_name['dog'].caption is None
 
+    def test_enqueue_file_sample_index_roundtrip(self, store):
+        """sample_index set on enqueue survives read-back; the default is 0."""
+        store.register_run('test-run-1', 'test-project')
+
+        # A 3-image list: img0/img1/img2 → sample_index 0/1/2.
+        for i in range(3):
+            store.enqueue_file(
+                run_id='test-run-1',
+                local_path=f'/tmp/img{i}.png',
+                file_name=f'img{i}',
+                file_ext='.png',
+                file_type='image/png',
+                file_size=1024,
+                log_name='eval/img',
+                timestamp_ms=int(time.time() * 1000),
+                step=5,
+                sample_index=i,
+            )
+        # A file enqueued without sample_index defaults to 0.
+        store.enqueue_file(
+            run_id='test-run-1',
+            local_path='/tmp/solo.png',
+            file_name='solo',
+            file_ext='.png',
+            file_type='image/png',
+            file_size=1024,
+            log_name='eval/solo',
+            timestamp_ms=int(time.time() * 1000),
+            step=5,
+        )
+
+        by_name = {f.file_name: f for f in store.get_pending_files(limit=10)}
+        assert by_name['img0'].sample_index == 0
+        assert by_name['img1'].sample_index == 1
+        assert by_name['img2'].sample_index == 2
+        assert by_name['solo'].sample_index == 0
+
     def test_caption_migration_on_legacy_db(self, tmp_path):
         """A DB created without the caption column gets it added on open
         (additive migration), so enqueue/select with caption works."""
@@ -685,6 +722,56 @@ class TestSyncUploaderPayloadFormat:
 
             assert by_name['cat.png']['caption'] == 'a fluffy orange cat'
             assert 'caption' not in by_name['dog.png']
+
+    def test_file_payload_includes_sample_index(self, uploader):
+        """The /files presign payload carries `sampleIndex` for each file so the
+        server can restore logged order for a media list."""
+        # Three images logged as one list at (eval/img, step=5).
+        records = [
+            FileRecord(
+                id=i + 1,
+                run_id='test-run',
+                local_path=f'/tmp/img{i}.png',
+                file_name=f'img{i}',
+                file_ext='.png',
+                file_type='image/png',
+                file_size=10,
+                log_name='eval/img',
+                timestamp_ms=1705600000000,
+                step=5,
+                status=SyncStatus.PENDING,
+                retry_count=0,
+                created_at=time.time(),
+                last_attempt_at=None,
+                error_message=None,
+                presigned_url=None,
+                sample_index=i,
+            )
+            for i in range(3)
+        ]
+
+        mock_response = MagicMock()
+        mock_response.raise_for_status = MagicMock()
+        mock_response.json.return_value = {}
+
+        with patch('httpx.Client') as MockClient:
+            mock_client = MagicMock()
+            mock_client.post.return_value = mock_response
+            MockClient.return_value = mock_client
+            uploader._client = None
+
+            uploader._get_presigned_urls(records)
+
+            call_args = mock_client.post.call_args
+            body = call_args.kwargs.get('content') or call_args[1].get('content')
+            if isinstance(body, bytes):
+                body = body.decode('utf-8')
+            files = json.loads(body)['files']
+            by_name = {f['fileName']: f for f in files}
+
+            assert by_name['img0.png']['sampleIndex'] == 0
+            assert by_name['img1.png']['sampleIndex'] == 1
+            assert by_name['img2.png']['sampleIndex'] == 2
 
     def test_metrics_payload_filters_non_numeric(self, uploader):
         """Test that non-numeric values are filtered from metrics."""
@@ -1554,3 +1641,55 @@ class TestLogItemResilience:
                 )
             assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
             assert cap.call_count == 1
+
+
+def test_make_compat_file_v1_assigns_sample_index():
+    """make_compat_file_v1 numbers files 0..N-1 by their position within a
+    (logName, step) list; a single (1-element) media gets sampleIndex 0."""
+    import types
+
+    from pluto.api import make_compat_file_v1
+
+    def _f(name):
+        return types.SimpleNamespace(
+            _name=name,
+            _ext='.png',
+            _stat=types.SimpleNamespace(st_size=10, st_mtime=1.0),
+            _caption=None,
+        )
+
+    # A list of 3 media under one logName → sampleIndex 0, 1, 2 in order.
+    payload = json.loads(
+        make_compat_file_v1({'eval/img': [_f('a'), _f('b'), _f('c')]}, 0, 5).decode()
+    )
+    by_name = {e['fileName']: e['sampleIndex'] for e in payload['files']}
+    assert by_name == {'a.png': 0, 'b.png': 1, 'c.png': 2}
+
+    # A single (non-list) media logs as a 1-element list → sampleIndex 0.
+    solo = json.loads(make_compat_file_v1({'eval/solo': [_f('s')]}, 0, 5).decode())
+    assert solo['files'][0]['sampleIndex'] == 0
+
+
+def test_make_compat_file_v1_sample_index_restarts_per_logname():
+    """Each logName's list is numbered independently — two keys logged in one
+    call each restart sampleIndex at 0 (the index is per-(logName, step), not
+    global across the payload)."""
+    import types
+
+    from pluto.api import make_compat_file_v1
+
+    def _f(name):
+        return types.SimpleNamespace(
+            _name=name,
+            _ext='.png',
+            _stat=types.SimpleNamespace(st_size=10, st_mtime=1.0),
+            _caption=None,
+        )
+
+    payload = json.loads(
+        make_compat_file_v1({'a': [_f('a0'), _f('a1')], 'b': [_f('b0')]}, 0, 5).decode()
+    )
+    per_log: dict = {}
+    for e in payload['files']:
+        per_log.setdefault(e['logName'], []).append(e['sampleIndex'])
+    assert per_log == {'a': [0, 1], 'b': [0]}

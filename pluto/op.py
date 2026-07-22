@@ -22,14 +22,15 @@ from .api import (
     make_compat_monitor_v1,
     make_compat_resume_v1,
     make_compat_start_v1,
+    make_compat_status_v1,
     make_compat_trigger_v1,
     make_compat_webhook_v1,
 )
 from .auth import login
 from .data import Data
 from .file import Artifact, Audio, File, Image, Text, Video
-from .iface import ServerInterface
-from .log import setup_logger, teardown_logger
+from .iface import PlutoRequestError, ServerInterface
+from .log import flush_console_buffers, setup_logger, teardown_logger
 from .store import DataStore
 from .sync import SyncProcessManager
 from .sync.store import HEALTH_METRIC_KEYS
@@ -206,6 +207,122 @@ def _unregister_excepthook():
     logger.debug(f'{tag}: Restored original sys.excepthook')
 
 
+# SIGTERM handler state for reporting a terminal status on preemption/eviction.
+# Spot reclaim and k8s eviction deliver SIGTERM, which by default terminates the
+# process WITHOUT running atexit — so the atexit-registered finish() never fires
+# and the run would linger as RUNNING until the server-side heartbeat reaps it
+# (~90s). We install a handler that best-effort pushes TERMINATED, then chains to
+# whatever handler was previously installed so the process's actual exit
+# behaviour is unchanged (this is also what keeps the Neptune compat contract of
+# "MUST NOT affect signal handling" intact — the prior handler still runs).
+_original_sigterm_handler = None
+_sigterm_handler_registered = False
+
+
+def _sigterm_handler(signum, frame):
+    """Best-effort push TERMINATED for active runs, then chain to the previous
+    handler so the process terminates exactly as it otherwise would."""
+    import httpx
+
+    for op in list(pluto.ops or []):
+        try:
+            if op.settings._op_status != -1:
+                continue  # already terminal/finishing — don't overwrite
+            # signum maps to TERMINATED via api.STATUS (SIGTERM/SIGINT).
+            op.settings._op_status = signum
+            iface = op._iface
+            if iface is None:
+                continue
+            # Push on a *fresh* client: the signal can interrupt the main
+            # thread mid-request on iface.client_api, and httpx.Client is not
+            # re-entrant, so reusing it here could corrupt that in-flight
+            # request. Bounded + no-retry so a hung network can't eat the
+            # finite eviction grace window before SIGKILL lands.
+            with httpx.Client(
+                verify=not op.settings.insecure_disable_ssl,
+                proxy=op.settings.http_proxy or op.settings.https_proxy or None,
+                timeout=httpx.Timeout(op.settings.x_sigterm_status_timeout_seconds),
+            ) as client:
+                iface._post_v1(
+                    op.settings.url_stop,
+                    iface.headers,
+                    make_compat_status_v1(op.settings),
+                    client=client,
+                    max_retries=0,
+                    timeout=op.settings.x_sigterm_status_timeout_seconds,
+                    suppress_httpx_logs=True,
+                )
+        except Exception as e:
+            logger.debug('%s: SIGTERM status push failed: %s', tag, e)
+
+    # Chain to the previously-installed handler so we preserve exit behaviour.
+    prev = _original_sigterm_handler
+    if callable(prev):
+        prev(signum, frame)
+    elif prev == signal.SIG_IGN:
+        return  # process was ignoring SIGTERM — keep doing so
+    else:
+        # SIG_DFL, or None (handler installed outside Python): re-apply the
+        # default terminating action so we never accidentally swallow SIGTERM.
+        signal.signal(signal.SIGTERM, signal.SIG_DFL)
+        signal.raise_signal(signum)
+
+
+def _register_sigterm_handler(settings) -> None:
+    """Install the SIGTERM status handler once, if enabled and possible.
+
+    signal.signal only works in the main thread; if init() runs off the main
+    thread (some frameworks/launchers), skip silently rather than raise.
+    """
+    global _sigterm_handler_registered, _original_sigterm_handler
+
+    if _sigterm_handler_registered:
+        return
+    if not getattr(settings, 'x_sigterm_status_enabled', True):
+        return
+    if threading.current_thread() is not threading.main_thread():
+        logger.debug(f'{tag}: not on main thread, skipping SIGTERM handler')
+        return
+    try:
+        current = signal.getsignal(signal.SIGTERM)
+        # Our handler is already installed but the registered flag was cleared
+        # (e.g. a prior unregister couldn't run off the main thread). Never
+        # store our own handler as `_original` or chaining would recurse.
+        if current is _sigterm_handler:
+            _sigterm_handler_registered = True
+            return
+        _original_sigterm_handler = current
+        signal.signal(signal.SIGTERM, _sigterm_handler)
+        _sigterm_handler_registered = True
+        logger.debug(f'{tag}: Registered SIGTERM handler for TERMINATED status')
+    except (ValueError, OSError) as e:
+        logger.debug(f'{tag}: could not register SIGTERM handler: {e}')
+
+
+def _unregister_sigterm_handler() -> None:
+    """Restore the previous SIGTERM handler when no more Ops are active."""
+    global _sigterm_handler_registered, _original_sigterm_handler
+
+    if not _sigterm_handler_registered:
+        return
+    # signal.signal only works on the main thread. If teardown runs off-thread
+    # (e.g. Neptune compat's threaded finish), leave the handler installed and
+    # the flag set rather than clearing state we couldn't actually restore —
+    # clearing it would let a later register() treat our handler as `_original`
+    # and recurse on SIGTERM.
+    if threading.current_thread() is not threading.main_thread():
+        logger.debug(f'{tag}: not on main thread, skipping SIGTERM unregistration')
+        return
+    try:
+        if _original_sigterm_handler is not None:
+            signal.signal(signal.SIGTERM, _original_sigterm_handler)
+        _sigterm_handler_registered = False
+        _original_sigterm_handler = None
+        logger.debug(f'{tag}: Restored original SIGTERM handler')
+    except (ValueError, OSError) as e:
+        logger.debug(f'{tag}: could not unregister SIGTERM handler: {e}')
+
+
 MetaNames = List[str]
 MetaFiles = Dict[str, List[str]]
 LoggedNumbers = Dict[str, Any]
@@ -332,31 +449,41 @@ class Op:
             if self.settings._sys == {}:
                 self.settings._sys = System(self.settings)
             tmp_iface = ServerInterface(config=config, settings=settings)
-            if (
-                settings._resume_run_id is not None
-                or settings._resume_display_id is not None
-            ):
-                # Resume existing run via /api/runs/resume
-                r = tmp_iface._post_v1(
-                    self.settings.url_resume,
-                    tmp_iface.headers,
-                    make_compat_resume_v1(self.settings),
-                    client=tmp_iface.client_api,
-                )
-            else:
-                # Create new run (or resume via externalId)
-                r = tmp_iface._post_v1(
-                    self.settings.url_start,  # create-run
-                    tmp_iface.headers,
-                    make_compat_start_v1(
-                        self.config,
-                        self.settings,
-                        self._start_info(),
-                        self.tags,
-                    ),
-                    client=tmp_iface.client_api,
-                )
+            try:
+                if (
+                    settings._resume_run_id is not None
+                    or settings._resume_display_id is not None
+                ):
+                    # Resume existing run via /api/runs/resume
+                    r = tmp_iface._post_v1(
+                        self.settings.url_resume,
+                        tmp_iface.headers,
+                        make_compat_resume_v1(self.settings),
+                        client=tmp_iface.client_api,
+                        raise_on_error=True,
+                    )
+                else:
+                    # Create new run (or resume via externalId)
+                    r = tmp_iface._post_v1(
+                        self.settings.url_start,  # create-run
+                        tmp_iface.headers,
+                        make_compat_start_v1(
+                            self.config,
+                            self.settings,
+                            self._start_info(),
+                            self.tags,
+                        ),
+                        client=tmp_iface.client_api,
+                        raise_on_error=True,
+                    )
+            except PlutoRequestError as e:
+                # The server rejected the request (e.g. a validation error such
+                # as "A run can have at most one group:* tag."). Surface the
+                # server's reason rather than a misleading connection error.
+                raise RuntimeError(f'Failed to create run: {e}') from e
             if not r:
+                # No response after retries → the server was unreachable (a
+                # 4xx/5xx would have raised PlutoRequestError above).
                 raise ConnectionError(
                     'Failed to create or resume run. Check connection to Pluto server.'
                 )
@@ -571,6 +698,9 @@ class Op:
         # Register excepthook to detect unhandled exceptions and mark runs as FAILED
         _register_excepthook()
 
+        # Register SIGTERM handler to report TERMINATED on preemption/eviction
+        _register_sigterm_handler(self.settings)
+
         # set globals
         if pluto.ops is None:
             pluto.ops = []
@@ -650,9 +780,15 @@ class Op:
             if items:
                 self._register_meta_sync(k, items[0], new_metric_names, new_file_meta)
 
-            for item in items:
+            # enumerate() gives each item its 0-based position within this
+            # (key, step) log() call — the sampleIndex the server uses to
+            # restore logged order for media lists. A scalar is wrapped in a
+            # 1-element list above, so it naturally gets sampleIndex 0.
+            for sample_index, item in enumerate(items):
                 try:
-                    self._process_log_item_sync(k, item, metrics, timestamp_ms)
+                    self._process_log_item_sync(
+                        k, item, metrics, timestamp_ms, sample_index
+                    )
                 except Exception as e:
                     # One bad item (e.g. media that can't be encoded/staged)
                     # must not abort the rest of the batch or crash the caller's
@@ -776,6 +912,7 @@ class Op:
         value: Any,
         metrics: Dict[str, Any],
         timestamp_ms: int,
+        sample_index: int = 0,
     ) -> None:
         """Process a single log item for sync process mode."""
         if self._sync_manager is None:
@@ -787,7 +924,7 @@ class Op:
             metrics[key] = value.item()
         elif isinstance(value, File):
             # Handle file types (Image, Audio, Video, Text, Artifact)
-            self._enqueue_file_sync(key, value, timestamp_ms)
+            self._enqueue_file_sync(key, value, timestamp_ms, sample_index)
         elif isinstance(value, Data):
             # Handle structured data types (Graph, Histogram, Table)
             self._sync_manager.enqueue_data(
@@ -803,6 +940,7 @@ class Op:
         log_name: str,
         file_obj: File,
         timestamp_ms: int,
+        sample_index: int = 0,
     ) -> None:
         """
         Process and enqueue a file for upload via sync process.
@@ -831,6 +969,7 @@ class Op:
                 timestamp_ms=timestamp_ms,
                 step=self._step,
                 caption=file_obj._caption,
+                sample_index=sample_index,
             )
             logger.debug(
                 f'{tag}: enqueued file {file_obj._name}{file_obj._ext} for sync'
@@ -909,6 +1048,13 @@ class Op:
         try:
             # Stop the monitor (system metrics and heartbeats)
             self._monitor.stop(code)
+
+            # Push pending console-capture lines into the sync store while
+            # the sync process can still upload them — anything enqueued
+            # after the drain below stays in SQLite unuploaded (the capture
+            # layers batch up to 0.2s of output).
+            if self._sync_manager is not None:
+                flush_console_buffers()
 
             # Handle sync process shutdown
             if self._sync_manager is not None:
@@ -995,6 +1141,7 @@ class Op:
                 ]  # TODO: make more efficient
                 if not pluto.ops:
                     _unregister_excepthook()
+                    _unregister_sigterm_handler()
 
     def watch(self, module, **kwargs):
         from .compat.torch import _watch_torch
@@ -1042,6 +1189,10 @@ class Op:
         elif self._iface:
             try:
                 self._iface._update_tags(self.tags)
+            except PlutoRequestError as e:
+                # Server rejected the tags update (validation error) — this is
+                # not a transient failure, so surface it rather than hide it.
+                logger.warning(f'{tag}: server rejected tags update: {e}')
             except Exception as e:
                 logger.debug(f'{tag}: failed to sync tags to server: {e}')
 
@@ -1072,6 +1223,10 @@ class Op:
         elif self._iface:
             try:
                 self._iface._update_tags(self.tags)
+            except PlutoRequestError as e:
+                # Server rejected the tags update (validation error) — this is
+                # not a transient failure, so surface it rather than hide it.
+                logger.warning(f'{tag}: server rejected tags update: {e}')
             except Exception as e:
                 logger.debug(f'{tag}: failed to sync tags to server: {e}')
 

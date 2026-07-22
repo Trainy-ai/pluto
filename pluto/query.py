@@ -350,6 +350,8 @@ class Client:
         run_id: Union[int, str],
         metric_names: Optional[List[str]] = None,
         limit: int = 10000,
+        step_min: Optional[int] = None,
+        step_max: Optional[int] = None,
     ) -> Any:
         """Fetch time-series metric data for a run.
 
@@ -360,21 +362,61 @@ class Client:
         :class:`~pandas.DataFrame` with columns ``metric``, ``step``,
         ``value``, ``time``. Otherwise a list of dicts is returned.
 
+        ``step_min`` / ``step_max`` scope the query to a step window instead
+        of pulling the whole series — useful for zooming in around a spike or
+        anomaly (e.g. ``step_min=4000, step_max=4500``). Because the server
+        samples down to ``limit`` points, narrowing the range also gives you
+        finer resolution within it.
+
         Args:
             project: Project name.
             run_id: Numeric server ID (``int``) or display ID string
                 (e.g. ``"MMP-1"``).
             metric_names: Metric names to fetch. ``None`` fetches all.
             limit: Max data points per metric (max 10 000).
+            step_min: Lowest step to return, **inclusive**. ``None`` for no
+                lower bound.
+            step_max: Highest step to return, **inclusive**. ``None`` for no
+                upper bound.
 
         Returns:
             ``pandas.DataFrame`` or ``list[dict]``.
+
+        Raises:
+            ValueError: If a step bound is negative, or ``step_min`` exceeds
+                ``step_max``.
         """
+        # Validate before touching the network — _resolve_run_id() below can
+        # itself issue a request for a display-ID, so checking here means an
+        # obviously-bad range costs zero round-trips.
+        #
+        # The reversed-range check is the important one: the server validates
+        # each bound independently (int >= 0) but does NOT check that min <= max,
+        # so `step_min=100, step_max=50` is accepted, matches no rows, and comes
+        # back as an empty result with no error — a silently wrong answer. Fail
+        # loudly instead. (Negative bounds the server would reject with a 400;
+        # catching them here just makes the message immediate and clearer.)
+        if step_min is not None and step_min < 0:
+            raise ValueError(f'step_min must be non-negative, got {step_min}')
+        if step_max is not None and step_max < 0:
+            raise ValueError(f'step_max must be non-negative, got {step_max}')
+        if step_min is not None and step_max is not None and step_min > step_max:
+            raise ValueError(
+                f'step_min ({step_min}) cannot be greater than step_max ({step_max})'
+            )
+
         params: Dict[str, Any] = {
             'runId': self._resolve_run_id(project, run_id),
             'projectName': project,
             'limit': min(limit, 10000),
         }
+        # Set on the base params (not per-branch) so the multi-metric path
+        # below — which copies these into one request per metric — carries the
+        # bounds too. Omit entirely when unset rather than sending empties.
+        if step_min is not None:
+            params['stepMin'] = step_min
+        if step_max is not None:
+            params['stepMax'] = step_max
 
         if metric_names is not None and len(metric_names) > 1:
             # Endpoint only supports a single logName filter, so fetch
@@ -739,13 +781,22 @@ def get_metrics(
     run_id: Union[int, str],
     metric_names: Optional[List[str]] = None,
     limit: int = 10000,
+    step_min: Optional[int] = None,
+    step_max: Optional[int] = None,
 ) -> Any:
-    """Fetch metric data. See :meth:`Client.get_metrics`."""
+    """Fetch metric data. See :meth:`Client.get_metrics`.
+
+    ``step_min`` / ``step_max`` are **inclusive** bounds that scope the query
+    to a step window (e.g. ``step_min=4000, step_max=4500``) instead of
+    pulling the full series.
+    """
     return _get_client().get_metrics(
         project,
         run_id,
         metric_names=metric_names,
         limit=limit,
+        step_min=step_min,
+        step_max=step_max,
     )
 
 

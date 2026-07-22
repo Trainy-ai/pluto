@@ -46,6 +46,10 @@ class Settings:
     # show up in migrated runs.
     disable_system_metrics: bool = False
     sanitize_logs: bool = True  # redact secrets before uploading console logs
+    # Capture console at the file-descriptor level (dup2 tee, like wandb's
+    # console="redirect") so logging handlers configured before init() are
+    # still captured. False falls back to the sys.stdout/sys.stderr swap.
+    x_console_fd_capture: bool = True
 
     _op_name: Optional[str] = None
     _op_id: Optional[int] = None
@@ -84,6 +88,11 @@ class Settings:
     x_sys_sampling_interval: int = 2**2
     x_sys_label: str = 'sys'
     x_thread_join_timeout_seconds: int = 30
+    # On SIGTERM (spot reclaim / k8s eviction) push a terminal status to the
+    # server so the run is reaped promptly instead of lingering RUNNING until
+    # the server-side heartbeat times out. Bounded, best-effort POST.
+    x_sigterm_status_enabled: bool = True
+    x_sigterm_status_timeout_seconds: float = 5.0
     x_grad_label: str = 'grad'
     x_param_label: str = 'param'
     pluto_version: Optional[str] = None

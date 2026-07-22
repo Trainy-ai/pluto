@@ -161,7 +161,11 @@ def make_compat_data_v1(data, timestamp, step):
 def make_compat_file_v1(file, timestamp, step):
     batch = []
     for k, fl in file.items():
-        for f in fl:
+        # enumerate() gives each file its 0-based position within this
+        # (logName, step) list so the server can restore logged order instead
+        # of sorting by fileName. A single (non-list) media logs as a 1-element
+        # list here, so it naturally gets sampleIndex 0.
+        for sample_index, f in enumerate(fl):
             i = {
                 'fileName': f'{f._name}{f._ext}',
                 'fileSize': f._stat.st_size,
@@ -169,6 +173,7 @@ def make_compat_file_v1(file, timestamp, step):
                 'time': int(f._stat.st_mtime * 1000),
                 'logName': k,
                 'step': step,
+                'sampleIndex': sample_index,
             }
             caption = getattr(f, '_caption', None)
             if caption is not None:
