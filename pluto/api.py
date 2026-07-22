@@ -82,6 +82,14 @@ def make_compat_status_v1(settings, trace=None):
             'status': STATUS[settings._op_status],
             # "metadata": json.dumps(settings.meta),
             'statusMetadata': json.dumps(trace) if trace is not None else None,
+            # Historical terminal-status time (epoch ms) for backfilled/migrated
+            # runs (pluto.migrate). Server applies it to the durable
+            # `statusUpdated` column so Duration = end - createdAt is correct;
+            # duration's `end` reads `statusUpdated ?? updatedAt`, and updatedAt
+            # re-bumps via Prisma @updatedAt, so statusUpdated is the field that
+            # must stick. None for normal runs (empty compat) -> server keeps
+            # now(), so behavior is unchanged.
+            'statusUpdated': settings.compat.get('updatedAt'),
         }
     ).encode()
 
