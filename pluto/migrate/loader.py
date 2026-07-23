@@ -135,13 +135,29 @@ class PlutoLoader:
             try:
                 try:
                     op = self._init_run(manifest, external_id)
+                    # Remember, before replaying, that we created this run. If
+                    # replay crashes now, a later re-run sees the in_progress
+                    # marker and resumes to complete it (rather than skipping).
+                    cache.mark_in_progress(external_id)
                 except RunExistsError:
-                    # The run exists server-side but isn't in loaded_runs.json.
-                    # Re-replaying would duplicate media, so by default treat it
-                    # as already loaded and skip; record it so future re-runs
-                    # skip via the cache. force_resume opts into resume +
-                    # re-replay (e.g. to heal a genuinely interrupted load).
-                    if not self.force_resume:
+                    # The run exists server-side but isn't marked done here.
+                    if self.force_resume or cache.is_in_progress(external_id):
+                        # We started this run before and it didn't finish (crash
+                        # mid-replay), or the user forced it: resume and
+                        # re-replay to complete it. Metric points dedup by their
+                        # identical staged timestamps; media sent before the
+                        # crash may duplicate.
+                        logger.warning(
+                            f'{tag}: {external_id} exists on server but was not '
+                            'finished; resuming to complete it (media may '
+                            'duplicate)'
+                        )
+                        cache.mark_in_progress(external_id)
+                        op = self._init_run(manifest, external_id, resume=True)
+                    else:
+                        # Exists but we never started it here (e.g. loaded on
+                        # another machine): skip to avoid duplicating media, and
+                        # record it so future re-runs skip via the cache.
                         logger.info(
                             f'{tag}: {external_id} already exists on server; '
                             'skipping (pass --force-resume to resume and '
@@ -150,12 +166,6 @@ class PlutoLoader:
                         cache.mark_loaded(external_id, {'note': 'existed-on-server'})
                         skipped += 1
                         continue
-                    logger.warning(
-                        f'{tag}: {external_id} already exists on server; '
-                        'resuming to re-replay (--force-resume; media may '
-                        'duplicate)'
-                    )
-                    op = self._init_run(manifest, external_id, resume=True)
 
                 self._replay_run(run_dir, op)
                 op.finish(code=0 if manifest.get('state') == 'finished' else 1)
@@ -291,7 +301,16 @@ class PlutoLoader:
                     continue
                 close_group()
                 if attr_type == 'media':
-                    self._replay_media(run_dir, op, row)
+                    # One malformed media/histogram row must not abort the whole
+                    # run's replay — skip it and keep the rest of the run's data.
+                    try:
+                        self._replay_media(run_dir, op, row)
+                    except Exception as e:
+                        logger.warning(
+                            f'{tag}: skipping bad media row '
+                            f'{row.get("attribute_path")!r} @ step '
+                            f'{row.get("step")}: {type(e).__name__}: {e}'
+                        )
                     note_nonmetric()
                 elif attr_type == 'console':
                     console_lines.append(
@@ -307,7 +326,14 @@ class PlutoLoader:
                         note_nonmetric(len(console_lines))
                         console_lines = []
                 elif attr_type == 'artifact':
-                    self._replay_artifact(run_dir, op, row)
+                    try:
+                        self._replay_artifact(run_dir, op, row)
+                    except Exception as e:
+                        logger.warning(
+                            f'{tag}: skipping bad artifact row '
+                            f'{row.get("attribute_path")!r} @ step '
+                            f'{row.get("step")}: {type(e).__name__}: {e}'
+                        )
                     note_nonmetric()
 
         close_group()
@@ -325,13 +351,23 @@ class PlutoLoader:
         if media_type.startswith('{'):  # inline JSON (histogram)
             payload = json.loads(media_type)
             if payload.get('_type') == 'histogram':
+                values = payload.get('values')
+                bins = payload.get('bins')
+                if values is None:
+                    logger.warning(
+                        f'{tag}: histogram {name!r} @ step {step} has no '
+                        'values, skipping'
+                    )
+                    return
+                if bins is None:
+                    # wandb frequently stores histogram counts without bin
+                    # edges. pluto.Histogram's pre-binned form needs
+                    # len(edges) == len(counts) + 1, so synthesize integer
+                    # edges — the counts are preserved, only the x-axis is
+                    # generic.
+                    bins = list(range(len(values) + 1))
                 op.log(
-                    {
-                        name: pluto.Histogram(
-                            [payload.get('values'), payload.get('bins')],
-                            bins=None,
-                        )
-                    },
+                    {name: pluto.Histogram([values, bins], bins=None)},
                     step=step,
                     timestamp=timestamp,
                 )

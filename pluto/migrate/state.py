@@ -11,9 +11,13 @@ partial ones. All writes are atomic (tmp file + fsync + rename).
 from __future__ import annotations
 
 import json
+import logging
 import os
 from pathlib import Path
 from typing import Any, Dict, Optional, Union
+
+logger = logging.getLogger(f'{__name__.split(".")[0]}')
+tag = 'migrate'
 
 EXPORT_SENTINEL = '_export_complete.json'
 LOADED_CACHE_FILENAME = 'loaded_runs.json'
@@ -45,17 +49,59 @@ def mark_run_exported(
 
 
 class LoadedCache:
-    """Load-phase resume cache: which external ids finished loading."""
+    """Load-phase resume cache tracking each external id's load state.
+
+    Entries are ``{status: 'in_progress' | 'done', ...}``. ``in_progress`` is
+    written right after a run is created server-side but before its replay
+    finishes; ``done`` after ``finish()`` drains. That lets a re-run tell a
+    run *we* started but didn't finish (resume + complete it) from one that
+    merely exists server-side (loaded elsewhere → skip, no media dup).
+    Legacy entries without a status are treated as ``done``.
+    """
 
     def __init__(self, path: Union[str, Path]) -> None:
         self._path = Path(path)
         self._entries: Dict[str, Any] = {}
         if self._path.exists():
-            self._entries = read_json(self._path)
+            try:
+                data = read_json(self._path)
+                if isinstance(data, dict):
+                    self._entries = data
+                else:
+                    raise ValueError('cache is not a JSON object')
+            except (json.JSONDecodeError, ValueError, OSError) as e:
+                # A corrupt/empty cache must not abort the whole load. Move it
+                # aside and start fresh; already-loaded runs are re-detected via
+                # the server-side external-id collision (RunExistsError).
+                logger.warning(
+                    f'{tag}: {self._path.name} unreadable ({e}); starting with '
+                    'an empty load cache (backed up as .corrupt)'
+                )
+                try:
+                    self._path.replace(self._path.with_suffix('.corrupt'))
+                except OSError:
+                    pass
+
+    def _status(self, external_id: str) -> Optional[str]:
+        entry = self._entries.get(external_id)
+        if entry is None:
+            return None
+        if isinstance(entry, dict):
+            return entry.get('status', 'done')  # legacy entries -> done
+        return 'done'
 
     def is_loaded(self, external_id: str) -> bool:
-        return external_id in self._entries
+        return self._status(external_id) == 'done'
+
+    def is_in_progress(self, external_id: str) -> bool:
+        return self._status(external_id) == 'in_progress'
+
+    def mark_in_progress(self, external_id: str) -> None:
+        if self.is_loaded(external_id):
+            return  # never downgrade a completed run
+        self._entries[external_id] = {'status': 'in_progress'}
+        write_json_atomic(self._path, self._entries)
 
     def mark_loaded(self, external_id: str, info: Dict[str, Any]) -> None:
-        self._entries[external_id] = info
+        self._entries[external_id] = {**info, 'status': 'done'}
         write_json_atomic(self._path, self._entries)

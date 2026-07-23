@@ -130,3 +130,29 @@ class TestState:
         reopened = LoadedCache(path)
         assert reopened.is_loaded('wandb::acme/vision/abc123')
         assert not reopened.is_loaded('wandb::acme/vision/other')
+
+    def test_loaded_cache_in_progress_vs_done(self, tmp_path):
+        path = tmp_path / 'loaded_runs.json'
+        c = LoadedCache(path)
+        c.mark_in_progress('wandb::acme/vision/x')
+        assert c.is_in_progress('wandb::acme/vision/x')
+        assert not c.is_loaded('wandb::acme/vision/x')  # in_progress != done
+        # survives a reopen, then promotes to done
+        assert LoadedCache(path).is_in_progress('wandb::acme/vision/x')
+        c.mark_loaded('wandb::acme/vision/x', {'pluto_run_id': 1})
+        assert c.is_loaded('wandb::acme/vision/x')
+        assert not c.is_in_progress('wandb::acme/vision/x')
+
+    def test_legacy_cache_entries_treated_as_done(self, tmp_path):
+        # Pre-existing loaded_runs.json entries have no 'status' field.
+        path = tmp_path / 'loaded_runs.json'
+        write_json_atomic(path, {'wandb::acme/vision/old': {'pluto_run_id': 9}})
+        assert LoadedCache(path).is_loaded('wandb::acme/vision/old')
+
+    def test_corrupt_loaded_cache_does_not_raise(self, tmp_path):
+        # A truncated/empty cache must not abort load(); start fresh + back up.
+        path = tmp_path / 'loaded_runs.json'
+        path.write_text('{ truncated')
+        cache = LoadedCache(path)  # must not raise
+        assert not cache.is_loaded('anything')
+        assert (tmp_path / 'loaded_runs.corrupt').exists()

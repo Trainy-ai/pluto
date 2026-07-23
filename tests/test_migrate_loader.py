@@ -294,6 +294,34 @@ class TestPlutoLoader:
         op._log_metrics_batch.assert_called_once()  # actually re-replayed
         assert LoadedCache(tmp_path / 'loaded_runs.json').is_loaded(EXTERNAL_ID)
 
+    def test_interrupted_run_resumes_and_completes_on_rerun(self, tmp_path, mock_init):
+        # A run created server-side that then crashes mid-replay is marked
+        # in_progress (not done). On a plain re-run the loader must recognize it
+        # started that run and resume to COMPLETE it — not skip it as though it
+        # were fully loaded elsewhere.
+        from pluto.op import RunExistsError
+
+        init, op = mock_init
+        _stage_run(tmp_path)
+        # 1st init succeeds (run created); 2nd re-run init collides; 3rd is the
+        # resume that completes it.
+        init.side_effect = [op, RunExistsError('exists'), op]
+        with mock.patch.object(
+            PlutoLoader,
+            '_replay_run',
+            side_effect=[RuntimeError('crash mid-replay'), None],
+        ):
+            s1 = PlutoLoader(tmp_path).load()  # crashes mid-replay
+            assert s1['loaded'] == 0 and len(s1['failed']) == 1
+            cache = LoadedCache(tmp_path / 'loaded_runs.json')
+            assert cache.is_in_progress(EXTERNAL_ID)  # marker persisted
+            assert not cache.is_loaded(EXTERNAL_ID)
+
+            s2 = PlutoLoader(tmp_path).load()  # re-run resumes + completes
+        assert s2 == {'loaded': 1, 'skipped': 0, 'failed': []}
+        assert init.call_args_list[-1].kwargs['resume'] is True  # healed via resume
+        assert LoadedCache(tmp_path / 'loaded_runs.json').is_loaded(EXTERNAL_ID)
+
     def test_backpressure_throttles_then_gives_up(self, tmp_path, mock_init):
         _, op = mock_init
         op._sync_manager.get_pending_count.side_effect = [10, 10, 3]
@@ -412,3 +440,79 @@ class TestPlutoLoader:
         PlutoLoader(tmp_path, dry_run=True).load()
         out = capsys.readouterr().out
         assert 'would load 1' in out
+
+    def test_histogram_with_null_bins_loads(self, tmp_path, mock_init):
+        # wandb often stores histogram counts with bins=None; this must not
+        # crash the run (real data hit `len(None)` in pluto.Histogram).
+        _, op = mock_init
+        run_dir = tmp_path / 'acme' / 'vision' / 'runs' / 'histrun'
+        run_dir.mkdir(parents=True)
+        write_json_atomic(
+            run_dir / 'run.json',
+            {
+                'entity': 'acme',
+                'project': 'vision',
+                'run_id': 'histrun',
+                'name': 'h',
+                'state': 'finished',
+            },
+        )
+        with PartWriter(run_dir) as w:
+            w.write_row(
+                project_id='acme/vision',
+                run_id='histrun',
+                attribute_path='weights',
+                attribute_type='media',
+                step=0,
+                timestamp_ms=T0_MS,
+                string_value=json.dumps(
+                    {'_type': 'histogram', 'values': [3, 1, 4, 1], 'bins': None}
+                ),
+            )
+        mark_run_exported(run_dir, {'rows': 1})
+        summary = PlutoLoader(tmp_path).load()
+        assert summary == {'loaded': 1, 'skipped': 0, 'failed': []}
+        # the histogram was logged (synthesized bins), not dropped
+        assert _log_calls_with(
+            op, lambda d: any(isinstance(v, pluto.Histogram) for v in d.values())
+        )
+
+    def test_bad_media_row_does_not_fail_whole_run(self, tmp_path, mock_init):
+        # A single unparseable inline-media payload is skipped; the run's other
+        # data still loads and the run is not marked failed.
+        _, op = mock_init
+        run_dir = tmp_path / 'acme' / 'vision' / 'runs' / 'mixrun'
+        run_dir.mkdir(parents=True)
+        write_json_atomic(
+            run_dir / 'run.json',
+            {
+                'entity': 'acme',
+                'project': 'vision',
+                'run_id': 'mixrun',
+                'name': 'm',
+                'state': 'finished',
+            },
+        )
+        with PartWriter(run_dir) as w:
+            w.write_row(
+                project_id='acme/vision',
+                run_id='mixrun',
+                attribute_path='broken',
+                attribute_type='media',
+                step=0,
+                timestamp_ms=T0_MS,
+                string_value='{not valid json',  # json.loads raises
+            )
+            w.write_row(
+                project_id='acme/vision',
+                run_id='mixrun',
+                attribute_path='loss',
+                attribute_type='metric',
+                step=1,
+                timestamp_ms=T0_MS + 1000,
+                float_value=0.5,
+            )
+        mark_run_exported(run_dir, {'rows': 2})
+        summary = PlutoLoader(tmp_path).load()
+        assert summary == {'loaded': 1, 'skipped': 0, 'failed': []}
+        op._log_metrics_batch.assert_called()  # the good metric still replayed
