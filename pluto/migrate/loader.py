@@ -211,11 +211,17 @@ class PlutoLoader:
         tags = list(manifest.get('tags') or [])
         if 'import:wandb' not in tags:
             tags.append('import:wandb')
+        compat: Dict[str, Any] = {
+            'createdAt': manifest.get('createdAt'),
+            'updatedAt': manifest.get('updatedAt'),
+        }
+        # Forward the original run's own metadata (git/OS/GPU/python/args) as
+        # systemMetadata so repro context survives the migration. Only set when
+        # present so normal runs (empty compat) are unaffected.
+        if manifest.get('metadata') is not None:
+            compat['systemMetadata'] = manifest['metadata']
         settings: Dict[str, Any] = {
-            'compat': {
-                'createdAt': manifest.get('createdAt'),
-                'updatedAt': manifest.get('updatedAt'),
-            },
+            'compat': compat,
             # Never attribute the migration host's console/hardware to the
             # imported run.
             'disable_console': True,

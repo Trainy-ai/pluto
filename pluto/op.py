@@ -572,7 +572,13 @@ class Op:
 
         Suppressed under disable_system_metrics so a backfill host's
         hardware isn't recorded as the imported run's systemMetadata.
+        Migration/backfill may instead supply the original run's own
+        systemMetadata via ``compat['systemMetadata']`` to preserve the
+        historical repro context (host/git/python/gpu).
         """
+        override = self.settings.compat.get('systemMetadata')
+        if override is not None:
+            return override
         if self.settings.disable_system_metrics:
             return {}
         return self.settings._sys.get_info()

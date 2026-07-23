@@ -525,6 +525,26 @@ class TestPlutoLoader:
         # order preserved -> sampleIndex 0,1,2 assigned by op.log's enumerate
         assert [img._caption for img in value] == ['c0', 'c1', 'c2']
 
+    def test_run_metadata_forwarded_as_system_metadata(self, tmp_path, mock_init):
+        # run.metadata (git/OS/GPU) is staged; the loader forwards it via
+        # compat['systemMetadata'] so repro context survives the migration.
+        init, _ = mock_init
+        run_dir = _stage_run(tmp_path)
+        manifest = json.loads((run_dir / 'run.json').read_text())
+        manifest['metadata'] = {'gpu': 'H100', 'python': '3.12'}
+        write_json_atomic(run_dir / 'run.json', manifest)
+        PlutoLoader(tmp_path).load()
+        compat = init.call_args.kwargs['settings']['compat']
+        assert compat['systemMetadata'] == {'gpu': 'H100', 'python': '3.12'}
+
+    def test_no_metadata_keeps_compat_clean(self, tmp_path, mock_init):
+        # Runs without metadata must not get a systemMetadata key (normal runs
+        # send empty compat; only migration populates it).
+        init, _ = mock_init
+        _stage_run(tmp_path)  # no 'metadata' in the staged run.json
+        PlutoLoader(tmp_path).load()
+        assert 'systemMetadata' not in init.call_args.kwargs['settings']['compat']
+
     def test_cache_key_includes_dest_project(self, tmp_path, mock_init):
         # Loading the same export into a different dest project must NOT be
         # skipped just because it was loaded into another project.

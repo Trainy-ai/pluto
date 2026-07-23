@@ -158,7 +158,11 @@ def _rows(run_dir, attribute_type=None):
 class TestWandbExporter:
     def test_run_json_manifest(self, tmp_path):
         run, run_dir, summary = _export(tmp_path)
-        assert summary == {'exported': 1, 'skipped': 0, 'failed': []}
+        assert (summary['exported'], summary['skipped'], summary['failed']) == (
+            1,
+            0,
+            [],
+        )
         manifest = read_json(run_dir / 'run.json')
         assert manifest['name'] == 'sunny-lion-1'
         assert manifest['notes'] == 'baseline run'
@@ -262,7 +266,11 @@ class TestWandbExporter:
             entity='acme', project='vision', output_dir=tmp_path, api=FakeApi([run])
         )
         summary = exporter.export()
-        assert summary == {'exported': 0, 'skipped': 1, 'failed': []}
+        assert (summary['exported'], summary['skipped'], summary['failed']) == (
+            0,
+            1,
+            [],
+        )
         assert run.scan_history_calls == 1  # untouched on resume
 
     def test_run_failure_is_recorded_not_raised(self, tmp_path):
@@ -334,3 +342,35 @@ class TestWandbExporter:
         console = _rows(run_dir, 'console')
         heartbeat_ms = 1746100800000  # 2025-05-01T12:00:00Z
         assert console and all(r['timestamp_ms'] == heartbeat_ms for r in console)
+
+    def test_coverage_reports_migrated_and_dropped(self, tmp_path):
+        run = FakeRun()
+        run.scan_history = lambda page_size=1000: iter(
+            [
+                {
+                    '_step': 0,
+                    '_timestamp': T0,
+                    'loss': 1.0,  # migrated metric
+                    'status': 'running',  # string -> not migrated
+                    'chart': {'_type': 'bokeh-file'},  # unsupported -> not migrated
+                    'img': {  # image with dropped annotations
+                        '_type': 'image-file',
+                        'path': 'media/images/sample_3_abc.png',
+                        'boxes': {'predictions': {}},
+                    },
+                }
+            ]
+        )
+        _, _, summary = _export(tmp_path, run=run)
+        cov = summary['coverage']
+        assert cov['migrated'].get('metric') == 1
+        assert cov['migrated'].get('media') == 1
+        assert cov['not_migrated'].get('string-metric') == 1
+        assert cov['not_migrated'].get('unsupported(bokeh-file)') == 1
+        assert cov['not_migrated'].get('image-annotations') == 1
+
+    def test_metadata_staged_for_systemMetadata_forwarding(self, tmp_path):
+        _, run_dir, _ = _export(tmp_path)
+        # run.metadata is staged in run.json; the loader forwards it as
+        # systemMetadata on create (see loader test).
+        assert read_json(run_dir / 'run.json')['metadata'] == {'gpu': 'NVIDIA H100'}

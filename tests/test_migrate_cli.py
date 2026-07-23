@@ -200,6 +200,52 @@ class TestMigrateCli:
             )
         assert code == 1
 
+    def test_strict_fails_when_data_not_migrated(self, tmp_path):
+        cov = {'migrated': {'metric': 10}, 'not_migrated': {'unsupported(bokeh)': 3}}
+        exporter = _mock_exporter(
+            {'exported': 1, 'skipped': 0, 'failed': [], 'coverage': cov}
+        )
+        args = [
+            'wandb',
+            'export',
+            '--entity',
+            'acme',
+            '--project',
+            'vision',
+            '--output',
+            str(tmp_path),
+        ]
+        with mock.patch(
+            'pluto.migrate.wandb_export.WandbExporter', return_value=exporter
+        ):
+            # without --strict: dropped data is reported but exit stays 0
+            assert run_migrate(args) == 0
+            # with --strict: non-zero exit
+            assert run_migrate(args + ['--strict']) == 2
+
+    def test_strict_passes_when_full_coverage(self, tmp_path):
+        cov = {'migrated': {'metric': 10}, 'not_migrated': {}}
+        exporter = _mock_exporter(
+            {'exported': 1, 'skipped': 0, 'failed': [], 'coverage': cov}
+        )
+        with mock.patch(
+            'pluto.migrate.wandb_export.WandbExporter', return_value=exporter
+        ):
+            code = run_migrate(
+                [
+                    'wandb',
+                    'export',
+                    '--entity',
+                    'acme',
+                    '--project',
+                    'vision',
+                    '--output',
+                    str(tmp_path),
+                    '--strict',
+                ]
+            )
+        assert code == 0
+
     def test_top_level_cli_help_does_not_need_migrate_extras(self):
         result = subprocess.run(
             [sys.executable, '-m', 'pluto', 'migrate', '--help'],

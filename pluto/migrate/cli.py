@@ -52,6 +52,12 @@ def _add_export_flags(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         '--no-files', action='store_true', help='skip media/file downloads'
     )
+    parser.add_argument(
+        '--strict',
+        action='store_true',
+        help='exit non-zero if any run had data that could not be migrated '
+        '(unsupported media, string metrics, dropped annotations)',
+    )
 
 
 def _add_load_flags(parser: argparse.ArgumentParser, with_input: bool = True) -> None:
@@ -156,6 +162,15 @@ def _run_export(args: argparse.Namespace) -> int:
     )
     for failure in summary['failed']:
         print(f'  failed {failure["run_id"]}: {failure["error"]}')
+
+    not_migrated = summary.get('coverage', {}).get('not_migrated', {})
+    if not_migrated:
+        dropped = ', '.join(f'{v} {k}' for k, v in sorted(not_migrated.items()))
+        print(f'  NOT migrated: {dropped}')
+        if getattr(args, 'strict', False):
+            print('error: --strict set and some data could not be migrated')
+            return 2
+
     return 1 if summary['failed'] else 0
 
 

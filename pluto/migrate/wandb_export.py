@@ -16,6 +16,7 @@ import logging
 import os
 import re
 import shutil
+from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, TypedDict, Union
@@ -107,6 +108,26 @@ class WandbExporter:
         self.include_files = include_files
         self.history_page_size = history_page_size
         self.system_samples = system_samples
+        # Coverage: what got migrated vs. dropped, so nothing is lost silently.
+        self._cov_migrated: Counter = Counter()  # per-run (reset in _export_run)
+        self._cov_skipped: Counter = Counter()
+        self._cov_migrated_total: Counter = Counter()
+        self._cov_skipped_total: Counter = Counter()
+
+    def _migrated(self, category: str, n: int = 1) -> None:
+        self._cov_migrated[category] += n
+
+    def _skipped(self, category: str, n: int = 1) -> None:
+        self._cov_skipped[category] += n
+
+    @staticmethod
+    def _fmt_coverage(migrated: Counter, skipped: Counter) -> str:
+        m = ', '.join(f'{v} {k}' for k, v in sorted(migrated.items())) or 'nothing'
+        line = f'migrated: {m}'
+        if skipped:
+            s = ', '.join(f'{v} {k}' for k, v in sorted(skipped.items()))
+            line += f'; NOT migrated: {s}'
+        return line
 
     @staticmethod
     def _parse_filter_date(flag: str, value: Optional[str]) -> Optional[int]:
@@ -165,7 +186,22 @@ class WandbExporter:
                 logger.error(f'{tag}: export failed for {run.id}: {e}')
                 failed.append({'run_id': run.id, 'error': f'{type(e).__name__}: {e}'})
 
-        summary = {'exported': exported, 'skipped': skipped, 'failed': failed}
+        coverage = {
+            'migrated': dict(self._cov_migrated_total),
+            'not_migrated': dict(self._cov_skipped_total),
+        }
+        total_cov = self._fmt_coverage(
+            self._cov_migrated_total, self._cov_skipped_total
+        )
+        log = logger.warning if self._cov_skipped_total else logger.info
+        log(f'{tag}: coverage across {exported} run(s) — {total_cov}')
+
+        summary = {
+            'exported': exported,
+            'skipped': skipped,
+            'failed': failed,
+            'coverage': coverage,
+        }
         write_json_atomic(
             self.output_dir / MANIFEST_FILENAME,
             {
@@ -182,6 +218,8 @@ class WandbExporter:
             shutil.rmtree(tmp_dir)  # leftovers from an interrupted export
         tmp_dir.mkdir(parents=True)
 
+        self._cov_migrated = Counter()
+        self._cov_skipped = Counter()
         created_ms = parse_iso_ms(getattr(run, 'created_at', None))
         with PartWriter(tmp_dir) as writer:
             self._write_run_json(run, tmp_dir, created_ms)
@@ -195,6 +233,18 @@ class WandbExporter:
                 self._export_console(run, writer, files_dir, created_ms)
             if self.include_artifacts:
                 self._export_artifacts(run, writer, tmp_dir)
+
+        # Coverage: one clear line per run of what was migrated vs. dropped
+        # (dropped items also surface at WARNING so they're never silent).
+        cov = self._fmt_coverage(self._cov_migrated, self._cov_skipped)
+        logger.info(f'{tag}: {run.id} coverage — {cov}')
+        if self._cov_skipped:
+            dropped = ', '.join(
+                f'{v} {k}' for k, v in sorted(self._cov_skipped.items())
+            )
+            logger.warning(f'{tag}: {run.id} NOT migrated: {dropped}')
+        self._cov_migrated_total.update(self._cov_migrated)
+        self._cov_skipped_total.update(self._cov_skipped)
 
         mark_run_exported(tmp_dir, {'rows': writer.rows_written})
         if run_dir.exists():
@@ -269,10 +319,21 @@ class WandbExporter:
                 timestamp_ms=timestamp_ms,
                 float_value=float(value),
             )
+            self._migrated('metric')
+            return
+        if isinstance(value, str):
+            # String-valued history (e.g. a status string logged per step) has
+            # no numeric/media home in the schema; count it so it isn't lost
+            # silently.
+            self._skipped('string-metric')
             return
         if isinstance(value, dict):
             media_type = value.get('_type')
             if media_type in _FILE_MEDIA_TYPES and value.get('path'):
+                # Bounding boxes / segmentation masks ride on the image value
+                # but aren't part of the media file — flag that they're dropped.
+                if value.get('boxes') or value.get('masks'):
+                    self._skipped('image-annotations')
                 writer.write_row(
                     **base,
                     attribute_path=key,
@@ -283,6 +344,7 @@ class WandbExporter:
                     file_value=f'files/{value["path"]}',
                     caption=value.get('caption'),
                 )
+                self._migrated('media')
             elif media_type == 'histogram':
                 writer.write_row(
                     **base,
@@ -298,6 +360,7 @@ class WandbExporter:
                         }
                     ),
                 )
+                self._migrated('histogram')
             elif media_type == 'images/separated' and value.get('filenames'):
                 captions = value.get('captions') or []
                 for i, filename in enumerate(value['filenames']):
@@ -311,11 +374,14 @@ class WandbExporter:
                         file_value=f'files/{filename}',
                         caption=captions[i] if i < len(captions) else None,
                     )
+                self._migrated('media', len(value['filenames']))
             else:
-                logger.debug(
-                    f'{tag}: skipping unsupported history value '
-                    f'{key!r} (_type={media_type!r})'
-                )
+                # Unknown wandb media type (custom chart, molecule, bokeh, a
+                # partitioned/joined table, ...). Count by type so the coverage
+                # report says exactly what was dropped.
+                self._skipped(f'unsupported({media_type})')
+        else:
+            self._skipped(f'unsupported({type(value).__name__})')
 
     def _export_system_metrics(self, run: Any, writer: PartWriter) -> None:
         base = self._row_base(run)
@@ -356,6 +422,7 @@ class WandbExporter:
                     timestamp_ms=timestamp_ms,
                     float_value=float(value),
                 )
+                self._migrated('system-metric')
 
     def _download_files(self, run: Any, files_dir: Path) -> None:
         files_dir.mkdir(parents=True, exist_ok=True)
@@ -406,6 +473,7 @@ class WandbExporter:
                     timestamp_ms=timestamp_ms,
                     string_value=message,
                 )
+                self._migrated('console-line')
 
     @staticmethod
     def _parse_console_line_time(message: str, fallback_ms: int) -> int:
@@ -436,12 +504,14 @@ class WandbExporter:
                     f'{tag}: skipping artifact {artifact.name} '
                     f'({size} bytes > cap {self.artifact_max_bytes})'
                 )
+                self._skipped('artifact-over-size-cap')
                 continue
             dest = tmp_dir / 'artifacts' / artifact.name
             try:
                 artifact.download(root=str(dest))
             except Exception as e:
                 logger.warning(f'{tag}: failed to download {artifact.name}: {e}')
+                self._skipped('artifact-download-failed')
                 continue
             timestamp_ms = parse_iso_ms(getattr(artifact, 'created_at', None)) or 0
             meta = json.dumps(
@@ -461,3 +531,4 @@ class WandbExporter:
                     string_value=meta,
                     file_value=str(path.relative_to(tmp_dir)),
                 )
+                self._migrated('artifact-file')
