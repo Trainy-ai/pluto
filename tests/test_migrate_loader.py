@@ -31,6 +31,9 @@ CREATED_AT_MS = 1746093600000
 UPDATED_AT_MS = CREATED_AT_MS + 7200000
 T0_MS = 1746093601000
 EXTERNAL_ID = 'wandb::acme/vision/abc123'
+# The load cache is keyed by (external id, destination project); _stage_run
+# uses project 'vision' and tests don't override dest_project.
+CACHE_KEY = f'{EXTERNAL_ID}@@vision'
 
 
 def _stage_run(tmp_path, run_id='abc123', state='finished'):
@@ -247,7 +250,7 @@ class TestPlutoLoader:
         init, op = mock_init
         _stage_run(tmp_path)
         PlutoLoader(tmp_path).load()
-        assert LoadedCache(tmp_path / 'loaded_runs.json').is_loaded(EXTERNAL_ID)
+        assert LoadedCache(tmp_path / 'loaded_runs.json').is_loaded(CACHE_KEY)
 
         init.reset_mock()
         summary = PlutoLoader(tmp_path).load()
@@ -272,7 +275,7 @@ class TestPlutoLoader:
         assert summary == {'loaded': 0, 'skipped': 1, 'failed': []}
         assert init.call_count == 1  # no second (resume) init
         op._log_metrics_batch.assert_not_called()  # nothing re-replayed
-        assert LoadedCache(tmp_path / 'loaded_runs.json').is_loaded(EXTERNAL_ID)
+        assert LoadedCache(tmp_path / 'loaded_runs.json').is_loaded(CACHE_KEY)
 
     def test_external_id_collision_replays_with_force_resume(self, tmp_path, mock_init):
         # force_resume opts into healing a genuinely interrupted load: resume
@@ -292,7 +295,7 @@ class TestPlutoLoader:
         assert init.call_count == 2
         assert init.call_args_list[1].kwargs['resume'] is True
         op._log_metrics_batch.assert_called_once()  # actually re-replayed
-        assert LoadedCache(tmp_path / 'loaded_runs.json').is_loaded(EXTERNAL_ID)
+        assert LoadedCache(tmp_path / 'loaded_runs.json').is_loaded(CACHE_KEY)
 
     def test_interrupted_run_resumes_and_completes_on_rerun(self, tmp_path, mock_init):
         # A run created server-side that then crashes mid-replay is marked
@@ -314,13 +317,13 @@ class TestPlutoLoader:
             s1 = PlutoLoader(tmp_path).load()  # crashes mid-replay
             assert s1['loaded'] == 0 and len(s1['failed']) == 1
             cache = LoadedCache(tmp_path / 'loaded_runs.json')
-            assert cache.is_in_progress(EXTERNAL_ID)  # marker persisted
-            assert not cache.is_loaded(EXTERNAL_ID)
+            assert cache.is_in_progress(CACHE_KEY)  # marker persisted
+            assert not cache.is_loaded(CACHE_KEY)
 
             s2 = PlutoLoader(tmp_path).load()  # re-run resumes + completes
         assert s2 == {'loaded': 1, 'skipped': 0, 'failed': []}
         assert init.call_args_list[-1].kwargs['resume'] is True  # healed via resume
-        assert LoadedCache(tmp_path / 'loaded_runs.json').is_loaded(EXTERNAL_ID)
+        assert LoadedCache(tmp_path / 'loaded_runs.json').is_loaded(CACHE_KEY)
 
     def test_backpressure_throttles_then_gives_up(self, tmp_path, mock_init):
         _, op = mock_init
@@ -476,6 +479,63 @@ class TestPlutoLoader:
         assert _log_calls_with(
             op, lambda d: any(isinstance(v, pluto.Histogram) for v in d.values())
         )
+
+    def test_multi_image_step_logged_as_ordered_list(self, tmp_path, mock_init):
+        # An image gallery (many media rows sharing name+step+timestamp) must be
+        # logged in ONE op.log call as a list, so each image gets its sampleIndex
+        # (0,1,2) and the server preserves logged order — not 3 separate calls
+        # that all collapse to sampleIndex 0.
+        _, op = mock_init
+        run_dir = tmp_path / 'acme' / 'vision' / 'runs' / 'galrun'
+        run_dir.mkdir(parents=True)
+        write_json_atomic(
+            run_dir / 'run.json',
+            {
+                'entity': 'acme',
+                'project': 'vision',
+                'run_id': 'galrun',
+                'name': 'g',
+                'state': 'finished',
+            },
+        )
+        for i in range(3):
+            f = run_dir / 'files' / f'idx{i}.png'
+            f.parent.mkdir(parents=True, exist_ok=True)
+            f.write_bytes(b'PNG')
+        with PartWriter(run_dir) as w:
+            for i in range(3):
+                w.write_row(
+                    project_id='acme/vision',
+                    run_id='galrun',
+                    attribute_path='gallery',
+                    attribute_type='media',
+                    step=5,
+                    timestamp_ms=T0_MS,
+                    string_value='image-file',
+                    file_value=f'files/idx{i}.png',
+                    caption=f'c{i}',
+                )
+        mark_run_exported(run_dir, {'rows': 3})
+        summary = PlutoLoader(tmp_path).load()
+        assert summary == {'loaded': 1, 'skipped': 0, 'failed': []}
+        gallery_calls = _log_calls_with(op, lambda d: 'gallery' in d)
+        assert len(gallery_calls) == 1  # ONE batched call, not three
+        value = gallery_calls[0].args[0]['gallery']
+        assert isinstance(value, list) and len(value) == 3
+        # order preserved -> sampleIndex 0,1,2 assigned by op.log's enumerate
+        assert [img._caption for img in value] == ['c0', 'c1', 'c2']
+
+    def test_cache_key_includes_dest_project(self, tmp_path, mock_init):
+        # Loading the same export into a different dest project must NOT be
+        # skipped just because it was loaded into another project.
+        _stage_run(tmp_path)
+        PlutoLoader(tmp_path, dest_project='proj-a').load()
+        cache = LoadedCache(tmp_path / 'loaded_runs.json')
+        assert cache.is_loaded(f'{EXTERNAL_ID}@@proj-a')
+        assert not cache.is_loaded(f'{EXTERNAL_ID}@@proj-b')  # different dest
+        # a second load into proj-b actually runs (not skipped)
+        s = PlutoLoader(tmp_path, dest_project='proj-b').load()
+        assert s['loaded'] == 1 and s['skipped'] == 0
 
     def test_bad_media_row_does_not_fail_whole_run(self, tmp_path, mock_init):
         # A single unparseable inline-media payload is skipped; the run's other

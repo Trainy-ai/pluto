@@ -122,8 +122,15 @@ class PlutoLoader:
 
             if self.run_ids is not None and run_id not in self.run_ids:
                 continue
-            if cache.is_loaded(external_id) and not self.force_resume:
-                logger.info(f'{tag}: {external_id} already loaded, skipping')
+            # Key the load cache on (run, destination project) so loading the
+            # same export into a *different* Pluto project isn't wrongly skipped.
+            dest_project = self.dest_project or manifest['project']
+            cache_key = f'{external_id}@@{dest_project}'
+            if cache.is_loaded(cache_key) and not self.force_resume:
+                logger.info(
+                    f'{tag}: {external_id} already loaded into {dest_project!r}, '
+                    'skipping'
+                )
                 skipped += 1
                 continue
             if self.dry_run:
@@ -138,10 +145,10 @@ class PlutoLoader:
                     # Remember, before replaying, that we created this run. If
                     # replay crashes now, a later re-run sees the in_progress
                     # marker and resumes to complete it (rather than skipping).
-                    cache.mark_in_progress(external_id)
+                    cache.mark_in_progress(cache_key)
                 except RunExistsError:
                     # The run exists server-side but isn't marked done here.
-                    if self.force_resume or cache.is_in_progress(external_id):
+                    if self.force_resume or cache.is_in_progress(cache_key):
                         # We started this run before and it didn't finish (crash
                         # mid-replay), or the user forced it: resume and
                         # re-replay to complete it. Metric points dedup by their
@@ -152,7 +159,7 @@ class PlutoLoader:
                             'finished; resuming to complete it (media may '
                             'duplicate)'
                         )
-                        cache.mark_in_progress(external_id)
+                        cache.mark_in_progress(cache_key)
                         op = self._init_run(manifest, external_id, resume=True)
                     else:
                         # Exists but we never started it here (e.g. loaded on
@@ -163,13 +170,13 @@ class PlutoLoader:
                             'skipping (pass --force-resume to resume and '
                             're-replay)'
                         )
-                        cache.mark_loaded(external_id, {'note': 'existed-on-server'})
+                        cache.mark_loaded(cache_key, {'note': 'existed-on-server'})
                         skipped += 1
                         continue
 
                 self._replay_run(run_dir, op)
                 op.finish(code=0 if manifest.get('state') == 'finished' else 1)
-                cache.mark_loaded(external_id, {'pluto_run_id': op.settings._op_id})
+                cache.mark_loaded(cache_key, {'pluto_run_id': op.settings._op_id})
                 loaded += 1
                 logger.info(f'{tag}: loaded {external_id}')
             except Exception as e:
@@ -285,10 +292,28 @@ class PlutoLoader:
                 nonmetric_since_check = 0
                 self._wait_for_backpressure(op)
 
+        # Media grouping: consecutive media rows sharing (name, step, timestamp)
+        # are one logged batch (e.g. wandb.log({"gallery": [img0, img1, ...]})).
+        # Logging them as a single list makes op.log assign each item its
+        # sampleIndex (0,1,2,...), which the server uses to preserve logged
+        # order — one op.log per row would make every item sampleIndex 0.
+        media_key: Optional[Tuple[str, int, int]] = None
+        media_items: List[Any] = []
+
+        def flush_media() -> None:
+            nonlocal media_key, media_items
+            if media_key is not None and media_items:
+                name, step, ts_ms = media_key
+                value = media_items[0] if len(media_items) == 1 else media_items
+                op.log({name: value}, step=step, timestamp=ts_ms / 1000)
+                note_nonmetric(len(media_items))
+            media_key, media_items = None, []
+
         for table in iter_part_tables(run_dir):
             for row in table.to_pylist():
                 attr_type = row['attribute_type']
                 if attr_type in ('metric', 'system_metric'):
+                    flush_media()
                     key = (attr_type, row['step'], row['timestamp_ms'])
                     if key != group_key:
                         close_group()
@@ -304,15 +329,27 @@ class PlutoLoader:
                     # One malformed media/histogram row must not abort the whole
                     # run's replay — skip it and keep the rest of the run's data.
                     try:
-                        self._replay_media(run_dir, op, row)
+                        value = self._build_media_value(run_dir, row)
                     except Exception as e:
                         logger.warning(
                             f'{tag}: skipping bad media row '
                             f'{row.get("attribute_path")!r} @ step '
                             f'{row.get("step")}: {type(e).__name__}: {e}'
                         )
-                    note_nonmetric()
-                elif attr_type == 'console':
+                        value = None
+                    if value is not None:
+                        mkey = (
+                            row['attribute_path'],
+                            row['step'],
+                            row['timestamp_ms'],
+                        )
+                        if mkey != media_key:
+                            flush_media()
+                            media_key = mkey
+                        media_items.append(value)
+                    continue
+                flush_media()  # any non-media row ends the current media batch
+                if attr_type == 'console':
                     console_lines.append(
                         (
                             row['string_value'] or '',
@@ -336,16 +373,22 @@ class PlutoLoader:
                         )
                     note_nonmetric()
 
+        flush_media()
         close_group()
         flush_pending(force=True)
         if console_lines:
             op._log_console(console_lines)
             self._wait_for_backpressure(op)
 
-    def _replay_media(self, run_dir: Path, op: Any, row: Dict[str, Any]) -> None:
+    def _build_media_value(self, run_dir: Path, row: Dict[str, Any]) -> Optional[Any]:
+        """Convert one staged media row into a pluto media value.
+
+        Returns None to skip the row (missing file, empty histogram, unknown
+        inline type). The caller batches consecutive same-key values so a
+        multi-sample step (e.g. an image gallery) keeps its logged order.
+        """
         name = row['attribute_path']
         step = row['step']
-        timestamp = row['timestamp_ms'] / 1000
         media_type = row['string_value'] or ''
 
         if media_type.startswith('{'):  # inline JSON (histogram)
@@ -358,7 +401,7 @@ class PlutoLoader:
                         f'{tag}: histogram {name!r} @ step {step} has no '
                         'values, skipping'
                     )
-                    return
+                    return None
                 if bins is None:
                     # wandb frequently stores histogram counts without bin
                     # edges. pluto.Histogram's pre-binned form needs
@@ -366,12 +409,8 @@ class PlutoLoader:
                     # edges — the counts are preserved, only the x-axis is
                     # generic.
                     bins = list(range(len(values) + 1))
-                op.log(
-                    {name: pluto.Histogram([values, bins], bins=None)},
-                    step=step,
-                    timestamp=timestamp,
-                )
-            return
+                return pluto.Histogram([values, bins], bins=None)
+            return None  # unknown inline media type
 
         path = _resolve_within(run_dir, row['file_value'])
         if path is None or not path.exists():
@@ -379,26 +418,20 @@ class PlutoLoader:
                 f'{tag}: media file missing for {name!r} '
                 f'({row["file_value"]}), skipping'
             )
-            return
+            return None
 
         caption = row['caption']
         if media_type == 'table-file':
-            try:
-                table_json = read_json(path)
-                value: Any = pluto.Table(
-                    data=table_json.get('data'),
-                    columns=table_json.get('columns', []),
-                )
-            except Exception as e:
-                logger.warning(f'{tag}: bad table file {path}: {e}')
-                return
-        else:
-            make = _MEDIA_LOADERS.get(media_type)
-            if make is not None:
-                value = make(str(path), caption=caption)
-            else:  # plotly/html/object3D/unknown -> raw artifact
-                value = pluto.Artifact(str(path), caption=caption)
-        op.log({name: value}, step=step, timestamp=timestamp)
+            table_json = read_json(path)
+            return pluto.Table(
+                data=table_json.get('data'),
+                columns=table_json.get('columns', []),
+            )
+        make = _MEDIA_LOADERS.get(media_type)
+        if make is not None:
+            return make(str(path), caption=caption)
+        # plotly/html/object3D/unknown -> raw artifact
+        return pluto.Artifact(str(path), caption=caption)
 
     def _replay_artifact(self, run_dir: Path, op: Any, row: Dict[str, Any]) -> None:
         path = _resolve_within(run_dir, row['file_value'])
