@@ -293,3 +293,44 @@ class TestWandbExporter:
         assert summary['exported'] == 1
         assert (tmp_path / 'acme/vision/runs/keep').exists()
         assert not (tmp_path / 'acme/vision/runs/drop').exists()
+
+    @pytest.mark.parametrize('flag', ['after', 'before'])
+    def test_unparseable_date_filter_raises(self, tmp_path, flag):
+        # A typo like 2024/01/01 must fail loudly, not silently drop the filter
+        # and export everything.
+        with pytest.raises(ValueError, match='could not parse date'):
+            WandbExporter(
+                entity='acme',
+                project='vision',
+                output_dir=tmp_path,
+                api=FakeApi([]),
+                **{flag: '2024/01/01'},
+            )
+
+    def test_missing_date_filter_is_none(self, tmp_path):
+        # Not supplying the flag is fine (no filter), distinct from a bad value.
+        exp = WandbExporter(
+            entity='acme', project='vision', output_dir=tmp_path, api=FakeApi([])
+        )
+        assert exp.after_ms is None and exp.before_ms is None
+
+    def test_boolean_metric_recorded_as_float(self, tmp_path):
+        run = FakeRun()
+        run.scan_history = lambda page_size=1000: iter(
+            [{'_step': 0, '_timestamp': T0, 'is_best': True, 'was_worse': False}]
+        )
+        _, run_dir, _ = _export(tmp_path, run=run)
+        metrics = {
+            r['attribute_path']: r['float_value'] for r in _rows(run_dir, 'metric')
+        }
+        assert metrics['is_best'] == 1.0
+        assert metrics['was_worse'] == 0.0
+
+    def test_console_falls_back_to_heartbeat_when_created_at_missing(self, tmp_path):
+        run = FakeRun(output_log=b'no timestamp here\n')
+        run.created_at = 'not-a-date'  # unparseable -> None
+        # heartbeat_at stays valid; console lines should use it, not epoch 0.
+        _, run_dir, _ = _export(tmp_path, run=run)
+        console = _rows(run_dir, 'console')
+        heartbeat_ms = 1746100800000  # 2025-05-01T12:00:00Z
+        assert console and all(r['timestamp_ms'] == heartbeat_ms for r in console)

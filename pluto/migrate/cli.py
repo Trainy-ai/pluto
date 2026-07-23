@@ -126,24 +126,29 @@ def _run_export(args: argparse.Namespace) -> int:
         print(f'{_INSTALL_HINT} ({e})')
         return 2
 
-    exporter = WandbExporter(
-        entity=args.entity,
-        project=args.project,
-        output_dir=args.output,
-        api_key=args.wandb_api_key,
-        run_ids=args.run_ids,
-        after=args.after,
-        before=args.before,
-        include_artifacts=not args.no_artifacts,
-        artifact_max_bytes=(
-            args.artifact_max_size_mb * 1024 * 1024
-            if args.artifact_max_size_mb is not None
-            else None
-        ),
-        include_console=not args.no_console,
-        include_system=not args.no_system_metrics,
-        include_files=not args.no_files,
-    )
+    try:
+        exporter = WandbExporter(
+            entity=args.entity,
+            project=args.project,
+            output_dir=args.output,
+            api_key=args.wandb_api_key,
+            run_ids=args.run_ids,
+            after=args.after,
+            before=args.before,
+            include_artifacts=not args.no_artifacts,
+            artifact_max_bytes=(
+                args.artifact_max_size_mb * 1024 * 1024
+                if args.artifact_max_size_mb is not None
+                else None
+            ),
+            include_console=not args.no_console,
+            include_system=not args.no_system_metrics,
+            include_files=not args.no_files,
+        )
+    except ValueError as e:
+        # e.g. an unparseable --after/--before value.
+        print(f'error: {e}')
+        return 2
     summary = exporter.export()
     print(
         f'export: {summary["exported"]} exported, {summary["skipped"]} skipped, '
@@ -171,10 +176,13 @@ def _run_load(args: argparse.Namespace, input_dir: Optional[str] = None) -> int:
         force_resume=args.force_resume,
     )
     summary = loader.load()
-    print(
-        f'load: {summary["loaded"]} loaded, {summary["skipped"]} skipped, '
-        f'{len(summary["failed"])} failed'
-    )
+    # In dry-run the loader already printed an accurate "would load N" summary;
+    # printing "0 loaded" here would misleadingly imply nothing would happen.
+    if not args.dry_run:
+        print(
+            f'load: {summary["loaded"]} loaded, {summary["skipped"]} skipped, '
+            f'{len(summary["failed"])} failed'
+        )
     for failure in summary['failed']:
         print(f'  failed {failure["run_id"]}: {failure["error"]}')
     return 1 if summary['failed'] else 0

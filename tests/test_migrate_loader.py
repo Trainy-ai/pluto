@@ -254,10 +254,29 @@ class TestPlutoLoader:
         assert summary == {'loaded': 0, 'skipped': 1, 'failed': []}
         init.assert_not_called()
 
-    def test_external_id_collision_resumes_and_replays(self, tmp_path, mock_init):
-        # A collision means a previous load created the run but never made
-        # it into loaded_runs.json (e.g. crashed mid-replay) — the loader
-        # must resume and re-replay, not skip and lose the remaining data.
+    def test_external_id_collision_skips_by_default(self, tmp_path, mock_init):
+        # A collision means the run already exists server-side but isn't in the
+        # local cache. Re-replaying would duplicate media, so by default the
+        # loader skips it (and records it so future re-runs skip via cache),
+        # rather than resuming and re-uploading.
+        from pluto.op import RunExistsError
+
+        init, op = mock_init
+        init.side_effect = [
+            RunExistsError(
+                "Run with externalId 'wandb::acme/vision/abc123' already exists."
+            ),
+        ]
+        _stage_run(tmp_path)
+        summary = PlutoLoader(tmp_path).load()
+        assert summary == {'loaded': 0, 'skipped': 1, 'failed': []}
+        assert init.call_count == 1  # no second (resume) init
+        op._log_metrics_batch.assert_not_called()  # nothing re-replayed
+        assert LoadedCache(tmp_path / 'loaded_runs.json').is_loaded(EXTERNAL_ID)
+
+    def test_external_id_collision_replays_with_force_resume(self, tmp_path, mock_init):
+        # force_resume opts into healing a genuinely interrupted load: resume
+        # the existing run and re-replay (accepting possible media duplication).
         from pluto.op import RunExistsError
 
         init, op = mock_init
@@ -268,10 +287,9 @@ class TestPlutoLoader:
             op,
         ]
         _stage_run(tmp_path)
-        summary = PlutoLoader(tmp_path).load()
+        summary = PlutoLoader(tmp_path, force_resume=True).load()
         assert summary == {'loaded': 1, 'skipped': 0, 'failed': []}
         assert init.call_count == 2
-        assert init.call_args_list[0].kwargs['resume'] is False
         assert init.call_args_list[1].kwargs['resume'] is True
         op._log_metrics_batch.assert_called_once()  # actually re-replayed
         assert LoadedCache(tmp_path / 'loaded_runs.json').is_loaded(EXTERNAL_ID)
@@ -314,3 +332,83 @@ class TestPlutoLoader:
         assert not _log_calls_with(
             op, lambda d: any(isinstance(v, pluto.Image) for v in d.values())
         )
+
+    def test_unreadable_manifest_recorded_and_batch_continues(
+        self, tmp_path, mock_init
+    ):
+        # One run's run.json is corrupt; the other must still load and the bad
+        # one is recorded in failed[] rather than aborting the whole batch.
+        _stage_run(tmp_path, run_id='good1')
+        bad = _stage_run(tmp_path, run_id='bad1')
+        (bad / 'run.json').write_text('{ truncated')  # invalid JSON
+        summary = PlutoLoader(tmp_path).load()
+        assert summary['loaded'] == 1
+        assert len(summary['failed']) == 1
+        assert summary['failed'][0]['run_id'] == 'bad1'
+
+    def test_init_failure_recorded_and_batch_continues(self, tmp_path, mock_init):
+        # A non-RunExistsError from pluto.init on one run must not abort the
+        # batch; it is recorded as failed and the next run still loads.
+        init, op = mock_init
+        _stage_run(tmp_path, run_id='aaa1')
+        _stage_run(tmp_path, run_id='bbb2')
+        init.side_effect = [ConnectionError('server down'), op]
+        summary = PlutoLoader(tmp_path).load()
+        assert summary['loaded'] == 1
+        assert len(summary['failed']) == 1
+        assert 'ConnectionError' in summary['failed'][0]['error']
+
+    def test_dead_sync_process_fails_fast(self, tmp_path, mock_init):
+        # If the sync subprocess has exited, backpressure must raise (recorded
+        # as a failed run) instead of sleeping out the full stall_timeout.
+        _, op = mock_init
+        op._sync_manager.get_pending_count.return_value = 999
+        op._sync_manager._process.poll.return_value = 1  # exited, code 1
+        _stage_run(tmp_path)
+        summary = PlutoLoader(tmp_path, max_pending=5, stall_timeout=600).load()
+        assert summary['loaded'] == 0
+        assert len(summary['failed']) == 1
+        assert 'sync process exited' in summary['failed'][0]['error']
+
+    def test_path_traversal_media_refused(self, tmp_path, mock_init):
+        # A media row whose file_value escapes the run dir must be refused, not
+        # read+uploaded off the host.
+        _, op = mock_init
+        run_dir = tmp_path / 'acme' / 'vision' / 'runs' / 'evil1'
+        run_dir.mkdir(parents=True)
+        write_json_atomic(
+            run_dir / 'run.json',
+            {
+                'entity': 'acme',
+                'project': 'vision',
+                'run_id': 'evil1',
+                'name': 'evil',
+                'state': 'finished',
+            },
+        )
+        outside = tmp_path / 'secret.txt'
+        outside.write_bytes(b'top secret')
+        with PartWriter(run_dir) as w:
+            w.write_row(
+                project_id='acme/vision',
+                run_id='evil1',
+                attribute_path='sneaky',
+                attribute_type='media',
+                step=0,
+                timestamp_ms=T0_MS,
+                string_value='image-file',
+                file_value='../../../../secret.txt',
+            )
+        mark_run_exported(run_dir, {'rows': 1})
+        summary = PlutoLoader(tmp_path).load()
+        assert summary['loaded'] == 1  # run itself loads
+        # ...but the out-of-bounds file was never turned into an upload.
+        assert not _log_calls_with(
+            op, lambda d: any(isinstance(v, pluto.Image) for v in d.values())
+        )
+
+    def test_dry_run_reports_would_load(self, tmp_path, mock_init, capsys):
+        _stage_run(tmp_path)
+        PlutoLoader(tmp_path, dry_run=True).load()
+        out = capsys.readouterr().out
+        assert 'would load 1' in out

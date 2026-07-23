@@ -5,12 +5,18 @@ Replays each exported run — run.json manifest plus parquet parts — as a
 Pluto run with the ORIGINAL wall-clock timestamps (``op.log(timestamp=)``)
 and creation time (``settings.compat`` createdAt/updatedAt). Idempotency
 is run-level: a ``run_id`` external id (``wandb::{entity}/{project}/{id}``)
-makes re-creation collide server-side (the loader then resumes and
-re-replays, so an interrupted load heals on the next run), and
-``loaded_runs.json`` records finished loads so re-runs skip them.
-Replayed metric points carry identical staged timestamps, so the
-backend's replace-by-time dedup makes re-replays safe for metrics;
-re-replayed media files may duplicate.
+makes re-creation collide server-side. ``loaded_runs.json`` records
+finished loads so re-runs skip them; a run that already exists on the
+server but isn't in the local cache is skipped by default rather than
+re-replayed, because re-replaying would duplicate media. Pass
+``force_resume`` to intentionally resume and re-replay such a run
+(metric points carry identical staged timestamps, so the backend's
+replace-by-time dedup keeps metrics safe; media may duplicate).
+
+Each run is loaded independently: a single run failing (unreadable
+manifest, init error, replay error, dead sync process) is recorded in
+``failed`` and never aborts the rest of the batch, so a re-run retries
+only the runs that did not finish.
 """
 
 from __future__ import annotations
@@ -45,6 +51,27 @@ _MEDIA_LOADERS = {
 }
 
 
+def _resolve_within(run_dir: Path, rel: Optional[str]) -> Optional[Path]:
+    """Resolve a staged file path, rejecting anything outside ``run_dir``.
+
+    A malicious or corrupt part row could carry an absolute path or a
+    ``..`` sequence in ``file_value``; without this guard the loader would
+    happily read and upload arbitrary host files (e.g. ``/etc/passwd``).
+    Symlinks are resolved too, so a symlink pointing outside is rejected.
+    Returns None for empty/out-of-bounds paths (caller treats as missing).
+    """
+    if not rel:
+        return None
+    base = run_dir.resolve()
+    candidate = (run_dir / rel).resolve()
+    try:
+        candidate.relative_to(base)
+    except ValueError:
+        logger.warning(f'{tag}: refusing staged file outside run dir: {rel!r}')
+        return None
+    return candidate
+
+
 class PlutoLoader:
     """Replay a pluto.migrate export directory into Pluto."""
 
@@ -69,39 +96,67 @@ class PlutoLoader:
         self.stall_timeout = stall_timeout
 
     def load(self) -> Dict[str, Any]:
-        """Load all staged runs. Returns {'loaded', 'skipped', 'failed'}."""
-        loaded, skipped = 0, 0
+        """Load all staged runs. Returns {'loaded', 'skipped', 'failed'}.
+
+        Each run is isolated: any failure (unreadable manifest, init error,
+        replay error) is recorded in ``failed`` and the batch continues.
+        """
+        loaded, skipped, would_load = 0, 0, 0
         failed: List[Dict[str, str]] = []
         cache = LoadedCache(self.input_dir / LOADED_CACHE_FILENAME)
 
         for run_dir in self._discover_runs():
-            manifest = read_json(run_dir / 'run.json')
-            run_id = manifest['run_id']
+            # A truncated/hand-edited run.json must not sink the whole batch.
+            try:
+                manifest = read_json(run_dir / 'run.json')
+                run_id = manifest['run_id']
+                external_id = (
+                    f'wandb::{manifest["entity"]}/{manifest["project"]}/{run_id}'
+                )
+            except Exception as e:
+                logger.error(f'{tag}: unreadable manifest in {run_dir}: {e}')
+                failed.append(
+                    {'run_id': run_dir.name, 'error': f'{type(e).__name__}: {e}'}
+                )
+                continue
+
             if self.run_ids is not None and run_id not in self.run_ids:
                 continue
-            external_id = f'wandb::{manifest["entity"]}/{manifest["project"]}/{run_id}'
             if cache.is_loaded(external_id) and not self.force_resume:
                 logger.info(f'{tag}: {external_id} already loaded, skipping')
                 skipped += 1
                 continue
             if self.dry_run:
                 self._print_dry_run(run_dir, manifest, external_id)
+                would_load += 1
                 continue
 
+            op = None
             try:
-                op = self._init_run(manifest, external_id)
-            except RunExistsError:
-                # The run exists server-side but isn't in loaded_runs.json —
-                # a previous load was interrupted mid-replay. Resume and
-                # re-replay (metrics dedup by identical timestamps; media
-                # from the interrupted portion may duplicate).
-                logger.warning(
-                    f'{tag}: {external_id} already exists on server '
-                    '(previous load interrupted?); resuming to re-replay'
-                )
-                op = self._init_run(manifest, external_id, resume=True)
+                try:
+                    op = self._init_run(manifest, external_id)
+                except RunExistsError:
+                    # The run exists server-side but isn't in loaded_runs.json.
+                    # Re-replaying would duplicate media, so by default treat it
+                    # as already loaded and skip; record it so future re-runs
+                    # skip via the cache. force_resume opts into resume +
+                    # re-replay (e.g. to heal a genuinely interrupted load).
+                    if not self.force_resume:
+                        logger.info(
+                            f'{tag}: {external_id} already exists on server; '
+                            'skipping (pass --force-resume to resume and '
+                            're-replay)'
+                        )
+                        cache.mark_loaded(external_id, {'note': 'existed-on-server'})
+                        skipped += 1
+                        continue
+                    logger.warning(
+                        f'{tag}: {external_id} already exists on server; '
+                        'resuming to re-replay (--force-resume; media may '
+                        'duplicate)'
+                    )
+                    op = self._init_run(manifest, external_id, resume=True)
 
-            try:
                 self._replay_run(run_dir, op)
                 op.finish(code=0 if manifest.get('state') == 'finished' else 1)
                 cache.mark_loaded(external_id, {'pluto_run_id': op.settings._op_id})
@@ -110,11 +165,17 @@ class PlutoLoader:
             except Exception as e:
                 logger.error(f'{tag}: load failed for {external_id}: {e}')
                 failed.append({'run_id': run_id, 'error': f'{type(e).__name__}: {e}'})
-                try:
-                    op.finish(code=1)
-                except Exception:
-                    pass
+                if op is not None:
+                    try:
+                        op.finish(code=1)
+                    except Exception:
+                        pass
 
+        if self.dry_run:
+            print(
+                f'[dry-run] would load {would_load} run(s); '
+                f'{skipped} already loaded (would skip)'
+            )
         return {'loaded': loaded, 'skipped': skipped, 'failed': failed}
 
     def _discover_runs(self) -> List[Path]:
@@ -201,6 +262,19 @@ class PlutoLoader:
                 pending_groups.clear()
                 self._wait_for_backpressure(op)
 
+        # Media/console/artifact rows enqueue outside the scalar-metric flush,
+        # so they need their own backpressure cadence — otherwise a run that is
+        # mostly images/logs (few scalars) never triggers _wait_for_backpressure
+        # and can balloon the sync queue / staged files past max_pending.
+        nonmetric_since_check = 0
+
+        def note_nonmetric(n: int = 1) -> None:
+            nonlocal nonmetric_since_check
+            nonmetric_since_check += n
+            if nonmetric_since_check >= self.flush_every:
+                nonmetric_since_check = 0
+                self._wait_for_backpressure(op)
+
         for table in iter_part_tables(run_dir):
             for row in table.to_pylist():
                 attr_type = row['attribute_type']
@@ -218,6 +292,7 @@ class PlutoLoader:
                 close_group()
                 if attr_type == 'media':
                     self._replay_media(run_dir, op, row)
+                    note_nonmetric()
                 elif attr_type == 'console':
                     console_lines.append(
                         (
@@ -229,14 +304,17 @@ class PlutoLoader:
                     )
                     if len(console_lines) >= CONSOLE_BATCH_SIZE:
                         op._log_console(console_lines)
+                        note_nonmetric(len(console_lines))
                         console_lines = []
                 elif attr_type == 'artifact':
                     self._replay_artifact(run_dir, op, row)
+                    note_nonmetric()
 
         close_group()
         flush_pending(force=True)
         if console_lines:
             op._log_console(console_lines)
+            self._wait_for_backpressure(op)
 
     def _replay_media(self, run_dir: Path, op: Any, row: Dict[str, Any]) -> None:
         name = row['attribute_path']
@@ -259,8 +337,8 @@ class PlutoLoader:
                 )
             return
 
-        path = run_dir / (row['file_value'] or '')
-        if not row['file_value'] or not path.exists():
+        path = _resolve_within(run_dir, row['file_value'])
+        if path is None or not path.exists():
             logger.warning(
                 f'{tag}: media file missing for {name!r} '
                 f'({row["file_value"]}), skipping'
@@ -287,8 +365,8 @@ class PlutoLoader:
         op.log({name: value}, step=step, timestamp=timestamp)
 
     def _replay_artifact(self, run_dir: Path, op: Any, row: Dict[str, Any]) -> None:
-        path = run_dir / (row['file_value'] or '')
-        if not row['file_value'] or not path.exists():
+        path = _resolve_within(run_dir, row['file_value'])
+        if path is None or not path.exists():
             logger.warning(
                 f'{tag}: artifact file missing ({row["file_value"]}), skipping'
             )
@@ -312,16 +390,36 @@ class PlutoLoader:
     def _wait_for_backpressure(self, op: Any) -> None:
         """Bound the sync queue so huge runs don't balloon SQLite/memory.
 
-        Bounded by ``stall_timeout``: if the queue never drains (dead sync
-        process, unreachable server) the loader logs and moves on rather
+        Fails fast if the sync subprocess has died: without this the loop
+        would sleep out the full ``stall_timeout`` on every flush (the
+        pending count never drops with no uploader), turning a large replay
+        into hours of pure sleeping. Raising here surfaces the dead process
+        as a per-run failure so the batch continues with the next run.
+
+        For an *alive but slow* uploader (unreachable server, throttling)
+        it stays bounded by ``stall_timeout``: it logs and moves on rather
         than hanging — data stays in the sync store either way.
         """
+        manager = getattr(op, '_sync_manager', None)
+        if manager is None:
+            return
         deadline = time.time() + self.stall_timeout
         sleep_s = 0.5
         throttled = False
         while True:
+            proc = getattr(manager, '_process', None)
+            if proc is not None:
+                # poll() -> None while alive, an int exit code once dead.
+                # (isinstance keeps a mocked manager from tripping this.)
+                code = proc.poll()
+                if isinstance(code, int):
+                    raise RuntimeError(
+                        f'sync process exited (code {code}) with data still '
+                        'pending; aborting this run (data preserved in the '
+                        'sync store for a later retry)'
+                    )
             try:
-                pending = op._sync_manager.get_pending_count()
+                pending = manager.get_pending_count()
             except Exception:
                 return
             if pending <= self.max_pending:

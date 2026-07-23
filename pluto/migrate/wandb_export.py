@@ -88,6 +88,7 @@ class WandbExporter:
         include_system: bool = True,
         include_files: bool = True,
         history_page_size: int = 1000,
+        system_samples: int = 100_000,
     ) -> None:
         self.entity = entity
         self.project = project
@@ -95,14 +96,32 @@ class WandbExporter:
         self._api = api
         self._api_key = api_key
         self.run_ids = set(run_ids) if run_ids else None
-        self.after_ms = parse_iso_ms(after)
-        self.before_ms = parse_iso_ms(before)
+        # Validate up front: an unparseable --after/--before must error, not
+        # silently drop the filter and export the entire project.
+        self.after_ms = self._parse_filter_date('--after', after)
+        self.before_ms = self._parse_filter_date('--before', before)
         self.include_artifacts = include_artifacts
         self.artifact_max_bytes = artifact_max_bytes
         self.include_console = include_console
         self.include_system = include_system
         self.include_files = include_files
         self.history_page_size = history_page_size
+        self.system_samples = system_samples
+
+    @staticmethod
+    def _parse_filter_date(flag: str, value: Optional[str]) -> Optional[int]:
+        """None when the flag was not supplied; raise when it was supplied but
+        cannot be parsed (so a typo like ``2024/01/01`` fails loudly instead of
+        being silently ignored)."""
+        if value is None:
+            return None
+        ms = parse_iso_ms(value)
+        if ms is None:
+            raise ValueError(
+                f'{flag}: could not parse date {value!r}; use ISO-8601, '
+                'e.g. 2024-01-01 or 2024-01-01T00:00:00Z'
+            )
+        return ms
 
     @property
     def api(self) -> Any:
@@ -234,8 +253,13 @@ class WandbExporter:
         timestamp_ms: int,
     ) -> None:
         base = self._row_base(run)
-        if isinstance(value, bool) or value is None:
+        if value is None:
             return
+        # Booleans (bool is an int subclass) are real metric series in wandb
+        # (e.g. is_best=True/False each epoch); record them as 1.0/0.0 rather
+        # than silently dropping the whole series.
+        if isinstance(value, bool):
+            value = float(value)
         if isinstance(value, (int, float)):
             writer.write_row(
                 **base,
@@ -296,10 +320,22 @@ class WandbExporter:
     def _export_system_metrics(self, run: Any, writer: PartWriter) -> None:
         base = self._row_base(run)
         try:
-            events = run.history(stream='events', pandas=False)
+            # run.history() defaults to samples=500, which silently downsamples
+            # long runs (a 2h run at ~2s sampling has ~3600 points). Request a
+            # high sample count and warn if we still hit the cap.
+            events = run.history(
+                stream='events', pandas=False, samples=self.system_samples
+            )
         except Exception as e:
             logger.warning(f'{tag}: system metrics unavailable for {run.id}: {e}')
             return
+        events = list(events)
+        if len(events) >= self.system_samples:
+            logger.warning(
+                f'{tag}: system metrics for {run.id} hit the '
+                f'{self.system_samples}-sample cap and may be downsampled; '
+                'raise system_samples to capture full resolution'
+            )
         for index, row in enumerate(events):
             ts = row.get('_timestamp')
             if ts is None:
@@ -342,7 +378,20 @@ class WandbExporter:
         if not output_log.exists():
             return
         base = self._row_base(run)
-        fallback_ms = created_ms or 0
+        # Fall back to the run's creation time, then its heartbeat, for lines
+        # without an embedded timestamp. Only if neither is parseable do we
+        # stamp 0 (1970) — and we warn, rather than silently dating logs to the
+        # epoch.
+        fallback_ms = created_ms
+        if fallback_ms is None:
+            fallback_ms = parse_iso_ms(getattr(run, 'heartbeat_at', None))
+        if fallback_ms is None:
+            logger.warning(
+                f'{tag}: {run.id} has no parseable creation/heartbeat time; '
+                'console lines without embedded timestamps will be stamped '
+                '0 (1970-01-01)'
+            )
+            fallback_ms = 0
         with open(output_log, errors='replace') as f:
             for line_number, raw_line in enumerate(f, start=1):
                 message = raw_line.rstrip('\n')
