@@ -58,6 +58,13 @@ def _add_export_flags(parser: argparse.ArgumentParser) -> None:
         help='exit non-zero if any run had data that could not be migrated '
         '(unsupported media, string metrics, dropped annotations)',
     )
+    parser.add_argument(
+        '--download-workers',
+        type=int,
+        default=16,
+        help='concurrent wandb file downloads per run (default: 16). Media-heavy '
+        'runs are latency-bound on per-file downloads; raise for more parallelism',
+    )
 
 
 def _add_load_flags(parser: argparse.ArgumentParser, with_input: bool = True) -> None:
@@ -150,6 +157,7 @@ def _run_export(args: argparse.Namespace) -> int:
             include_console=not args.no_console,
             include_system=not args.no_system_metrics,
             include_files=not args.no_files,
+            download_workers=args.download_workers,
         )
     except ValueError as e:
         # e.g. an unparseable --after/--before value.

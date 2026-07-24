@@ -475,6 +475,25 @@ class TestWandbExporter:
         assert summary['coverage']['migrated'].get('media') == 3
         assert 'unsupported(videos)' not in summary['coverage']['not_migrated']
 
+    def test_many_files_all_downloaded_concurrently(self, tmp_path):
+        # Media-heavy runs have hundreds of files; the exporter downloads them
+        # concurrently (latency-bound). All must land regardless of worker count.
+        run = FakeRun()
+        run._files = [FakeFile('output.log', content=b'x')] + [
+            FakeFile(f'media/images/img_{i}.png', content=b'PNG') for i in range(40)
+        ]
+        _, run_dir, _ = _export(tmp_path, run=run, download_workers=8)
+        got = list((run_dir / 'files' / 'media' / 'images').glob('img_*.png'))
+        assert len(got) == 40
+        assert (run_dir / 'files' / 'output.log').exists()
+
+    def test_download_workers_one_still_downloads(self, tmp_path):
+        # Serial fallback (workers=1) must still fetch everything.
+        run = FakeRun()
+        run._files = [FakeFile(f'f_{i}.png', content=b'PNG') for i in range(5)]
+        _, run_dir, _ = _export(tmp_path, run=run, download_workers=1)
+        assert len(list((run_dir / 'files').glob('f_*.png'))) == 5
+
     def test_metadata_staged_for_systemMetadata_forwarding(self, tmp_path):
         _, run_dir, _ = _export(tmp_path)
         # run.metadata is staged in run.json; the loader forwards it as

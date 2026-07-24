@@ -17,6 +17,7 @@ import os
 import re
 import shutil
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, TypedDict, Union
@@ -103,6 +104,7 @@ class WandbExporter:
         include_files: bool = True,
         history_page_size: int = 1000,
         system_samples: int = 100_000,
+        download_workers: int = 16,
     ) -> None:
         self.entity = entity
         self.project = project
@@ -121,6 +123,7 @@ class WandbExporter:
         self.include_files = include_files
         self.history_page_size = history_page_size
         self.system_samples = system_samples
+        self.download_workers = max(1, download_workers)
         # Coverage: what got migrated vs. dropped, so nothing is lost silently.
         self._cov_migrated: Counter = Counter()  # per-run (reset in _export_run)
         self._cov_skipped: Counter = Counter()
@@ -502,13 +505,32 @@ class WandbExporter:
 
     def _download_files(self, run: Any, files_dir: Path) -> None:
         files_dir.mkdir(parents=True, exist_ok=True)
-        for f in run.files():
-            if not self.include_files and f.name != 'output.log':
-                continue
+        targets = [
+            f for f in run.files() if self.include_files or f.name == 'output.log'
+        ]
+        if not targets:
+            return
+
+        def _download_one(f: Any) -> None:
+            # Each wandb file is a separate HTTP request (file API -> storage
+            # redirect), so downloads are latency-bound. A media-heavy run has
+            # hundreds of tiny files; downloading them concurrently is a large
+            # (~10-30x) speedup and is the dominant cost at scale. Distinct
+            # filenames -> no write contention.
             try:
                 f.download(root=str(files_dir), exist_ok=True)
             except Exception as e:
                 logger.warning(f'{tag}: failed to download {f.name}: {e}')
+
+        workers = min(self.download_workers, len(targets))
+        if workers <= 1:
+            for f in targets:
+                _download_one(f)
+            return
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            # list() forces all futures to complete (and surfaces nothing —
+            # per-file errors are logged inside _download_one).
+            list(pool.map(_download_one, targets))
 
     def _export_console(
         self,
