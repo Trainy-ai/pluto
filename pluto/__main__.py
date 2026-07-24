@@ -240,6 +240,13 @@ def main():
         help='show detailed sync progress',
     )
 
+    # `pluto migrate wandb export|load|all` — import historical data.
+    # cli.py keeps wandb/pyarrow imports inside the handlers, so this
+    # is safe without the 'migrate' extra installed.
+    from pluto.migrate.cli import add_migrate_parser, cmd_migrate
+
+    add_migrate_parser(subparsers)
+
     args = parser.parse_args()
 
     if args.version:
@@ -259,6 +266,8 @@ def main():
         logout()
     elif args.command == 'sync':
         _cmd_sync(args)
+    elif args.command == 'migrate':
+        sys.exit(cmd_migrate(args))
     else:
         parser.print_help()
         sys.exit(1)

@@ -1,6 +1,7 @@
 import atexit
 import builtins
 import logging
+import math
 import os
 import queue
 import signal
@@ -327,7 +328,16 @@ MetaFiles = Dict[str, List[str]]
 LoggedNumbers = Dict[str, Any]
 LoggedData = Dict[str, List[Data]]
 LoggedFiles = Dict[str, List[File]]
-QueueItem = Tuple[Dict[str, Any], Optional[int]]
+QueueItem = Tuple[Dict[str, Any], Optional[int], Optional[float]]
+
+
+class RunExistsError(RuntimeError):
+    """A run with the given externalId already exists (init without resume).
+
+    Typed so callers that intentionally reuse external ids (e.g.
+    pluto.migrate re-loading after a crash) can catch the collision and
+    retry with ``resume=True`` instead of string-matching the message.
+    """
 
 
 class OpMonitor:
@@ -374,16 +384,19 @@ class OpMonitor:
     def _worker_monitor(self, stop):
         while not stop():
             try:
-                # Collect system metrics
-                sys_metrics = make_compat_monitor_v1(self.op.settings._sys.monitor())
-                timestamp_ms = int(time.time() * 1000)
-
-                # Send system metrics via sync process if enabled
-                if self.op._sync_manager is not None:
-                    self.op._sync_manager.enqueue_system_metrics(
-                        metrics=sys_metrics,
-                        timestamp_ms=timestamp_ms,
+                if not self.op.settings.disable_system_metrics:
+                    # Collect system metrics
+                    sys_metrics = make_compat_monitor_v1(
+                        self.op.settings._sys.monitor()
                     )
+                    timestamp_ms = int(time.time() * 1000)
+
+                    # Send system metrics via sync process if enabled
+                    if self.op._sync_manager is not None:
+                        self.op._sync_manager.enqueue_system_metrics(
+                            metrics=sys_metrics,
+                            timestamp_ms=timestamp_ms,
+                        )
 
                 # Send heartbeat/trigger to server
                 # Use short timeout and no retries: if it fails, the next
@@ -457,7 +470,7 @@ class Op:
                         make_compat_start_v1(
                             self.config,
                             self.settings,
-                            self.settings._sys.get_info(),
+                            self._start_info(),
                             self.tags,
                         ),
                         client=tmp_iface.client_api,
@@ -497,7 +510,7 @@ class Op:
                     )
                 else:
                     external_id = self.settings._external_id
-                    raise RuntimeError(
+                    raise RunExistsError(
                         f"Run with externalId '{external_id}' already exists. "
                         f'This often happens when random.seed() or '
                         f'L.seed_everything() makes run IDs deterministic. '
@@ -554,6 +567,22 @@ class Op:
         self._dropped_item_warned: set = set()
         atexit.register(self.finish)
 
+    def _start_info(self) -> Dict[str, Any]:
+        """System info for the run-create payload.
+
+        Suppressed under disable_system_metrics so a backfill host's
+        hardware isn't recorded as the imported run's systemMetadata.
+        Migration/backfill may instead supply the original run's own
+        systemMetadata via ``compat['systemMetadata']`` to preserve the
+        historical repro context (host/git/python/gpu).
+        """
+        override = self.settings.compat.get('systemMetadata')
+        if override is not None:
+            return override
+        if self.settings.disable_system_metrics:
+            return {}
+        return self.settings._sys.get_info()
+
     def _init_sync_manager(self) -> None:
         """Initialize the sync process manager."""
         # Generate run_id for sync process
@@ -586,6 +615,7 @@ class Op:
             'sync_process_retry_backoff': self.settings.sync_process_retry_backoff,
             'sync_process_batch_size': self.settings.sync_process_batch_size,
             'sync_process_file_batch_size': self.settings.sync_process_file_batch_size,
+            'disable_system_metrics': self.settings.disable_system_metrics,
         }
 
         self._sync_manager = SyncProcessManager(
@@ -659,7 +689,7 @@ class Op:
         self._monitor.start()
 
         # Register system metric names with server (required for dashboard display)
-        if self._iface:
+        if self._iface and not self.settings.disable_system_metrics:
             sys_metric_names = list(
                 make_compat_monitor_v1(self.settings._sys.monitor()).keys()
             )
@@ -688,12 +718,20 @@ class Op:
         data: Dict[str, Any],
         step: Union[int, None] = None,
         commit: Union[bool, None] = None,
+        timestamp: Optional[float] = None,
     ) -> None:
-        """Log run data"""
+        """Log run data.
+
+        ``timestamp`` is the wall-clock time of the data points in epoch
+        seconds (``time.time()`` style) and defaults to now. The server
+        stores it as-is, so backfill/migration tooling can preserve
+        historical times. Invalid values fall back to now with a warning.
+        """
+        timestamp = self._validate_timestamp(timestamp)
         # Use sync process if enabled (default: uploads data to server)
         if self._sync_manager is not None:
             try:
-                self._log_via_sync(data=data, step=step)
+                self._log_via_sync(data=data, step=step, timestamp=timestamp)
             except sqlite3.OperationalError as e:
                 # Never let a transient SQLite error crash the user's training.
                 # The data for this step is lost, but training continues.
@@ -701,23 +739,40 @@ class Op:
                     '%s: dropping log data due to database error: %s', tag, e
                 )
         elif self.settings.mode == 'perf':
-            self._queue.put((data, step), block=False)
+            self._queue.put((data, step, timestamp), block=False)
         else:
             # Legacy offline mode (sync_process_enabled=False)
             # Data stored locally in SQLite only, not uploaded to server
-            self._log(data=data, step=step)
+            self._log(data=data, step=step, t=timestamp)
+
+    def _validate_timestamp(self, timestamp: Optional[float]) -> Optional[float]:
+        """Return a usable explicit timestamp or None (meaning "now")."""
+        if timestamp is None:
+            return None
+        if (
+            not isinstance(timestamp, (int, float))
+            or isinstance(timestamp, bool)
+            or not math.isfinite(timestamp)
+            or timestamp <= 0
+        ):
+            logger.warning(
+                f'{tag}: ignoring invalid timestamp {timestamp!r}; using current time'
+            )
+            return None
+        return float(timestamp)
 
     def _log_via_sync(
         self,
         data: Dict[str, Any],
         step: Optional[int] = None,
+        timestamp: Optional[float] = None,
     ) -> None:
         """Log data via sync process (writes to SQLite, picked up by sync)."""
         if self._sync_manager is None:
             return
 
         self._step = self._step + 1 if step is None else step
-        timestamp_ms = int(time.time() * 1000)
+        timestamp_ms = int((timestamp if timestamp is not None else time.time()) * 1000)
 
         metrics: Dict[str, Any] = {}
         new_metric_names: List[str] = []
@@ -754,6 +809,51 @@ class Op:
         # Register new metric/file names with server (required for dashboard display)
         if (new_metric_names or new_file_meta) and self._iface:
             self._iface._update_meta(num=new_metric_names, df=dict(new_file_meta))
+
+    def _log_console(self, lines: List[Tuple[str, str, float, int]]) -> None:
+        """Enqueue console lines with explicit timestamps (backfill path).
+
+        ``lines`` are ``(message, log_type, timestamp_seconds, line_number)``
+        tuples with ``log_type`` in ``{'INFO', 'ERROR'}``. Used by
+        ``pluto.migrate`` loaders to replay another platform's console
+        output with the original wall-clock times; live console capture
+        goes through ``pluto.log.ConsoleHandler`` instead.
+        """
+        if self._sync_manager is None:
+            return
+        self._sync_manager.enqueue_console_batch(
+            [
+                (message, log_type, int(ts * 1000), line_number)
+                for message, log_type, ts, line_number in lines
+            ]
+        )
+
+    def _log_metrics_batch(
+        self, groups: List[Tuple[Dict[str, Any], int, float]]
+    ) -> None:
+        """Enqueue many numeric metric groups in one transaction (backfill path).
+
+        ``groups`` are ``(metrics, step, timestamp_seconds)`` tuples with
+        numeric values only. Used by ``pluto.migrate`` loaders, where one
+        SQLite transaction per step would dominate replay time; live
+        training goes through :meth:`log`.
+        """
+        if self._sync_manager is None or not groups:
+            return
+        new_metric_names: List[str] = []
+        new_file_meta: Dict[str, List[str]] = defaultdict(list)
+        items: List[Tuple[Dict[str, Any], int, int]] = []
+        for metrics, step, timestamp in groups:
+            clean: Dict[str, Any] = {}
+            for key, value in metrics.items():
+                key = get_char(key)
+                self._register_meta_sync(key, value, new_metric_names, new_file_meta)
+                clean[key] = value
+            self._step = step
+            items.append((clean, int(timestamp * 1000), step))
+        self._sync_manager.enqueue_metrics_batch(items)
+        if new_metric_names and self._iface:
+            self._iface._update_meta(num=new_metric_names)
 
     def _warn_dropped_item(self, key: str, value: Any, exc: Exception) -> None:
         """Report a log item dropped due to an unexpected error.

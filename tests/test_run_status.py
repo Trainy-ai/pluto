@@ -45,6 +45,44 @@ class TestStatusMap:
         assert STATUS[signal.SIGTERM.value] == 'TERMINATED'
 
 
+class TestStatusPayloadBackfill:
+    """The status-update payload carries a historical terminal-status time
+    for backfilled/migrated runs (pluto.migrate) so the server can keep
+    Duration = end - createdAt correct; normal runs send nothing and the
+    server keeps its now() default.
+    """
+
+    def _settings(self):
+        from pluto.sets import Settings
+
+        s = Settings()
+        s._op_id = 42
+        s._op_status = 0  # COMPLETED
+        return s
+
+    def test_normal_run_sends_null_status_updated(self):
+        import json
+
+        from pluto.api import make_compat_status_v1
+
+        s = self._settings()  # compat defaults to {}
+        payload = json.loads(make_compat_status_v1(s).decode())
+        assert 'statusUpdated' in payload
+        assert payload['statusUpdated'] is None
+
+    def test_backfilled_run_sends_historical_status_updated(self):
+        import json
+
+        from pluto.api import make_compat_status_v1
+
+        s = self._settings()
+        s.compat = {'createdAt': 1600000000000, 'updatedAt': 1600000003600}
+        payload = json.loads(make_compat_status_v1(s).decode())
+        # statusUpdated mirrors the historical updatedAt (terminal time),
+        # not createdAt.
+        assert payload['statusUpdated'] == 1600000003600
+
+
 class TestExcepthook:
     """Test the sys.excepthook integration for FAILED status detection."""
 
