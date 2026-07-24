@@ -369,6 +369,84 @@ class TestWandbExporter:
         assert cov['not_migrated'].get('unsupported(bokeh-file)') == 1
         assert cov['not_migrated'].get('image-annotations') == 1
 
+    def test_nonfinite_string_metrics_are_coerced_to_floats(self, tmp_path):
+        # wandb hands NaN/Inf back as strings; they must migrate as real floats,
+        # not be dropped as "text". A genuine text value still counts as skipped.
+        import math
+
+        run = FakeRun()
+        run.scan_history = lambda page_size=1000: iter(
+            [
+                {'_step': 0, '_timestamp': T0, 'edge': 'NaN', 'status': 'running'},
+                {'_step': 1, '_timestamp': T0 + 1, 'edge': 'Infinity'},
+                {'_step': 2, '_timestamp': T0 + 2, 'edge': '-Infinity'},
+            ]
+        )
+        _, run_dir, summary = _export(tmp_path, run=run)
+        vals = {r['step']: r['float_value'] for r in _rows(run_dir, 'metric')}
+        assert math.isnan(vals[0])
+        assert vals[1] == float('inf')
+        assert vals[2] == float('-inf')
+        assert summary['coverage']['migrated'].get('metric') == 3
+        assert (
+            summary['coverage']['not_migrated'].get('string-metric') == 1
+        )  # 'running'
+
+    def test_media_lists_videos_audio_are_migrated(self, tmp_path):
+        # wandb.log({"rollouts": [Video, Video]}) => _type 'videos' with the
+        # items under a matching key, each a {path, caption, _type} dict.
+        # These were silently dropped before; now each item is a media row.
+        run = FakeRun()
+        run.scan_history = lambda page_size=1000: iter(
+            [
+                {
+                    '_step': 0,
+                    '_timestamp': T0,
+                    'rollouts': {
+                        '_type': 'videos',
+                        'count': 2,
+                        'videos': [
+                            {
+                                '_type': 'video-file',
+                                'path': 'media/v0.gif',
+                                'caption': '0',
+                            },
+                            {
+                                '_type': 'video-file',
+                                'path': 'media/v1.gif',
+                                'caption': '1',
+                            },
+                        ],
+                        'captions': ['0', '1'],
+                    },
+                    'clips': {
+                        '_type': 'audio',
+                        'count': 1,
+                        'audio': [
+                            {
+                                '_type': 'audio-file',
+                                'path': 'media/a0.wav',
+                                'caption': 'c',
+                            },
+                        ],
+                    },
+                }
+            ]
+        )
+        _, run_dir, summary = _export(tmp_path, run=run)
+        media = _rows(run_dir, 'media')
+        vids = [m for m in media if m['string_value'] == 'video-file']
+        auds = [m for m in media if m['string_value'] == 'audio-file']
+        assert [(m['file_value'], m['caption']) for m in vids] == [
+            ('files/media/v0.gif', '0'),
+            ('files/media/v1.gif', '1'),
+        ]
+        assert [(m['file_value'], m['caption']) for m in auds] == [
+            ('files/media/a0.wav', 'c'),
+        ]
+        assert summary['coverage']['migrated'].get('media') == 3
+        assert 'unsupported(videos)' not in summary['coverage']['not_migrated']
+
     def test_metadata_staged_for_systemMetadata_forwarding(self, tmp_path):
         _, run_dir, _ = _export(tmp_path)
         # run.metadata is staged in run.json; the loader forwards it as

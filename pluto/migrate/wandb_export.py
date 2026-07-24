@@ -29,6 +29,19 @@ tag = 'migrate'
 
 MANIFEST_FILENAME = 'manifest.json'
 
+# wandb encodes non-finite metric points as JSON strings; map them back to the
+# real floats so they migrate instead of being dropped as "text".
+_NONFINITE_STRINGS = {
+    'NaN': float('nan'),
+    'nan': float('nan'),
+    'Infinity': float('inf'),
+    'inf': float('inf'),
+    'Inf': float('inf'),
+    '-Infinity': float('-inf'),
+    '-inf': float('-inf'),
+    '-Inf': float('-inf'),
+}
+
 
 class _RowBase(TypedDict):
     """Identity columns shared by every staged row (see schema.write_row)."""
@@ -322,9 +335,24 @@ class WandbExporter:
             self._migrated('metric')
             return
         if isinstance(value, str):
-            # String-valued history (e.g. a status string logged per step) has
-            # no numeric/media home in the schema; count it so it isn't lost
-            # silently.
+            # wandb serializes non-finite metric points as strings
+            # ('NaN'/'Infinity'/'-Infinity'); coerce them back to real floats so
+            # they migrate like any other metric (ClickHouse stores NaN/Inf
+            # natively — a run that logged nan/inf numerically already works).
+            nonfinite = _NONFINITE_STRINGS.get(value.strip())
+            if nonfinite is not None:
+                writer.write_row(
+                    **base,
+                    attribute_path=key,
+                    attribute_type='metric',
+                    step=step,
+                    timestamp_ms=timestamp_ms,
+                    float_value=nonfinite,
+                )
+                self._migrated('metric')
+                return
+            # Any other string (a status label, etc.) has no numeric/media home
+            # in the schema; count it so it isn't lost silently.
             self._skipped('string-metric')
             return
         if isinstance(value, dict):
@@ -375,6 +403,30 @@ class WandbExporter:
                         caption=captions[i] if i < len(captions) else None,
                     )
                 self._migrated('media', len(value['filenames']))
+            elif isinstance(value.get(media_type), list) and all(
+                isinstance(it, dict)
+                and it.get('path')
+                and it.get('_type') in _FILE_MEDIA_TYPES
+                for it in value[media_type]
+            ):
+                # Media LISTS logged at one step: _type 'videos'/'audio' hold
+                # their items under a key matching the _type, each a full
+                # {path, caption, _type: <x>-file} dict (wandb.log({"k":[v0,v1]})).
+                # Emit one media row per item (loader batches same name+step ->
+                # sampleIndex order).
+                items = value[media_type]
+                for it in items:
+                    writer.write_row(
+                        **base,
+                        attribute_path=key,
+                        attribute_type='media',
+                        step=step,
+                        timestamp_ms=timestamp_ms,
+                        string_value=it['_type'],
+                        file_value=f'files/{it["path"]}',
+                        caption=it.get('caption'),
+                    )
+                self._migrated('media', len(items))
             else:
                 # Unknown wandb media type (custom chart, molecule, bokeh, a
                 # partitioned/joined table, ...). Count by type so the coverage
