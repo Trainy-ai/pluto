@@ -525,6 +525,21 @@ class TestPlutoLoader:
         # order preserved -> sampleIndex 0,1,2 assigned by op.log's enumerate
         assert [img._caption for img in value] == ['c0', 'c1', 'c2']
 
+    def test_cleanup_removes_staged_files_after_load(self, tmp_path, mock_init):
+        # --cleanup frees each run's staged files once it's loaded, but the run
+        # stays recorded as loaded (so a re-run still skips it).
+        run_dir = _stage_run(tmp_path)
+        assert run_dir.exists()
+        summary = PlutoLoader(tmp_path, cleanup=True).load()
+        assert summary['loaded'] == 1
+        assert not run_dir.exists()  # staged files reclaimed
+        assert LoadedCache(tmp_path / 'loaded_runs.json').is_loaded(CACHE_KEY)
+
+    def test_no_cleanup_keeps_staged_files(self, tmp_path, mock_init):
+        run_dir = _stage_run(tmp_path)
+        PlutoLoader(tmp_path).load()  # cleanup defaults off
+        assert run_dir.exists()
+
     def test_run_metadata_forwarded_as_system_metadata(self, tmp_path, mock_init):
         # run.metadata (git/OS/GPU) is staged; the loader forwards it via
         # compat['systemMetadata'] so repro context survives the migration.

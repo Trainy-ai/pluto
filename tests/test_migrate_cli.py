@@ -111,7 +111,8 @@ class TestMigrateCli:
             )
         assert code == 0
         exporter.export.assert_called_once()
-        loader.load.assert_called_once()
+        # `all` pipelines export + load, so load runs one or more passes.
+        assert loader.load.call_count >= 1
 
     def test_artifact_max_size_zero_means_zero_cap(self, tmp_path):
         exporter = _mock_exporter()
@@ -158,7 +159,7 @@ class TestMigrateCli:
                     str(tmp_path),
                 ]
             )
-        loader.load.assert_called_once()  # staged runs still load
+        assert loader.load.call_count >= 1  # staged runs still load (pipelined)
         assert code == 1  # but the failure is reported
 
     def test_all_rejects_dry_run(self, tmp_path):

@@ -10,7 +10,8 @@ an ImportError traceback.
 from __future__ import annotations
 
 import argparse
-from typing import List, Optional
+import threading
+from typing import Any, Dict, List, Optional
 
 from pluto.migrate import _INSTALL_HINT
 
@@ -105,6 +106,12 @@ def _add_load_flags(parser: argparse.ArgumentParser, with_input: bool = True) ->
         default=5000,
         help='max queued records before the loader throttles (default: 5000)',
     )
+    parser.add_argument(
+        '--cleanup',
+        action='store_true',
+        help="delete each run's staged files once it's confirmed loaded, so a "
+        'large migration does not keep a full duplicate copy on local disk',
+    )
 
 
 def add_migrate_parser(subparsers: argparse._SubParsersAction) -> None:
@@ -182,14 +189,11 @@ def _run_export(args: argparse.Namespace) -> int:
     return 1 if summary['failed'] else 0
 
 
-def _run_load(args: argparse.Namespace, input_dir: Optional[str] = None) -> int:
-    try:
-        from pluto.migrate.loader import PlutoLoader
-    except ImportError as e:
-        print(f'{_INSTALL_HINT} ({e})')
-        return 2
+def _make_loader(args: argparse.Namespace, input_dir: Optional[str] = None) -> Any:
+    """Build a PlutoLoader from CLI args (raises ImportError if extras missing)."""
+    from pluto.migrate.loader import PlutoLoader
 
-    loader = PlutoLoader(
+    return PlutoLoader(
         input_dir=input_dir if input_dir is not None else args.input,
         dest_project=args.dest_project,
         flush_every=args.flush_every,
@@ -197,7 +201,17 @@ def _run_load(args: argparse.Namespace, input_dir: Optional[str] = None) -> int:
         dry_run=args.dry_run,
         run_ids=getattr(args, 'run_ids', None),
         force_resume=args.force_resume,
+        cleanup=getattr(args, 'cleanup', False),
     )
+
+
+def _run_load(args: argparse.Namespace, input_dir: Optional[str] = None) -> int:
+    try:
+        loader = _make_loader(args, input_dir)
+    except ImportError as e:
+        print(f'{_INSTALL_HINT} ({e})')
+        return 2
+
     summary = loader.load()
     # In dry-run the loader already printed an accurate "would load N" summary;
     # printing "0 loaded" here would misleadingly imply nothing would happen.
@@ -224,14 +238,66 @@ def cmd_migrate(args: argparse.Namespace) -> int:
                 '`load --dry-run`.'
             )
             return 2
-        export_code = _run_export(args)
-        if export_code == 2:  # missing deps — nothing was staged
-            return export_code
-        # Per-run export failures must not block loading the runs that DID
-        # stage successfully; both phases are independently resumable.
-        load_code = _run_load(args, input_dir=args.output)
-        return max(export_code, load_code)
+        return _run_all(args)
     raise AssertionError(f'unknown action {args.action!r}')
+
+
+# Seconds a load pass waits for the export to finish before scanning for
+# newly-completed runs again. Small enough to keep the pipeline flowing.
+_ALL_POLL_SECONDS = 10.0
+
+
+def _run_all(args: argparse.Namespace) -> int:
+    """Export and load concurrently: export stages runs in a background thread
+    while the main thread repeatedly loads whichever runs have finished staging.
+
+    Staging is atomic per run (a sentinel is written last) and the loader only
+    picks up completed runs, so the two phases pipeline safely — a run is
+    uploaded as soon as it's downloaded, instead of waiting for the whole
+    export. With --cleanup, each loaded run's staged files are freed, bounding
+    peak disk to the un-loaded backlog.
+    """
+    # Fail fast if the migrate extras are missing (before spawning the export).
+    try:
+        _make_loader(args, input_dir=args.output)
+    except ImportError as e:
+        print(f'{_INSTALL_HINT} ({e})')
+        return 2
+
+    result: Dict[str, int] = {}
+
+    def _export_worker() -> None:
+        result['code'] = _run_export(args)
+
+    export_thread = threading.Thread(target=_export_worker, daemon=True)
+    export_thread.start()
+    print('migrate: exporting and loading concurrently...')
+
+    loaded_total = 0
+    failed: List[Dict[str, str]] = []
+
+    def _load_pass() -> None:
+        nonlocal loaded_total
+        # Fresh loader each pass so it re-reads loaded_runs.json and skips runs
+        # already loaded in an earlier pass (only newly-staged runs load).
+        summary = _make_loader(args, input_dir=args.output).load()
+        loaded_total += summary['loaded']
+        failed.extend(summary['failed'])
+
+    # Keep loading newly-completed runs until the export finishes.
+    while export_thread.is_alive():
+        _load_pass()
+        export_thread.join(timeout=_ALL_POLL_SECONDS)
+    # Final pass for runs that finished staging after the last scan.
+    _load_pass()
+
+    export_code = result.get('code', 0)
+    if export_code == 2:  # missing deps / bad args — nothing to report on load
+        return 2
+    print(f'migrate all: {loaded_total} loaded, {len(failed)} failed')
+    for failure in failed:
+        print(f'  failed {failure["run_id"]}: {failure["error"]}')
+    return max(export_code, 1 if failed else 0)
 
 
 def run_migrate(argv: List[str]) -> int:

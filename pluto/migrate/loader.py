@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import logging
+import shutil
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
@@ -85,6 +86,7 @@ class PlutoLoader:
         run_ids: Optional[List[str]] = None,
         force_resume: bool = False,
         stall_timeout: float = 600.0,
+        cleanup: bool = False,
     ) -> None:
         self.input_dir = Path(input_dir)
         self.dest_project = dest_project
@@ -94,6 +96,10 @@ class PlutoLoader:
         self.run_ids = set(run_ids) if run_ids else None
         self.force_resume = force_resume
         self.stall_timeout = stall_timeout
+        # Delete each run's staged files once it is confirmed loaded, so a large
+        # migration doesn't keep a full duplicate copy on local disk. Peak disk
+        # then bounds to the un-loaded backlog rather than the whole export.
+        self.cleanup = cleanup
 
     def load(self) -> Dict[str, Any]:
         """Load all staged runs. Returns {'loaded', 'skipped', 'failed'}.
@@ -179,6 +185,11 @@ class PlutoLoader:
                 cache.mark_loaded(cache_key, {'pluto_run_id': op.settings._op_id})
                 loaded += 1
                 logger.info(f'{tag}: loaded {external_id}')
+                if self.cleanup:
+                    # Reclaim disk now that the run is safely loaded (and
+                    # recorded in loaded_runs.json, so it's still skipped on a
+                    # re-run even though its staged files are gone).
+                    shutil.rmtree(run_dir, ignore_errors=True)
             except Exception as e:
                 logger.error(f'{tag}: load failed for {external_id}: {e}')
                 failed.append({'run_id': run_id, 'error': f'{type(e).__name__}: {e}'})
