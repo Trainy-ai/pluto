@@ -127,6 +127,22 @@ class WandbExporter:
         self._cov_migrated_total: Counter = Counter()
         self._cov_skipped_total: Counter = Counter()
 
+    @staticmethod
+    def _bins_from_packed(packed: Any) -> Optional[List[float]]:
+        """Reconstruct histogram bin edges from wandb's compact packedBins
+        ({min, size, count}); returns count+1 edges, or None if unusable."""
+        if not isinstance(packed, dict):
+            return None
+        try:
+            mn = float(packed['min'])
+            sz = float(packed['size'])
+            cnt = int(packed['count'])
+        except (KeyError, TypeError, ValueError):
+            return None
+        if cnt <= 0:
+            return None
+        return [mn + i * sz for i in range(cnt + 1)]
+
     def _migrated(self, category: str, n: int = 1) -> None:
         self._cov_migrated[category] += n
 
@@ -374,6 +390,14 @@ class WandbExporter:
                 )
                 self._migrated('media')
             elif media_type == 'histogram':
+                bins = value.get('bins')
+                if bins is None:
+                    # wandb stores histogram edges compactly as packedBins
+                    # ({min, size, count}), not a `bins` array. Reconstruct the
+                    # real edges so the migrated histogram keeps its true value
+                    # range instead of a generic 0..N axis. (Loader synthesizes
+                    # integer edges only if this is also absent.)
+                    bins = self._bins_from_packed(value.get('packedBins'))
                 writer.write_row(
                     **base,
                     attribute_path=key,
@@ -384,7 +408,7 @@ class WandbExporter:
                         {
                             '_type': 'histogram',
                             'values': value.get('values'),
-                            'bins': value.get('bins'),
+                            'bins': bins,
                         }
                     ),
                 )

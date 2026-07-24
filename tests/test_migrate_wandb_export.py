@@ -369,6 +369,34 @@ class TestWandbExporter:
         assert cov['not_migrated'].get('unsupported(bokeh-file)') == 1
         assert cov['not_migrated'].get('image-annotations') == 1
 
+    def test_histogram_bins_reconstructed_from_packed(self, tmp_path):
+        # Real wandb histograms carry edges in packedBins ({min,size,count}),
+        # not a `bins` array. Reconstruct the true edges so the migrated
+        # histogram keeps its value range, not a generic 0..N axis.
+        run = FakeRun()
+        run.scan_history = lambda page_size=1000: iter(
+            [
+                {
+                    '_step': 0,
+                    '_timestamp': T0,
+                    'weights': {
+                        '_type': 'histogram',
+                        'values': [5, 10, 25],
+                        'bins': None,
+                        'packedBins': {'min': -1.5, 'size': 0.5, 'count': 3},
+                    },
+                }
+            ]
+        )
+        _, run_dir, _ = _export(tmp_path, run=run)
+        hist = next(
+            m for m in _rows(run_dir, 'media') if m['attribute_path'] == 'weights'
+        )
+        payload = json.loads(hist['string_value'])
+        # 3 counts -> 4 edges spanning the real range, not [0,1,2,3]
+        assert payload['values'] == [5, 10, 25]
+        assert payload['bins'] == [-1.5, -1.0, -0.5, 0.0]
+
     def test_nonfinite_string_metrics_are_coerced_to_floats(self, tmp_path):
         # wandb hands NaN/Inf back as strings; they must migrate as real floats,
         # not be dropped as "text". A genuine text value still counts as skipped.
