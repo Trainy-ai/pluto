@@ -263,6 +263,7 @@ def _all_one_project(
 
     loaded_total = 0
     failed: List[Dict[str, str]] = []
+    failed_ids: set = set()  # a run that keeps failing recurs every poll pass
 
     def _load_pass() -> None:
         nonlocal loaded_total
@@ -279,7 +280,10 @@ def _all_one_project(
             cache_path=cache_path,
         ).load()
         loaded_total += summary['loaded']
-        failed.extend(summary['failed'])
+        for f in summary['failed']:
+            if f['run_id'] not in failed_ids:  # count each failing run once
+                failed_ids.add(f['run_id'])
+                failed.append(f)
 
     while export_thread.is_alive():
         _load_pass()
@@ -344,8 +348,16 @@ def _run_over_projects(
     if not projects:
         print('migrate: no matching projects')
         return 0
+
+    def _safe(p: str, c: Optional[str]) -> int:
+        try:
+            return worker(args, p, c)
+        except Exception as e:  # clean message, not a raw traceback
+            print(f'[{p}] worker crashed: {type(e).__name__}: {e}')
+            return 2
+
     if len(projects) == 1:
-        return worker(args, projects[0], None)
+        return _safe(projects[0], None)
 
     workers = max(1, getattr(args, 'workers', 1))
     # One process per project; more workers than projects can't fan out further.
@@ -364,7 +376,7 @@ def _run_over_projects(
     codes: List[int] = []
     if effective <= 1:
         for p in projects:
-            codes.append(worker(args, p, cache(p)))
+            codes.append(_safe(p, cache(p)))
         return max(codes)
 
     # max_tasks_per_child (a fresh process per project, so no pluto global state
@@ -381,7 +393,7 @@ def _run_over_projects(
                 codes.append(fut.result())
             except Exception as e:  # a crashed worker must not sink the rest
                 print(f'[{p}] worker crashed: {type(e).__name__}: {e}')
-                codes.append(1)
+                codes.append(2)
     return max(codes) if codes else 0
 
 

@@ -187,6 +187,28 @@ class TestMigrateCli:
             )
         assert code == 2  # export crash -> failure, not silent success
 
+    def test_single_project_worker_crash_exits_clean(self, tmp_path):
+        # A single --project whose exporter raises should return 2 with a clean
+        # message, not propagate a raw traceback.
+        exporter = _mock_exporter()
+        exporter.export.side_effect = RuntimeError('wandb auth exploded')
+        with mock.patch(
+            'pluto.migrate.wandb_export.WandbExporter', return_value=exporter
+        ):
+            code = run_migrate(
+                [
+                    'wandb',
+                    'export',
+                    '--entity',
+                    'acme',
+                    '--project',
+                    'vision',
+                    '--output',
+                    str(tmp_path),
+                ]
+            )
+        assert code == 2
+
     def test_all_forwards_run_id_filter_to_load(self, tmp_path):
         exporter, loader = _mock_exporter(), _mock_loader()
         with (

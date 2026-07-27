@@ -215,6 +215,22 @@ class TestWandbExporter:
         # Dropped media is surfaced in coverage, not silently omitted.
         assert 'media-file(--no-files)' in summary['coverage']['not_migrated']
 
+    def test_failed_download_is_counted_for_strict(self, tmp_path):
+        # A media file that fails to download leaves a dangling ref; it must be
+        # counted so coverage/--strict surface the loss (not a false success).
+        class _FailingFile:
+            name = 'media/images/sample_3_abc.png'
+            size = 10
+
+            def download(self, root, replace=False, exist_ok=False):
+                raise RuntimeError('storage 503')
+
+        run = FakeRun()
+        run._files = [f for f in run._files if 'sample_3' not in f.name]
+        run._files.append(_FailingFile())
+        _, _, summary = _export(tmp_path, run=run)
+        assert 'file-download-failed' in summary['coverage']['not_migrated']
+
     def test_system_metric_rows_keep_source_names(self, tmp_path):
         # Staging is source-faithful; the loader owns the sys/ translation.
         _, run_dir, _ = _export(tmp_path)
@@ -297,7 +313,7 @@ class TestWandbExporter:
         assert summary['exported'] == 0
         assert summary['failed'] and summary['failed'][0]['run_id'] == 'boom'
         assert not is_run_exported(tmp_path / 'acme' / 'vision' / 'runs' / 'boom')
-        manifest = read_json(tmp_path / 'manifest.json')
+        manifest = read_json(tmp_path / 'acme' / 'vision' / 'manifest.json')
         assert manifest['failed'][0]['run_id'] == 'boom'
 
     def test_run_ids_filter(self, tmp_path):

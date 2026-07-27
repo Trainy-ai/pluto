@@ -234,8 +234,12 @@ class WandbExporter:
             'failed': failed,
             'coverage': coverage,
         }
+        # Per-project path: a shared output_dir/manifest.json would be clobbered
+        # (and its .tmp raced) when multiple projects export concurrently.
+        manifest_dir = self.output_dir / self.entity / self.project
+        manifest_dir.mkdir(parents=True, exist_ok=True)
         write_json_atomic(
-            self.output_dir / MANIFEST_FILENAME,
+            manifest_dir / MANIFEST_FILENAME,
             {
                 'source': 'wandb',
                 'project': self.project_path,
@@ -522,26 +526,34 @@ class WandbExporter:
         if not targets:
             return
 
-        def _download_one(f: Any) -> None:
+        def _download_one(f: Any) -> Optional[str]:
             # Each wandb file is a separate HTTP request (file API -> storage
             # redirect), so downloads are latency-bound. A media-heavy run has
             # hundreds of tiny files; downloading them concurrently is a large
             # (~10-30x) speedup and is the dominant cost at scale. Distinct
-            # filenames -> no write contention.
+            # filenames -> no write contention. Returns the name on failure.
             try:
                 f.download(root=str(files_dir), exist_ok=True)
+                return None
             except Exception as e:
                 logger.warning(f'{tag}: failed to download {f.name}: {e}')
+                return f.name
 
         workers = min(self.download_workers, len(targets))
         if workers <= 1:
-            for f in targets:
-                _download_one(f)
-            return
-        with ThreadPoolExecutor(max_workers=workers) as pool:
-            # list() forces all futures to complete (and surfaces nothing —
-            # per-file errors are logged inside _download_one).
-            list(pool.map(_download_one, targets))
+            results = [_download_one(f) for f in targets]
+        else:
+            with ThreadPoolExecutor(max_workers=workers) as pool:
+                # Results collected on this thread -> the coverage counter below
+                # is only touched here, never concurrently.
+                results = list(pool.map(_download_one, targets))
+        failed = [name for name in results if name is not None]
+        if failed:
+            # Media rows were already staged (and counted migrated) pointing at
+            # these files; a failed download leaves a dangling ref the loader
+            # silently skips. Count it so coverage/--strict surface the loss
+            # instead of a false "fully migrated".
+            self._skipped('file-download-failed', len(failed))
 
     def _export_console(
         self,
