@@ -336,6 +336,19 @@ class TestMigrateCli:
             )
         assert code == 2  # can't rename many projects into one
 
+    def test_workers_over_project_count_reports_cap(self, tmp_path, capsys):
+        # Two staged (empty) projects; asking for more workers than projects
+        # must announce the cap, not silently print the requested count.
+        for p in ('p1', 'p2'):
+            (tmp_path / 'acme' / p / 'runs').mkdir(parents=True)
+        code = run_migrate(
+            ['wandb', 'load', '--input', str(tmp_path), '--workers', '16']
+        )
+        assert code == 0  # nothing staged inside -> clean no-op
+        out = capsys.readouterr().out
+        assert 'requested 16' in out
+        assert 'capped to 2 projects' in out
+
     def test_top_level_cli_help_does_not_need_migrate_extras(self):
         result = subprocess.run(
             [sys.executable, '-m', 'pluto', 'migrate', '--help'],

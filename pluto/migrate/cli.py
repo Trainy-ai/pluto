@@ -342,21 +342,27 @@ def _run_over_projects(
         return worker(args, projects[0], None)
 
     workers = max(1, getattr(args, 'workers', 1))
-    print(
-        f'migrate: {len(projects)} projects [{", ".join(projects)}]; workers={workers}'
+    # One process per project; more workers than projects can't fan out further.
+    effective = min(workers, len(projects))
+    note = (
+        f'workers={effective}'
+        if effective == workers
+        else f'workers={effective} (requested {workers}, capped to {len(projects)} '
+        'projects — each project runs in one process)'
     )
+    print(f'migrate: {len(projects)} projects [{", ".join(projects)}]; {note}')
 
     def cache(p: str) -> Optional[str]:
         return _cache_path_for(args, p) if per_project_cache else None
 
     codes: List[int] = []
-    if workers <= 1:
+    if effective <= 1:
         for p in projects:
             codes.append(worker(args, p, cache(p)))
         return max(codes)
 
     with ProcessPoolExecutor(
-        max_workers=min(workers, len(projects)),
+        max_workers=effective,
         max_tasks_per_child=1,  # fresh process per project (no lingering pluto state)
     ) as pool:  # type: ignore[call-overload]
         futures = {pool.submit(worker, args, p, cache(p)): p for p in projects}
