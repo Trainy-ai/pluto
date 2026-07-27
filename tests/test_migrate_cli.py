@@ -247,6 +247,95 @@ class TestMigrateCli:
             )
         assert code == 0
 
+    def test_export_all_projects_when_no_project_given(self, tmp_path):
+        with (
+            mock.patch(
+                'pluto.migrate.wandb_export.list_wandb_projects',
+                return_value=['p1', 'p2', 'p3'],
+            ) as lst,
+            mock.patch('pluto.migrate.cli._export_one_project', return_value=0) as w,
+        ):
+            code = run_migrate(
+                [
+                    'wandb',
+                    'export',
+                    '--entity',
+                    'acme',
+                    '--output',
+                    str(tmp_path),
+                    '--workers',
+                    '1',
+                ]
+            )
+        assert code == 0
+        lst.assert_called_once()  # listed all projects under the entity
+        assert {c.args[1] for c in w.call_args_list} == {'p1', 'p2', 'p3'}
+
+    def test_exclude_drops_projects(self, tmp_path):
+        with (
+            mock.patch(
+                'pluto.migrate.wandb_export.list_wandb_projects',
+                return_value=['p1', 'p2', 'p3'],
+            ),
+            mock.patch('pluto.migrate.cli._export_one_project', return_value=0) as w,
+        ):
+            run_migrate(
+                [
+                    'wandb',
+                    'export',
+                    '--entity',
+                    'acme',
+                    '--output',
+                    str(tmp_path),
+                    '--workers',
+                    '1',
+                    '--exclude',
+                    'p2',
+                ]
+            )
+        assert {c.args[1] for c in w.call_args_list} == {'p1', 'p3'}
+
+    def test_single_project_skips_project_listing(self, tmp_path):
+        with (
+            mock.patch('pluto.migrate.wandb_export.list_wandb_projects') as lst,
+            mock.patch('pluto.migrate.cli._export_one_project', return_value=0) as w,
+        ):
+            run_migrate(
+                [
+                    'wandb',
+                    'export',
+                    '--entity',
+                    'acme',
+                    '--project',
+                    'only',
+                    '--output',
+                    str(tmp_path),
+                ]
+            )
+        lst.assert_not_called()  # explicit --project => no account listing
+        assert w.call_args.args[1] == 'only'
+
+    def test_dest_project_rejected_for_multiple_projects(self, tmp_path):
+        with mock.patch(
+            'pluto.migrate.wandb_export.list_wandb_projects',
+            return_value=['p1', 'p2'],
+        ):
+            code = run_migrate(
+                [
+                    'wandb',
+                    'all',
+                    '--entity',
+                    'acme',
+                    '--output',
+                    str(tmp_path),
+                    '--dest-project',
+                    'combined',
+                    '--workers',
+                    '1',
+                ]
+            )
+        assert code == 2  # can't rename many projects into one
+
     def test_top_level_cli_help_does_not_need_migrate_extras(self):
         result = subprocess.run(
             [sys.executable, '-m', 'pluto', 'migrate', '--help'],

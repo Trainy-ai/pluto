@@ -257,6 +257,60 @@ class TestPlutoLoader:
         assert summary == {'loaded': 0, 'skipped': 1, 'failed': []}
         init.assert_not_called()
 
+    def _stage_min_run(self, tmp_path, project, run_id):
+        d = tmp_path / 'acme' / project / 'runs' / run_id
+        d.mkdir(parents=True)
+        write_json_atomic(
+            d / 'run.json',
+            {
+                'entity': 'acme',
+                'project': project,
+                'run_id': run_id,
+                'name': run_id,
+                'state': 'finished',
+            },
+        )
+        with PartWriter(d) as w:
+            w.write_row(
+                project_id=f'acme/{project}',
+                run_id=run_id,
+                attribute_path='loss',
+                attribute_type='metric',
+                step=0,
+                timestamp_ms=T0_MS,
+                float_value=1.0,
+            )
+        mark_run_exported(d, {'rows': 1})
+
+    def test_discover_respects_project_scope(self, tmp_path):
+        self._stage_min_run(tmp_path, 'vision', 'v1')
+        self._stage_min_run(tmp_path, 'audio', 'a1')
+        self._stage_min_run(tmp_path, 'text', 't1')
+        # include only
+        got = {
+            d.parent.parent.name
+            for d in PlutoLoader(
+                tmp_path, projects=['vision', 'audio']
+            )._discover_runs()
+        }
+        assert got == {'vision', 'audio'}
+        # exclude
+        got2 = {
+            d.parent.parent.name
+            for d in PlutoLoader(tmp_path, exclude_projects=['vision'])._discover_runs()
+        }
+        assert got2 == {'audio', 'text'}
+        # default = all
+        got3 = {d.parent.parent.name for d in PlutoLoader(tmp_path)._discover_runs()}
+        assert got3 == {'vision', 'audio', 'text'}
+
+    def test_custom_cache_path(self, tmp_path, mock_init):
+        _stage_run(tmp_path)
+        custom = tmp_path / 'ledger-vision.json'
+        PlutoLoader(tmp_path, cache_path=custom).load()
+        assert custom.exists()  # resume ledger went to the custom path
+        assert not (tmp_path / 'loaded_runs.json').exists()
+
     def test_external_id_collision_skips_by_default(self, tmp_path, mock_init):
         # A collision means the run already exists server-side but isn't in the
         # local cache. Re-replaying would duplicate media, so by default the

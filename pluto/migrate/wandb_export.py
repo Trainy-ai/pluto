@@ -630,3 +630,12 @@ class WandbExporter:
                     file_value=str(path.relative_to(tmp_dir)),
                 )
                 self._migrated('artifact-file')
+
+
+def list_wandb_projects(entity: str, api_key: Optional[str] = None) -> List[str]:
+    """Return the names of every wandb project under ``entity`` (for migrating a
+    whole account at once). Imported lazily so the base package stays light."""
+    import wandb
+
+    api = wandb.Api(api_key=api_key)
+    return [p.name for p in api.projects(entity)]

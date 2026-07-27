@@ -87,13 +87,26 @@ class PlutoLoader:
         force_resume: bool = False,
         stall_timeout: float = 600.0,
         cleanup: bool = False,
+        projects: Optional[List[str]] = None,
+        exclude_projects: Optional[List[str]] = None,
+        cache_path: Optional[Union[str, Path]] = None,
     ) -> None:
         self.input_dir = Path(input_dir)
+        # Resume ledger. Overridable so parallel per-project loaders each get
+        # their own file (one shared ledger would race under concurrent writes).
+        self.cache_path = (
+            Path(cache_path)
+            if cache_path is not None
+            else self.input_dir / LOADED_CACHE_FILENAME
+        )
         self.dest_project = dest_project
         self.flush_every = flush_every
         self.max_pending = max_pending
         self.dry_run = dry_run
         self.run_ids = set(run_ids) if run_ids else None
+        # Which staged projects to load: include-list (None = all) minus excludes.
+        self.projects = set(projects) if projects else None
+        self.exclude_projects = set(exclude_projects) if exclude_projects else set()
         self.force_resume = force_resume
         self.stall_timeout = stall_timeout
         # Delete each run's staged files once it is confirmed loaded, so a large
@@ -109,7 +122,7 @@ class PlutoLoader:
         """
         loaded, skipped, would_load = 0, 0, 0
         failed: List[Dict[str, str]] = []
-        cache = LoadedCache(self.input_dir / LOADED_CACHE_FILENAME)
+        cache = LoadedCache(self.cache_path)
 
         for run_dir in self._discover_runs():
             # A truncated/hand-edited run.json must not sink the whole batch.
@@ -207,11 +220,22 @@ class PlutoLoader:
         return {'loaded': loaded, 'skipped': skipped, 'failed': failed}
 
     def _discover_runs(self) -> List[Path]:
+        # Layout: input_dir/{entity}/{project}/runs/{run_id}. Filter by the
+        # project component so a scoped load (--project / --exclude) only picks
+        # up the requested projects.
         return sorted(
             d
             for d in self.input_dir.glob('*/*/runs/*')
-            if d.is_dir() and is_run_exported(d) and (d / 'run.json').exists()
+            if d.is_dir()
+            and is_run_exported(d)
+            and (d / 'run.json').exists()
+            and self._project_in_scope(d.parent.parent.name)
         )
+
+    def _project_in_scope(self, project: str) -> bool:
+        if project in self.exclude_projects:
+            return False
+        return self.projects is None or project in self.projects
 
     def _init_run(
         self,
