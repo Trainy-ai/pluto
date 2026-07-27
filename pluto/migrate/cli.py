@@ -14,10 +14,11 @@ missing dep produces an install hint instead of an ImportError traceback.
 from __future__ import annotations
 
 import argparse
+import sys
 import threading
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
-from typing import Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from pluto.migrate import _INSTALL_HINT
 
@@ -251,7 +252,11 @@ def _all_one_project(
     result: Dict[str, int] = {}
 
     def _export_worker() -> None:
-        result['code'] = _export_one_project(args, project)
+        try:
+            result['code'] = _export_one_project(args, project)
+        except Exception as e:  # a crashed export must not read as success (code 0)
+            print(f'[{project}] export crashed: {type(e).__name__}: {e}')
+            result['code'] = 2
 
     export_thread = threading.Thread(target=_export_worker, daemon=True)
     export_thread.start()
@@ -267,6 +272,7 @@ def _all_one_project(
             flush_every=args.flush_every,
             max_pending=args.max_pending,
             dry_run=False,
+            run_ids=getattr(args, 'run_ids', None),
             force_resume=args.force_resume,
             cleanup=getattr(args, 'cleanup', False),
             projects=[project],
@@ -361,10 +367,13 @@ def _run_over_projects(
             codes.append(worker(args, p, cache(p)))
         return max(codes)
 
-    with ProcessPoolExecutor(
-        max_workers=effective,
-        max_tasks_per_child=1,  # fresh process per project (no lingering pluto state)
-    ) as pool:  # type: ignore[call-overload]
+    # max_tasks_per_child (a fresh process per project, so no pluto global state
+    # lingers between projects) is Python 3.11+. On 3.10 the pool reuses workers,
+    # which is fine — the loader already does many init/finish cycles per process.
+    pool_kwargs: Dict[str, Any] = {'max_workers': effective}
+    if sys.version_info >= (3, 11):
+        pool_kwargs['max_tasks_per_child'] = 1
+    with ProcessPoolExecutor(**pool_kwargs) as pool:
         futures = {pool.submit(worker, args, p, cache(p)): p for p in projects}
         for fut in as_completed(futures):
             p = futures[fut]

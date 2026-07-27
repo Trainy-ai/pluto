@@ -203,6 +203,18 @@ class TestWandbExporter:
             'bins': [0, 1, 2, 3],
         }
 
+    def test_no_files_skips_file_media_but_keeps_histogram(self, tmp_path):
+        # --no-files (include_files=False) must not stage file-backed media rows:
+        # the files aren't downloaded, so a file_value pointer would dangle and
+        # fail the loader. Histograms carry no file and stay.
+        _, run_dir, summary = _export(tmp_path, include_files=False)
+        media = {m['attribute_path']: m for m in _rows(run_dir, 'media')}
+        assert 'sample' not in media  # image-file row dropped
+        assert 'weights' in media  # histogram kept
+        assert not (run_dir / 'files/media/images/sample_3_abc.png').exists()
+        # Dropped media is surfaced in coverage, not silently omitted.
+        assert 'media-file(--no-files)' in summary['coverage']['not_migrated']
+
     def test_system_metric_rows_keep_source_names(self, tmp_path):
         # Staging is source-faithful; the loader owns the sys/ translation.
         _, run_dir, _ = _export(tmp_path)

@@ -377,6 +377,11 @@ class WandbExporter:
         if isinstance(value, dict):
             media_type = value.get('_type')
             if media_type in _FILE_MEDIA_TYPES and value.get('path'):
+                if not self.include_files:
+                    # --no-files: the file won't be downloaded, so don't stage a
+                    # row pointing at it (a dangling ref would fail the loader).
+                    self._skipped('media-file(--no-files)')
+                    return
                 # Bounding boxes / segmentation masks ride on the image value
                 # but aren't part of the media file — flag that they're dropped.
                 if value.get('boxes') or value.get('masks'):
@@ -417,6 +422,9 @@ class WandbExporter:
                 )
                 self._migrated('histogram')
             elif media_type == 'images/separated' and value.get('filenames'):
+                if not self.include_files:
+                    self._skipped('media-file(--no-files)', len(value['filenames']))
+                    return
                 captions = value.get('captions') or []
                 for i, filename in enumerate(value['filenames']):
                     writer.write_row(
@@ -441,6 +449,9 @@ class WandbExporter:
                 # {path, caption, _type: <x>-file} dict (wandb.log({"k":[v0,v1]})).
                 # Emit one media row per item (loader batches same name+step ->
                 # sampleIndex order).
+                if not self.include_files:
+                    self._skipped('media-file(--no-files)', len(value[media_type]))
+                    return
                 items = value[media_type]
                 for it in items:
                     writer.write_row(

@@ -42,6 +42,7 @@ def test_unreachable_server_without_token_still_marks_unauthenticated():
     with (
         mock.patch.object(auth.httpx, 'Client') as client_cls,
         mock.patch.object(auth.keyring, 'get_password', return_value=None),
+        mock.patch.object(auth.webbrowser, 'open'),  # keep the test hermetic
         mock.patch.object(auth.sys, 'stdin', None),  # no interactive prompt
     ):
         client_cls.return_value.post.side_effect = httpx.ConnectTimeout('boom')

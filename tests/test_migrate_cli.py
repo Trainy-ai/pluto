@@ -162,6 +162,57 @@ class TestMigrateCli:
         assert loader.load.call_count >= 1  # staged runs still load (pipelined)
         assert code == 1  # but the failure is reported
 
+    def test_all_export_crash_is_not_reported_as_success(self, tmp_path):
+        # A crash in the export thread must surface as a non-zero exit, not 0.
+        loader = _mock_loader({'loaded': 0, 'skipped': 0, 'failed': []})
+        exporter = _mock_exporter()
+        exporter.export.side_effect = RuntimeError('wandb auth exploded')
+        with (
+            mock.patch(
+                'pluto.migrate.wandb_export.WandbExporter', return_value=exporter
+            ),
+            mock.patch('pluto.migrate.loader.PlutoLoader', return_value=loader),
+        ):
+            code = run_migrate(
+                [
+                    'wandb',
+                    'all',
+                    '--entity',
+                    'acme',
+                    '--project',
+                    'vision',
+                    '--output',
+                    str(tmp_path),
+                ]
+            )
+        assert code == 2  # export crash -> failure, not silent success
+
+    def test_all_forwards_run_id_filter_to_load(self, tmp_path):
+        exporter, loader = _mock_exporter(), _mock_loader()
+        with (
+            mock.patch(
+                'pluto.migrate.wandb_export.WandbExporter', return_value=exporter
+            ),
+            mock.patch('pluto.migrate.loader.PlutoLoader', return_value=loader) as cls,
+        ):
+            run_migrate(
+                [
+                    'wandb',
+                    'all',
+                    '--entity',
+                    'acme',
+                    '--project',
+                    'vision',
+                    '--output',
+                    str(tmp_path),
+                    '--run-id',
+                    'r1',
+                    '--run-id',
+                    'r2',
+                ]
+            )
+        assert cls.call_args.kwargs['run_ids'] == ['r1', 'r2']
+
     def test_all_rejects_dry_run(self, tmp_path):
         with mock.patch('pluto.migrate.wandb_export.WandbExporter') as cls:
             code = run_migrate(
