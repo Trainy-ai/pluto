@@ -270,6 +270,10 @@ class WandbExporter:
             if self.include_artifacts:
                 self._export_artifacts(run, writer, tmp_dir)
 
+        # Run-level context that has no home in the staging schema (sweep
+        # membership, input-artifact lineage) — flag it so it's not lost silently.
+        self._flag_run_level_omissions(run)
+
         # Coverage: one clear line per run of what was migrated vs. dropped
         # (dropped items also surface at WARNING so they're never silent).
         cov = self._fmt_coverage(self._cov_migrated, self._cov_skipped)
@@ -607,6 +611,24 @@ class WandbExporter:
                 return parsed
         return fallback_ms
 
+    def _flag_run_level_omissions(self, run: Any) -> None:
+        """Surface run-level context the migration can't carry over — sweep
+        membership and input-artifact (used_artifacts) lineage — so they show up
+        in the coverage report / --strict instead of vanishing silently. Both are
+        wrapped: these are extra API reads that must never fail an export."""
+        try:
+            if getattr(run, 'sweep', None) is not None:
+                self._skipped('sweep-metadata')
+        except Exception as e:
+            logger.debug(f'{tag}: sweep check failed for {run.id}: {e}')
+        # Input lineage only matters when artifacts are being migrated at all.
+        if self.include_artifacts:
+            try:
+                if any(True for _ in run.used_artifacts()):
+                    self._skipped('artifact-input-lineage')
+            except Exception as e:
+                logger.debug(f'{tag}: used_artifacts check failed for {run.id}: {e}')
+
     def _export_artifacts(self, run: Any, writer: PartWriter, tmp_dir: Path) -> None:
         base = self._row_base(run)
         try:
@@ -614,7 +636,18 @@ class WandbExporter:
         except Exception as e:
             logger.warning(f'{tag}: artifacts unavailable for {run.id}: {e}')
             return
+        versioning_lost = False
         for artifact in artifacts:
+            # Only the artifact's *files* migrate — versions, non-'latest'
+            # aliases, and the type/lineage graph don't. Skip wandb's internal
+            # per-run history artifact (always present, always v0/latest) so it
+            # doesn't false-trigger the flag.
+            if getattr(artifact, 'type', None) != 'wandb-history':
+                aliases = set(getattr(artifact, 'aliases', None) or [])
+                if getattr(artifact, 'version', None) not in (None, 'v0') or (
+                    aliases - {'latest'}
+                ):
+                    versioning_lost = True
             size = getattr(artifact, 'size', None)
             if (
                 self.artifact_max_bytes is not None
@@ -653,6 +686,8 @@ class WandbExporter:
                     file_value=str(path.relative_to(tmp_dir)),
                 )
                 self._migrated('artifact-file')
+        if versioning_lost:
+            self._skipped('artifact-versioning')
 
 
 def list_wandb_projects(entity: str, api_key: Optional[str] = None) -> List[str]:

@@ -45,10 +45,19 @@ class FakeFile:
 
 
 class FakeArtifact:
-    def __init__(self, name='model-weights:v2', type='model', size=100):
+    def __init__(
+        self,
+        name='model-weights:v2',
+        type='model',
+        size=100,
+        version='v0',
+        aliases=None,
+    ):
         self.name = name
         self.type = type
         self.size = size
+        self.version = version
+        self.aliases = aliases if aliases is not None else ['latest']
         self.created_at = CREATED_AT
 
     def download(self, root):
@@ -62,7 +71,14 @@ class FakeRun:
     entity = 'acme'
     project = 'vision'
 
-    def __init__(self, run_id='abc123', artifacts=None, output_log=None):
+    def __init__(
+        self,
+        run_id='abc123',
+        artifacts=None,
+        output_log=None,
+        sweep=None,
+        used_artifacts=None,
+    ):
         self.id = run_id
         self.name = 'sunny-lion-1'
         self.notes = 'baseline run'
@@ -74,6 +90,8 @@ class FakeRun:
         self.heartbeat_at = '2025-05-01T12:00:00Z'
         self.url = f'https://wandb.ai/acme/vision/runs/{run_id}'
         self.metadata = {'gpu': 'NVIDIA H100'}
+        self.sweep = sweep
+        self._used_artifacts = used_artifacts if used_artifacts is not None else []
         self._artifacts = artifacts if artifacts is not None else [FakeArtifact()]
         self._files = [
             FakeFile(
@@ -122,6 +140,9 @@ class FakeRun:
 
     def logged_artifacts(self):
         return list(self._artifacts)
+
+    def used_artifacts(self):
+        return list(self._used_artifacts)
 
 
 class FakeApi:
@@ -230,6 +251,42 @@ class TestWandbExporter:
         run._files.append(_FailingFile())
         _, _, summary = _export(tmp_path, run=run)
         assert 'file-download-failed' in summary['coverage']['not_migrated']
+
+    def test_sweep_membership_is_flagged(self, tmp_path):
+        # A run in a sweep loses its sweep membership/config — flag it.
+        run = FakeRun(sweep='sweep-abc')
+        _, _, summary = _export(tmp_path, run=run)
+        assert 'sweep-metadata' in summary['coverage']['not_migrated']
+
+    def test_input_artifact_lineage_is_flagged(self, tmp_path):
+        # A run that consumed artifacts (used_artifacts) loses that input lineage.
+        run = FakeRun(used_artifacts=[FakeArtifact(name='dataset:v0')])
+        _, _, summary = _export(tmp_path, run=run)
+        assert 'artifact-input-lineage' in summary['coverage']['not_migrated']
+
+    def test_artifact_versioning_is_flagged(self, tmp_path):
+        # A logged artifact with version history / non-'latest' aliases: only its
+        # files migrate, the versioning doesn't.
+        run = FakeRun(artifacts=[FakeArtifact(name='model:v3', version='v3')])
+        _, _, summary = _export(tmp_path, run=run)
+        assert 'artifact-versioning' in summary['coverage']['not_migrated']
+
+    def test_plain_run_has_no_false_lineage_flags(self, tmp_path):
+        # No sweep, no used artifacts, a v0/latest artifact, and wandb's internal
+        # history artifact (v-bumped) must NOT trip any lineage/sweep flag.
+        run = FakeRun(
+            artifacts=[
+                FakeArtifact(name='model:v0'),
+                FakeArtifact(
+                    name='run-abc-history:v9', type='wandb-history', version='v9'
+                ),
+            ]
+        )
+        _, _, summary = _export(tmp_path, run=run)
+        nm = summary['coverage']['not_migrated']
+        assert 'sweep-metadata' not in nm
+        assert 'artifact-input-lineage' not in nm
+        assert 'artifact-versioning' not in nm
 
     def test_system_metric_rows_keep_source_names(self, tmp_path):
         # Staging is source-faithful; the loader owns the sys/ translation.
