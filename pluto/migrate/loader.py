@@ -182,13 +182,30 @@ class PlutoLoader:
                         op = self._init_run(manifest, external_id, resume=True)
                     else:
                         # Exists but we never started it here (e.g. loaded on
-                        # another machine): skip to avoid duplicating media, and
-                        # record it so future re-runs skip via the cache.
+                        # another machine): skip re-replay to avoid duplicating
+                        # media. BUT the create-with-existing above already
+                        # reopened it to RUNNING server-side (the DDP-style
+                        # "create an existing run = resume it" path). Left as-is
+                        # the run is stuck RUNNING with a now() finish time, so
+                        # re-attach and finish() — no replay — to restore its
+                        # terminal status + historical statusUpdated, then skip.
                         logger.info(
                             f'{tag}: {external_id} already exists on server; '
-                            'skipping (pass --force-resume to resume and '
-                            're-replay)'
+                            'restoring its finished state and skipping (pass '
+                            '--force-resume to resume and re-replay)'
                         )
+                        try:
+                            restore = self._init_run(
+                                manifest, external_id, resume=True
+                            )
+                            restore.finish(
+                                code=0 if manifest.get('state') == 'finished' else 1
+                            )
+                        except Exception as e:
+                            logger.warning(
+                                f'{tag}: could not restore terminal status for '
+                                f'{external_id}: {e}'
+                            )
                         cache.mark_loaded(cache_key, {'note': 'existed-on-server'})
                         skipped += 1
                         continue

@@ -311,24 +311,31 @@ class TestPlutoLoader:
         assert custom.exists()  # resume ledger went to the custom path
         assert not (tmp_path / 'loaded_runs.json').exists()
 
-    def test_external_id_collision_skips_by_default(self, tmp_path, mock_init):
+    def test_external_id_collision_restores_and_skips_by_default(
+        self, tmp_path, mock_init
+    ):
         # A collision means the run already exists server-side but isn't in the
-        # local cache. Re-replaying would duplicate media, so by default the
-        # loader skips it (and records it so future re-runs skip via cache),
-        # rather than resuming and re-uploading.
+        # local cache. Re-replaying would duplicate media, so the loader skips
+        # the replay. BUT the create-with-existing already reopened the run to
+        # RUNNING (DDP-style resume), so it re-attaches (resume) and finish()es
+        # to restore the terminal status + historical timestamp — without
+        # replaying — then skips.
         from pluto.op import RunExistsError
 
-        init, op = mock_init
+        init, _ = mock_init
+        restore_op = mock.MagicMock()
         init.side_effect = [
             RunExistsError(
                 "Run with externalId 'wandb::acme/vision/abc123' already exists."
             ),
+            restore_op,  # the resume re-attach used to restore terminal status
         ]
         _stage_run(tmp_path)
         summary = PlutoLoader(tmp_path).load()
         assert summary == {'loaded': 0, 'skipped': 1, 'failed': []}
-        assert init.call_count == 1  # no second (resume) init
-        op._log_metrics_batch.assert_not_called()  # nothing re-replayed
+        assert init.call_count == 2  # plain init (raises) + resume to restore
+        restore_op.finish.assert_called_once()  # restored to terminal status
+        restore_op._log_metrics_batch.assert_not_called()  # NOT re-replayed
         assert LoadedCache(tmp_path / 'loaded_runs.json').is_loaded(CACHE_KEY)
 
     def test_external_id_collision_replays_with_force_resume(self, tmp_path, mock_init):
