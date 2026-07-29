@@ -49,9 +49,11 @@ def _add_common_flags(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         '--workers',
         type=int,
-        default=8,
-        help='parallelism (default: 8): projects migrated concurrently, and the '
-        'per-run file-download budget on export',
+        default=4,
+        help='parallelism (default: 4): projects migrated concurrently, and the '
+        'per-run file-download budget on export. Each concurrent project holds '
+        'its run history + upload queue in memory, so raise this only if the host '
+        'has the RAM (~2-4 GB/worker); lower it on small machines.',
     )
 
 
