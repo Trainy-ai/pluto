@@ -188,11 +188,50 @@ class WandbExporter:
     def project_path(self) -> str:
         return f'{self.entity}/{self.project}'
 
+    def _purge_empty_wandb_cache(self) -> int:
+        """Delete 0-byte parquet files from wandb's local cache.
+
+        A crash (or OOM) mid-download truncates a run-history parquet to 0
+        bytes; wandb then reuses that empty file on every later read and the
+        export fails with 'Parquet file too small. Size is 0' — permanently,
+        until the file is removed. A valid parquet is never empty, so deleting
+        these is always safe: wandb re-downloads the real data on next read.
+        Returns the number removed."""
+        env = os.environ.get('WANDB_CACHE_DIR')
+        cache = Path(env) if env else Path.home() / '.cache' / 'wandb'
+        removed: List[str] = []
+        try:
+            for p in cache.rglob('*.parquet'):
+                try:
+                    if p.stat().st_size == 0:
+                        p.unlink()
+                        removed.append(p.name)
+                except OSError:
+                    pass
+        except Exception as e:  # cache dir absent/unreadable — nothing to do
+            logger.debug(f'{tag}: wandb cache sweep skipped: {e}')
+        if removed:
+            # WARNING, not INFO: this is a non-routine recovery event (a prior
+            # crash left junk in wandb's cache) the user should see. Name the
+            # files so it's clear exactly what was cleared + re-downloaded.
+            shown = ', '.join(removed[:10])
+            if len(removed) > 10:
+                shown += f' (+{len(removed) - 10} more)'
+            logger.warning(
+                f'{tag}: cleared {len(removed)} empty (crash-truncated) wandb '
+                f'cache file(s); wandb will re-download them: {shown}'
+            )
+        return len(removed)
+
     def export(self) -> Dict[str, Any]:
         """Export all matching runs. Returns {'exported', 'skipped', 'failed'}."""
         exported, skipped = 0, 0
         failed: List[Dict[str, str]] = []
 
+        # A prior crash can poison wandb's cache with 0-byte parquets that make
+        # every history read fail; clear them up front so a crash never blocks
+        # a later export.
+        self._purge_empty_wandb_cache()
         runs_root = self.output_dir / self.entity / self.project / 'runs'
         for run in self.api.runs(self.project_path):
             if self.run_ids is not None and run.id not in self.run_ids:
@@ -210,13 +249,36 @@ class WandbExporter:
                 skipped += 1
                 continue
 
-            try:
-                self._export_run(run, run_dir)
-                exported += 1
-                logger.info(f'{tag}: exported {run.id} ({run.name})')
-            except Exception as e:  # keep going: one bad run must not stop all
-                logger.error(f'{tag}: export failed for {run.id}: {e}')
-                failed.append({'run_id': run.id, 'error': f'{type(e).__name__}: {e}'})
+            # Retry once: recover from a crash-truncated cache read (purge the
+            # empty parquet so wandb re-downloads) or a transient network blip,
+            # instead of losing the run. _export_run rebuilds its tmp dir each
+            # attempt, so a retry is clean.
+            last_err: Optional[Exception] = None
+            for attempt in range(2):
+                try:
+                    self._export_run(run, run_dir)
+                    exported += 1
+                    logger.info(
+                        f'{tag}: exported {run.id} ({run.name})'
+                        + (' (on retry)' if attempt else '')
+                    )
+                    last_err = None
+                    break
+                except Exception as e:  # keep going: one bad run must not stop all
+                    last_err = e
+                    if attempt == 0:
+                        self._purge_empty_wandb_cache()
+                        logger.warning(
+                            f'{tag}: export of {run.id} failed ({e}); retrying'
+                        )
+            if last_err is not None:
+                logger.error(f'{tag}: export failed for {run.id}: {last_err}')
+                failed.append(
+                    {
+                        'run_id': run.id,
+                        'error': f'{type(last_err).__name__}: {last_err}',
+                    }
+                )
 
         coverage = {
             'migrated': dict(self._cov_migrated_total),

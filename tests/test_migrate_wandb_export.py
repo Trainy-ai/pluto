@@ -373,6 +373,41 @@ class TestWandbExporter:
         manifest = read_json(tmp_path / 'acme' / 'vision' / 'manifest.json')
         assert manifest['failed'][0]['run_id'] == 'boom'
 
+    def test_export_retries_after_transient_history_failure(self, tmp_path):
+        # A crash-truncated cache read (or a network blip) fails the first
+        # attempt; the exporter purges + retries once and the run still exports.
+        run = FakeRun()
+        orig = run.scan_history
+        calls = {'n': 0}
+
+        def flaky(page_size=1000):
+            calls['n'] += 1
+            if calls['n'] == 1:
+                raise RuntimeError('Parquet file too small. Size is 0 but need 8')
+            return orig(page_size=page_size)
+
+        run.scan_history = flaky
+        _, run_dir, summary = _export(tmp_path, run=run)
+        assert summary['exported'] == 1 and summary['failed'] == []
+        assert calls['n'] == 2  # failed once, retried, succeeded
+        assert is_run_exported(run_dir)
+
+    def test_purge_empty_wandb_cache_removes_only_zero_byte_parquets(
+        self, tmp_path, monkeypatch
+    ):
+        cache = tmp_path / 'wandbcache' / 'runhistory'
+        cache.mkdir(parents=True)
+        good = cache / 'good.parquet'
+        good.write_bytes(b'PAR1realdata')
+        empty = cache / 'empty.parquet'  # crash-truncated
+        empty.write_bytes(b'')
+        monkeypatch.setenv('WANDB_CACHE_DIR', str(tmp_path / 'wandbcache'))
+        exporter = WandbExporter(
+            entity='acme', project='vision', output_dir=tmp_path, api=FakeApi([])
+        )
+        assert exporter._purge_empty_wandb_cache() == 1
+        assert good.exists() and not empty.exists()  # only the empty one removed
+
     def test_run_ids_filter(self, tmp_path):
         wanted, unwanted = FakeRun(run_id='keep'), FakeRun(run_id='drop')
         exporter = WandbExporter(
