@@ -22,7 +22,7 @@ tag = 'Interface'
 
 # Set once a persistent 401 has been reported, so the ~4 s heartbeat doesn't
 # repeat the same (static) message for the life of the run.
-_auth_error_logged = False
+_logged_401 = False
 
 # 4xx status codes that are commonly *transient* and worth retrying like 5xx:
 #   401 Unauthorized     — auth/token validation races (e.g. the token service
@@ -36,18 +36,16 @@ RETRYABLE_STATUS_CODES = frozenset({401, 408, 429})
 
 # Fallback for the API-key page when the caller has no Settings handy (e.g. the
 # sync process, which only receives a settings dict). Mirrors sets.url_token.
-DEFAULT_URL_TOKEN = 'https://pluto.trainy.ai/api-keys'
+DEFAULT_API_PAGE_URL = 'https://pluto.trainy.ai/api-keys'
 
 
-def _key_page_url_from_env() -> str:
+def _api_page_url_from_env() -> str:
     """Resolve the API-key page without reading anything off ``Settings``.
 
     ``Settings`` holds ``_auth``, so a string read off it — even a public URL —
-    is credential-adjacent data; log lines should not be built from it. (CodeQL
-    agrees: its taint tracking is field-insensitive, so ``settings.url_token``
-    in a log call is reported as logging the key in clear text.) Log paths call
-    this instead; the raised ``PlutoAuthError`` still carries the exact
-    configured URL, since an exception message isn't a log sink.
+    is credential-adjacent data, and log lines shouldn't be built from it. Log
+    paths call this instead; the raised ``PlutoAuthError`` still carries the
+    exact configured URL, since an exception message isn't a log sink.
 
     Self-hosted deployments configured via ``PLUTO_URL_APP`` still get their own
     key page; ones configured only through ``init(host=...)`` fall back to the
@@ -56,10 +54,10 @@ def _key_page_url_from_env() -> str:
     url_app = os.environ.get('PLUTO_URL_APP') or os.environ.get('MLOP_URL_APP')
     if url_app:
         return f'{url_app.rstrip("/")}/api-keys'
-    return DEFAULT_URL_TOKEN
+    return DEFAULT_API_PAGE_URL
 
 
-def _auth_key_source() -> Tuple[str, str]:
+def _source_and_fix() -> Tuple[str, str]:
     """Describe *which* key the server rejected, so the fix is unambiguous.
 
     An expired key is the single most common cause of a persistent 401, and the
@@ -85,7 +83,7 @@ def _auth_key_source() -> Tuple[str, str]:
     )
 
 
-def auth_error_message(server_msg: str = '', url_token: Optional[str] = None) -> str:
+def http_401_message(server_msg: str = '', page_url: Optional[str] = None) -> str:
     """Build the user-facing message for a 401 that never cleared.
 
     A persistent 401 reads like a server outage in the logs ("response code 401
@@ -93,16 +91,16 @@ def auth_error_message(server_msg: str = '', url_token: Optional[str] = None) ->
     problem: the key expired or was revoked. Say that outright, name the key
     source, and give the exact command that fixes it.
 
-    ``url_token`` is the configured API-key page (``settings.url_token``). Pass
+    ``page_url`` is the configured API-key page (``settings.url_token``). Pass
     it when the message is going into an exception; omit it on log paths, where
-    it is resolved from the environment instead — see ``_key_page_url_from_env``.
+    it is resolved from the environment instead — see ``_api_page_url_from_env``.
     """
-    source, fix = _auth_key_source()
+    source, fix = _source_and_fix()
     msg = (
         f'authentication failed (HTTP 401): the Pluto server rejected {source}. '
         'This is an authentication failure, not a server outage — the key has '
         'most likely expired or been revoked. Create a new key at '
-        f'{url_token or _key_page_url_from_env()}, then {fix}.'
+        f'{page_url or _api_page_url_from_env()}, then {fix}.'
     )
     # The body sometimes carries a more specific reason ("token expired",
     # "revoked"); keep it, but only when it adds something over bare "401".
@@ -348,18 +346,18 @@ class ServerInterface:
                     suppress_httpx_logs=True,
                 )
 
-    def _log_auth_error_once(self, server_msg: str) -> None:
+    def _log_401_once(self, server_msg: str) -> None:
         """Log a persistent-401 message at most once per process.
 
         Builds the message here, from ``server_msg`` and the environment only:
         nothing read off ``self.settings`` (which holds the API key) reaches a
         log line.
         """
-        global _auth_error_logged
-        if _auth_error_logged:
+        global _logged_401
+        if _logged_401:
             return
-        _auth_error_logged = True
-        logger.critical('%s: %s', tag, auth_error_message(server_msg))
+        _logged_401 = True
+        logger.critical('%s: %s', tag, http_401_message(server_msg))
 
     def _log_failed_request(
         self,
@@ -449,16 +447,16 @@ class ServerInterface:
                 server_msg = error_info.partition(': ')[2]
                 if raise_on_error:
                     raise PlutoAuthError(
-                        auth_error_message(
+                        http_401_message(
                             server_msg=server_msg,
-                            url_token=getattr(self.settings, 'url_token', None),
+                            page_url=getattr(self.settings, 'url_token', None),
                         )
                     )
                 # Paths that swallow failures (heartbeats, status updates, log
                 # name registration) still need to tell the user *why* their
                 # data stopped flowing — but the heartbeat fires every ~4 s, so
                 # say it once per process rather than on every cycle.
-                self._log_auth_error_once(server_msg)
+                self._log_401_once(server_msg)
                 return None
 
             # Distinguish a persistent server error (we got HTTP responses but

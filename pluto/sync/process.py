@@ -35,7 +35,7 @@ from ..iface import (
     PlutoAuthError,
     PlutoRequestError,
     _server_error_message,
-    auth_error_message,
+    http_401_message,
 )
 from .store import FileRecord, RecordType, SyncRecord, SyncStore
 
@@ -1477,7 +1477,7 @@ class _SyncUploader:
             # resolved from the environment rather than read off the settings
             # dict, which carries `_auth`.
             raise PlutoAuthError(
-                auth_error_message(_server_error_message(last_error.response))
+                http_401_message(_server_error_message(last_error.response))
             ) from last_error
 
         raise last_error or Exception('Request failed after retries')

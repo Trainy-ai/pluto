@@ -16,7 +16,7 @@ from pluto.iface import (
     PlutoRequestError,
     ServerInterface,
     _server_error_message,
-    auth_error_message,
+    http_401_message,
 )
 from pluto.sets import Settings
 
@@ -147,10 +147,10 @@ def test_try_persistent_401_raises_after_retries():
     assert 'api-keys' in msg
 
 
-def test_auth_error_message_names_env_var_key_source(monkeypatch):
+def test_message_names_env_var_key_source(monkeypatch):
     """The fix differs by key source, so the message must name the right one."""
     monkeypatch.setenv('PLUTO_API_KEY', 'k')
-    msg = auth_error_message(url_token='https://self.hosted/api-keys')
+    msg = http_401_message(page_url='https://self.hosted/api-keys')
     assert 'PLUTO_API_KEY' in msg
     assert 'update PLUTO_API_KEY' in msg
     # Self-hosted deployments must not be pointed at the SaaS key page.
@@ -158,36 +158,36 @@ def test_auth_error_message_names_env_var_key_source(monkeypatch):
 
     monkeypatch.delenv('PLUTO_API_KEY')
     monkeypatch.delenv('MLOP_API_TOKEN', raising=False)
-    msg = auth_error_message()
+    msg = http_401_message()
     assert 'pluto login' in msg
 
 
-def test_auth_error_message_resolves_key_page_from_env(monkeypatch):
+def test_message_resolves_api_page_from_env(monkeypatch):
     """Log paths can't read the key page off Settings (it holds the API key,
-    and log lines must not be built from it), so an omitted url_token resolves
+    and log lines must not be built from it), so an omitted page_url resolves
     from the environment — self-hosted still gets its own page."""
     monkeypatch.delenv('PLUTO_URL_APP', raising=False)
     monkeypatch.delenv('MLOP_URL_APP', raising=False)
-    assert 'https://pluto.trainy.ai/api-keys' in auth_error_message()
+    assert 'https://pluto.trainy.ai/api-keys' in http_401_message()
 
     monkeypatch.setenv('PLUTO_URL_APP', 'https://self.hosted/')
-    assert 'https://self.hosted/api-keys' in auth_error_message()
+    assert 'https://self.hosted/api-keys' in http_401_message()
 
 
-def test_auth_error_message_keeps_specific_server_reason(monkeypatch):
+def test_message_keeps_specific_server_reason(monkeypatch):
     monkeypatch.delenv('PLUTO_API_KEY', raising=False)
     monkeypatch.delenv('MLOP_API_TOKEN', raising=False)
     # A specific reason is worth surfacing...
-    assert 'token expired' in auth_error_message(server_msg='token expired')
+    assert 'token expired' in http_401_message(server_msg='token expired')
     # ...but a bare restatement of the status code adds nothing.
-    assert 'Server said' not in auth_error_message(server_msg='Unauthorized')
+    assert 'Server said' not in http_401_message(server_msg='Unauthorized')
 
 
 def test_try_persistent_401_without_raise_logs_once(monkeypatch, caplog):
     """Fire-and-forget paths (heartbeat, status update, logName registration)
     swallow failures, so the only way the user learns their key expired is the
     log — but the heartbeat fires every ~4 s, so it must not repeat."""
-    monkeypatch.setattr('pluto.iface._auth_error_logged', False)
+    monkeypatch.setattr('pluto.iface._logged_401', False)
     iface = _make_iface()
 
     def fake_method(url, content=None, headers=None, **kwargs):
