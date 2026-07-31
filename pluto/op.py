@@ -579,9 +579,6 @@ class Op:
             'url_update_tags': self.settings.url_update_tags,
             'url_file': self.settings.url_file,  # For file uploads
             'url_message': self.settings.url_message,  # For console logs
-            # Only used to point at the right API-key page in auth errors —
-            # matters for self-hosted instances, where the default is wrong.
-            'url_token': self.settings.url_token,
             'x_log_level': self.settings.x_log_level,
             'pluto_version': self.settings.pluto_version,
             'pluto_commit': self.settings.pluto_commit,

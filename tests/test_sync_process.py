@@ -1225,7 +1225,9 @@ class TestSyncUploaderErrorHandling:
 
         monkeypatch.delenv('PLUTO_API_KEY', raising=False)
         monkeypatch.delenv('MLOP_API_TOKEN', raising=False)
-        uploader.settings['url_token'] = 'https://self.hosted/api-keys'
+        # The key page comes from the environment, never off the settings dict
+        # (it carries `_auth`, and this exception gets logged by the caller).
+        monkeypatch.setenv('PLUTO_URL_APP', 'https://self.hosted')
 
         request = httpx.Request('POST', 'https://test.example.com/ingest/metrics')
         response = httpx.Response(401, text='Unauthorized', request=request)

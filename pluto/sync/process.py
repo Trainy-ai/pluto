@@ -1473,11 +1473,11 @@ class _SyncUploader:
             isinstance(last_error, httpx.HTTPStatusError)
             and last_error.response.status_code == 401
         ):
+            # No url_token: the caller logs this exception, and the key page is
+            # resolved from the environment rather than read off the settings
+            # dict, which carries `_auth`.
             raise PlutoAuthError(
-                auth_error_message(
-                    server_msg=_server_error_message(last_error.response),
-                    url_token=self.settings.get('url_token'),
-                )
+                auth_error_message(_server_error_message(last_error.response))
             ) from last_error
 
         raise last_error or Exception('Request failed after retries')

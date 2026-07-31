@@ -39,6 +39,26 @@ RETRYABLE_STATUS_CODES = frozenset({401, 408, 429})
 DEFAULT_URL_TOKEN = 'https://pluto.trainy.ai/api-keys'
 
 
+def _key_page_url_from_env() -> str:
+    """Resolve the API-key page without reading anything off ``Settings``.
+
+    ``Settings`` holds ``_auth``, so a string read off it — even a public URL —
+    is credential-adjacent data; log lines should not be built from it. (CodeQL
+    agrees: its taint tracking is field-insensitive, so ``settings.url_token``
+    in a log call is reported as logging the key in clear text.) Log paths call
+    this instead; the raised ``PlutoAuthError`` still carries the exact
+    configured URL, since an exception message isn't a log sink.
+
+    Self-hosted deployments configured via ``PLUTO_URL_APP`` still get their own
+    key page; ones configured only through ``init(host=...)`` fall back to the
+    default here, and to the exact URL in the exception.
+    """
+    url_app = os.environ.get('PLUTO_URL_APP') or os.environ.get('MLOP_URL_APP')
+    if url_app:
+        return f'{url_app.rstrip("/")}/api-keys'
+    return DEFAULT_URL_TOKEN
+
+
 def _auth_key_source() -> Tuple[str, str]:
     """Describe *which* key the server rejected, so the fix is unambiguous.
 
@@ -72,13 +92,17 @@ def auth_error_message(server_msg: str = '', url_token: Optional[str] = None) ->
     ... from https://pluto-api...") even though it is almost always a local
     problem: the key expired or was revoked. Say that outright, name the key
     source, and give the exact command that fixes it.
+
+    ``url_token`` is the configured API-key page (``settings.url_token``). Pass
+    it when the message is going into an exception; omit it on log paths, where
+    it is resolved from the environment instead — see ``_key_page_url_from_env``.
     """
     source, fix = _auth_key_source()
     msg = (
         f'authentication failed (HTTP 401): the Pluto server rejected {source}. '
         'This is an authentication failure, not a server outage — the key has '
         'most likely expired or been revoked. Create a new key at '
-        f'{url_token or DEFAULT_URL_TOKEN}, then {fix}.'
+        f'{url_token or _key_page_url_from_env()}, then {fix}.'
     )
     # The body sometimes carries a more specific reason ("token expired",
     # "revoked"); keep it, but only when it adds something over bare "401".
@@ -324,22 +348,18 @@ class ServerInterface:
                     suppress_httpx_logs=True,
                 )
 
-    def _log_auth_error_once(self, message: str) -> None:
-        """Log a persistent-401 message at most once per process."""
+    def _log_auth_error_once(self, server_msg: str) -> None:
+        """Log a persistent-401 message at most once per process.
+
+        Builds the message here, from ``server_msg`` and the environment only:
+        nothing read off ``self.settings`` (which holds the API key) reaches a
+        log line.
+        """
         global _auth_error_logged
         if _auth_error_logged:
             return
         _auth_error_logged = True
-        # `message` is generated text plus the public API-key page URL — never
-        # key material. CodeQL flags it because its taint tracking is
-        # field-insensitive: the URL is read off a Settings object that also
-        # holds `_auth` (which can come from getpass()), so it treats any
-        # attribute of that object as a password.
-        logger.critical(  # codeql[py/clear-text-logging-sensitive-data]
-            '%s: %s',
-            tag,
-            message,  # codeql[py/clear-text-logging-sensitive-data]
-        )
+        logger.critical('%s: %s', tag, auth_error_message(server_msg))
 
     def _log_failed_request(
         self,
@@ -426,17 +446,19 @@ class ServerInterface:
             # network error instead, that's a connectivity story, not an auth
             # one, and error_info carries no server message.)
             if last_status == 401 and error_info.startswith('HTTP 401'):
-                auth_msg = auth_error_message(
-                    server_msg=error_info.partition(': ')[2],
-                    url_token=getattr(self.settings, 'url_token', None),
-                )
+                server_msg = error_info.partition(': ')[2]
                 if raise_on_error:
-                    raise PlutoAuthError(auth_msg)
+                    raise PlutoAuthError(
+                        auth_error_message(
+                            server_msg=server_msg,
+                            url_token=getattr(self.settings, 'url_token', None),
+                        )
+                    )
                 # Paths that swallow failures (heartbeats, status updates, log
                 # name registration) still need to tell the user *why* their
                 # data stopped flowing — but the heartbeat fires every ~4 s, so
                 # say it once per process rather than on every cycle.
-                self._log_auth_error_once(auth_msg)
+                self._log_auth_error_once(server_msg)
                 return None
 
             # Distinguish a persistent server error (we got HTTP responses but

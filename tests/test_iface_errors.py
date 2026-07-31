@@ -162,6 +162,18 @@ def test_auth_error_message_names_env_var_key_source(monkeypatch):
     assert 'pluto login' in msg
 
 
+def test_auth_error_message_resolves_key_page_from_env(monkeypatch):
+    """Log paths can't read the key page off Settings (it holds the API key,
+    and log lines must not be built from it), so an omitted url_token resolves
+    from the environment — self-hosted still gets its own page."""
+    monkeypatch.delenv('PLUTO_URL_APP', raising=False)
+    monkeypatch.delenv('MLOP_URL_APP', raising=False)
+    assert 'https://pluto.trainy.ai/api-keys' in auth_error_message()
+
+    monkeypatch.setenv('PLUTO_URL_APP', 'https://self.hosted/')
+    assert 'https://self.hosted/api-keys' in auth_error_message()
+
+
 def test_auth_error_message_keeps_specific_server_reason(monkeypatch):
     monkeypatch.delenv('PLUTO_API_KEY', raising=False)
     monkeypatch.delenv('MLOP_API_TOKEN', raising=False)
