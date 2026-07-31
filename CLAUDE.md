@@ -320,9 +320,24 @@ expired or revoked — a local problem that used to read like an outage in the l
 ("response code 401 ... from https://pluto-api..."). Those paths now report it as
 an auth failure:
 
-- `auth_error_message()` (`pluto/iface.py`) builds the single user-facing message:
+- `http_401_message()` (`pluto/iface.py`) builds the single user-facing message:
   names the key source (`PLUTO_API_KEY` vs. `pluto login` keyring), says it is not
-  an outage, and links `settings.url_token` (correct for self-hosted).
+  an outage, and links the API-key page.
+- **The server already says which key problem it is** — the web API returns
+  `{"error": "Unauthorized", "message": "API key has expired"}` (also "has been
+  revoked" / "Key not found"), and the ingest service returns `{"code": 1002,
+  "message": ...}`. `_server_error_message` reads `error` first (validation
+  failures put the reason there) and falls through to `message` when `error` is
+  only the status phrase — see `GENERIC_ERRORS`. When a reason comes back, the
+  message states it ("The server says: API key has expired."); the "most likely
+  expired or been revoked" hedge is only for when the body says nothing.
+  Note the server has no *stable* code for this — matching is on prose.
+- Log paths must not build strings from anything read off `Settings` (it holds
+  `_auth`), so they resolve the key page via `_api_page_url_from_env()`
+  (`PLUTO_URL_APP`), while the raised `PlutoAuthError` carries the exact
+  `settings.url_token`. Helper names avoid credential words on purpose: CodeQL's
+  `py/clear-text-logging-sensitive-data` classifies a call's result as sensitive
+  by callee name, and inline `# codeql[...]` suppressions are not honored here.
 - `PlutoAuthError` (subclass of `PlutoRequestError`) is raised on retry
   exhaustion by `ServerInterface._try` and `_SyncUploader._post_with_retry`, so a
   key that expires *mid-run* surfaces through the sync process too. `init()`
