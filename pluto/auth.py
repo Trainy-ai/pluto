@@ -7,6 +7,7 @@ import webbrowser
 import httpx
 import keyring
 
+from .iface import auth_error_message
 from .log import setup_logger, teardown_logger
 from .sets import get_console, setup
 from .util import ANSI, import_lib, print_url
@@ -89,11 +90,20 @@ def login(settings=None, retry=False):
         # covers the NameError case where `r` is undefined because the
         # network request itself failed.
         if auth_was_provided:
-            tlogger.warning(
-                '%s: server validation failed (token may still be valid); reason: %s',
-                tag,
-                e,
-            )
+            # A 401 here is definitive: the server saw the key and rejected it.
+            # Don't muddy that with "may still be valid" — that wording sends
+            # users hunting for an outage when their key has simply expired.
+            if isinstance(e, httpx.HTTPStatusError) and e.response.status_code == 401:
+                tlogger.critical(
+                    '%s: %s', tag, auth_error_message(url_token=settings.url_token)
+                )
+            else:
+                tlogger.warning(
+                    '%s: server validation failed (token may still be valid); '
+                    'reason: %s',
+                    tag,
+                    e,
+                )
             teardown_logger(tlogger)
             return
         if retry:

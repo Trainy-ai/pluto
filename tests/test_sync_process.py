@@ -1215,6 +1215,40 @@ class TestSyncUploaderErrorHandling:
             uploader.upload_metrics_batch(records)
             assert mock_client.post.call_count == 3
 
+    def test_persistent_401_raises_actionable_auth_error(self, uploader, monkeypatch):
+        """A key that expires mid-run surfaces only through this exception's
+        message ("Failed to upload metrics: <error>"), so it must say the key
+        is bad — not leave the user reading a bare 401 as a server outage."""
+        import httpx
+
+        from pluto.iface import PlutoAuthError
+
+        monkeypatch.delenv('PLUTO_API_KEY', raising=False)
+        monkeypatch.delenv('MLOP_API_TOKEN', raising=False)
+        uploader.settings['url_token'] = 'https://self.hosted/api-keys'
+
+        request = httpx.Request('POST', 'https://test.example.com/ingest/metrics')
+        response = httpx.Response(401, text='Unauthorized', request=request)
+
+        with patch('httpx.Client') as MockClient:
+            mock_client = MagicMock()
+            mock_client.post.return_value = response
+            MockClient.return_value = mock_client
+            uploader._client = None
+
+            with pytest.raises(PlutoAuthError) as excinfo:
+                uploader._post_with_retry('https://x', b'{}', {})
+
+        # 401 stays retryable (transient token-service races do happen)...
+        assert mock_client.post.call_count == 3
+        # ...but once it's clearly persistent, the message names the cause,
+        # the fix, and the right key page for self-hosted deployments.
+        msg = str(excinfo.value)
+        assert 'expired' in msg
+        assert 'not a server outage' in msg
+        assert 'pluto login' in msg
+        assert 'https://self.hosted/api-keys' in msg
+
 
 class TestDistributedEnvironmentDetection:
     """Tests for DDP/distributed environment detection."""

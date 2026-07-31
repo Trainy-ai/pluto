@@ -28,7 +28,7 @@ from .api import (
 from .auth import login
 from .data import Data
 from .file import Artifact, Audio, File, Image, Text, Video
-from .iface import PlutoRequestError, ServerInterface
+from .iface import PlutoAuthError, PlutoRequestError, ServerInterface
 from .log import flush_console_buffers, setup_logger, teardown_logger
 from .store import DataStore
 from .sync import SyncProcessManager
@@ -463,6 +463,11 @@ class Op:
                         client=tmp_iface.client_api,
                         raise_on_error=True,
                     )
+            except PlutoAuthError as e:
+                # The key was rejected outright. The message already says what
+                # is wrong and how to fix it, so don't bury it behind a
+                # "Failed to create run" prefix that implies a server problem.
+                raise RuntimeError(str(e)) from e
             except PlutoRequestError as e:
                 # The server rejected the request (e.g. a validation error such
                 # as "A run can have at most one group:* tag."). Surface the
@@ -574,6 +579,9 @@ class Op:
             'url_update_tags': self.settings.url_update_tags,
             'url_file': self.settings.url_file,  # For file uploads
             'url_message': self.settings.url_message,  # For console logs
+            # Only used to point at the right API-key page in auth errors —
+            # matters for self-hosted instances, where the default is wrong.
+            'url_token': self.settings.url_token,
             'x_log_level': self.settings.x_log_level,
             'pluto_version': self.settings.pluto_version,
             'pluto_commit': self.settings.pluto_commit,

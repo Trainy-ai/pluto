@@ -6,10 +6,18 @@ These exercise the retry/raise policy of ``_try`` without a real server:
 - Network exceptions never raise PlutoRequestError (caller sees None).
 """
 
+import logging
+
 import httpx
 import pytest
 
-from pluto.iface import PlutoRequestError, ServerInterface, _server_error_message
+from pluto.iface import (
+    PlutoAuthError,
+    PlutoRequestError,
+    ServerInterface,
+    _server_error_message,
+    auth_error_message,
+)
 from pluto.sets import Settings
 
 
@@ -131,6 +139,56 @@ def test_try_persistent_401_raises_after_retries():
         )
     assert calls['n'] == 3, 'a 401 is retried (initial + 2 retries)'
     assert excinfo.value.status_code == 401
+    # ...and it is the auth-specific subclass, carrying the actionable message
+    # rather than a bare "HTTP 401" that reads like a server outage.
+    assert isinstance(excinfo.value, PlutoAuthError)
+    msg = str(excinfo.value)
+    assert 'expired' in msg and 'not a server outage' in msg
+    assert 'api-keys' in msg
+
+
+def test_auth_error_message_names_env_var_key_source(monkeypatch):
+    """The fix differs by key source, so the message must name the right one."""
+    monkeypatch.setenv('PLUTO_API_KEY', 'k')
+    msg = auth_error_message(url_token='https://self.hosted/api-keys')
+    assert 'PLUTO_API_KEY' in msg
+    assert 'update PLUTO_API_KEY' in msg
+    # Self-hosted deployments must not be pointed at the SaaS key page.
+    assert 'https://self.hosted/api-keys' in msg
+
+    monkeypatch.delenv('PLUTO_API_KEY')
+    monkeypatch.delenv('MLOP_API_TOKEN', raising=False)
+    msg = auth_error_message()
+    assert 'pluto login' in msg
+
+
+def test_auth_error_message_keeps_specific_server_reason(monkeypatch):
+    monkeypatch.delenv('PLUTO_API_KEY', raising=False)
+    monkeypatch.delenv('MLOP_API_TOKEN', raising=False)
+    # A specific reason is worth surfacing...
+    assert 'token expired' in auth_error_message(server_msg='token expired')
+    # ...but a bare restatement of the status code adds nothing.
+    assert 'Server said' not in auth_error_message(server_msg='Unauthorized')
+
+
+def test_try_persistent_401_without_raise_logs_once(monkeypatch, caplog):
+    """Fire-and-forget paths (heartbeat, status update, logName registration)
+    swallow failures, so the only way the user learns their key expired is the
+    log — but the heartbeat fires every ~4 s, so it must not repeat."""
+    monkeypatch.setattr('pluto.iface._auth_error_logged', False)
+    iface = _make_iface()
+
+    def fake_method(url, content=None, headers=None, **kwargs):
+        return _resp(401, text='Unauthorized')
+
+    with caplog.at_level(logging.CRITICAL, logger='pluto'):
+        for _ in range(3):
+            r = iface._try(fake_method, 'https://x', {}, b'{}', name='trigger')
+            assert r is None
+
+    auth_logs = [r for r in caplog.records if 'authentication failed' in r.message]
+    assert len(auth_logs) == 1, 'the persistent-401 message must be logged once'
+    assert 'expired' in auth_logs[0].message
 
 
 def test_try_network_error_returns_none_not_request_error():

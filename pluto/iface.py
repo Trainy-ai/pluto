@@ -1,10 +1,11 @@
 import json
 import logging
+import os
 import queue
 import time
 from contextlib import contextmanager
 from datetime import datetime, timezone
-from typing import Any, Dict, Iterable, List, Optional, Union
+from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
 
 import httpx
 
@@ -19,6 +20,10 @@ from .sets import Settings
 logger = logging.getLogger(f'{__name__.split(".")[0]}')
 tag = 'Interface'
 
+# Set once a persistent 401 has been reported, so the ~4 s heartbeat doesn't
+# repeat the same (static) message for the life of the run.
+_auth_error_logged = False
+
 # 4xx status codes that are commonly *transient* and worth retrying like 5xx:
 #   401 Unauthorized     — auth/token validation races (e.g. the token service
 #                          timing out mid-request), which clear on retry.
@@ -28,6 +33,58 @@ tag = 'Interface'
 # validation error — e.g. 400 "A run can have at most one group:* tag." —
 # where retrying the identical request would just fail again, so it's terminal.
 RETRYABLE_STATUS_CODES = frozenset({401, 408, 429})
+
+# Fallback for the API-key page when the caller has no Settings handy (e.g. the
+# sync process, which only receives a settings dict). Mirrors sets.url_token.
+DEFAULT_URL_TOKEN = 'https://pluto.trainy.ai/api-keys'
+
+
+def _auth_key_source() -> Tuple[str, str]:
+    """Describe *which* key the server rejected, so the fix is unambiguous.
+
+    An expired key is the single most common cause of a persistent 401, and the
+    fix differs depending on where the key came from (env var vs. keyring), so
+    name the source rather than making the user guess.
+    """
+    if os.environ.get('PLUTO_API_KEY'):
+        return (
+            'the API key in the PLUTO_API_KEY environment variable',
+            'update PLUTO_API_KEY with the new key',
+        )
+    if os.environ.get('MLOP_API_TOKEN'):
+        return (
+            'the API key in the MLOP_API_TOKEN environment variable '
+            '(deprecated — use PLUTO_API_KEY)',
+            'update PLUTO_API_KEY with the new key',
+        )
+    return (
+        'the API key saved by `pluto login`',
+        'run `pluto login <key>` with the new key',
+    )
+
+
+def auth_error_message(server_msg: str = '', url_token: Optional[str] = None) -> str:
+    """Build the user-facing message for a 401 that never cleared.
+
+    A persistent 401 reads like a server outage in the logs ("response code 401
+    ... from https://pluto-api...") even though it is almost always a local
+    problem: the key expired or was revoked. Say that outright, name the key
+    source, and give the exact command that fixes it.
+    """
+    source, fix = _auth_key_source()
+    msg = (
+        f'authentication failed (HTTP 401): the Pluto server rejected {source}. '
+        'This is an authentication failure, not a server outage — the key has '
+        'most likely expired or been revoked. Create a new key at '
+        f'{url_token or DEFAULT_URL_TOKEN}, then {fix}.'
+    )
+    # The body sometimes carries a more specific reason ("token expired",
+    # "revoked"); keep it, but only when it adds something over bare "401".
+    server_msg = (server_msg or '').strip()
+    uninformative = ('unauthorized', '401', '401 unauthorized')
+    if server_msg and server_msg.lower() not in uninformative:
+        msg += f' Server said: {server_msg[:200]}'
+    return msg
 
 
 class PlutoRequestError(Exception):
@@ -42,6 +99,18 @@ class PlutoRequestError(Exception):
     def __init__(self, message: str, status_code: Optional[int] = None):
         self.status_code = status_code
         super().__init__(message)
+
+
+class PlutoAuthError(PlutoRequestError):
+    """Raised when a 401 never clears — i.e. the API key is bad, not the server.
+
+    A subclass of ``PlutoRequestError`` so existing ``except PlutoRequestError``
+    handlers keep working; callers that want to say something more specific
+    (``init()`` does) can catch this first.
+    """
+
+    def __init__(self, message: str):
+        super().__init__(message, status_code=401)
 
 
 def _server_error_message(r: httpx.Response) -> str:
@@ -253,6 +322,14 @@ class ServerInterface:
                     suppress_httpx_logs=True,
                 )
 
+    def _log_auth_error_once(self, message: str) -> None:
+        """Log a persistent-401 message at most once per process."""
+        global _auth_error_logged
+        if _auth_error_logged:
+            return
+        _auth_error_logged = True
+        logger.critical('%s: %s', tag, message)
+
     def _log_failed_request(
         self,
         request_type: str,
@@ -329,6 +406,27 @@ class ServerInterface:
                 error_info=error_info,
                 retry_count=retry,
             )
+
+            # A 401 that survived every retry is not the transient auth race
+            # RETRYABLE_STATUS_CODES is there for — it's an expired/revoked key.
+            # Report it as such instead of as a generic "HTTP 401" that reads
+            # like a server outage.
+            # (Only when the *final* attempt was the 401 — if it ended on a
+            # network error instead, that's a connectivity story, not an auth
+            # one, and error_info carries no server message.)
+            if last_status == 401 and error_info.startswith('HTTP 401'):
+                auth_msg = auth_error_message(
+                    server_msg=error_info.partition(': ')[2],
+                    url_token=getattr(self.settings, 'url_token', None),
+                )
+                if raise_on_error:
+                    raise PlutoAuthError(auth_msg)
+                # Paths that swallow failures (heartbeats, status updates, log
+                # name registration) still need to tell the user *why* their
+                # data stopped flowing — but the heartbeat fires every ~4 s, so
+                # say it once per process rather than on every cycle.
+                self._log_auth_error_once(auth_msg)
+                return None
 
             # Distinguish a persistent server error (we got HTTP responses but
             # they never succeeded) from an unreachable server (network
