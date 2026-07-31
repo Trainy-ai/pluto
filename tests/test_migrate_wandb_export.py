@@ -585,6 +585,22 @@ class TestWandbExporter:
             '                                - name: summaryTable\n'
             '                                  args:\n'
             '                                    - {name: tableKey, value: bar_table}\n'
+            '            pr:\n'
+            '                panel_type: Vega2\n'
+            '                panel_config:\n'
+            '                    panelDefId: wandb/area-under-curve/v0\n'
+            '                    fieldSettings: {x: recall, y: precision}\n'
+            '                    stringSettings:\n'
+            '                        title: PR\n'
+            '                        x-axis-title: Recall\n'
+            '                        y-axis-title: Precision\n'
+            '                    userQuery:\n'
+            '                        queryFields:\n'
+            '                            - name: runSets\n'
+            '                              fields:\n'
+            '                                - name: summaryTable\n'
+            '                                  args:\n'
+            '                                    - {name: tableKey, value: pr_table}\n'
             '            weird:\n'
             '                panel_type: Vega2\n'
             '                panel_config:\n'
@@ -601,11 +617,22 @@ class TestWandbExporter:
         assert bar['title'] == 'per-class'
         assert bar['fields'] == {'label': 'label', 'value': 'value'}
         assert bar['specLang'] == 'vega-lite'
+        # The whole stringSettings dict is forwarded (axis titles included), not
+        # just the title — the renderer substitutes ${string:x-axis-title} etc.
+        pr = panels['pr']
+        assert pr['preset'] == 'area-under-curve'  # newly-mapped preset id
+        assert pr['strings'] == {
+            'title': 'PR',
+            'x-axis-title': 'Recall',
+            'y-axis-title': 'Precision',
+        }
+        assert bar['strings'] == {'title': 'per-class'}
         # Unknown preset: staged for reference but flagged, and marked raw Vega.
         assert panels['weird']['preset'] is None
         assert panels['weird']['specLang'] == 'vega'
+        assert panels['weird']['strings'] == {}
         cov = summary['coverage']
-        assert cov['migrated'].get('custom-chart') == 1
+        assert cov['migrated'].get('custom-chart') == 2  # bar + pr
         assert cov['not_migrated'].get('custom-chart-unsupported') == 1
 
     def test_media_lists_videos_audio_are_migrated(self, tmp_path):

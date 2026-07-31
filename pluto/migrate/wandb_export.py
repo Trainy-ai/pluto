@@ -69,10 +69,14 @@ class _RowBase(TypedDict):
 _WANDB_CHART_PRESETS = {
     'wandb/bar/v0': 'bar',
     'wandb/line/v0': 'line',
+    'wandb/lineseries/v0': 'lineseries',
     'wandb/scatter/v0': 'scatter',
     'wandb/pr_curve/v0': 'pr_curve',
     'wandb/roc_curve/v0': 'roc_curve',
+    # area-under-curve is the SDK's shared preset behind pr_curve + roc_curve.
+    'wandb/area-under-curve/v0': 'area-under-curve',
     'wandb/confusion_matrix/v0': 'confusion_matrix',
+    'wandb/confusion_matrix/v1': 'confusion_matrix',
     'wandb/histogram/v0': 'histogram',
 }
 
@@ -486,6 +490,12 @@ class WandbExporter:
                     'panelDefId': panel_def,
                     'preset': preset,  # None for user-authored (non-preset) Vega
                     'title': title,
+                    # Whole stringSettings dict (title + axis titles, e.g.
+                    # x-axis-title/y-axis-title) so the renderer can substitute
+                    # ${string:...}; falls back to raw column names if absent.
+                    'strings': string_settings
+                    if isinstance(string_settings, dict)
+                    else {},
                     'tableKey': table_key,  # backing table's log name
                     'fields': fields,
                     'specLang': 'vega-lite' if preset else 'vega',
