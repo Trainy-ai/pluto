@@ -45,6 +45,23 @@ def test_server_error_message_prefers_error_field():
     assert _server_error_message(_resp(400, text='plain boom')) == 'plain boom'
 
 
+def test_server_error_message_reads_message_when_error_is_generic():
+    """Auth failures put the status phrase in `error` and the real reason in
+    `message`, so reading `error` alone throws away the only useful part."""
+    # Shape returned by the web API's withApiKey middleware.
+    r = _resp(
+        401, json_body={'error': 'Unauthorized', 'message': 'API key has expired'}
+    )
+    assert _server_error_message(r) == 'API key has expired'
+    # Shape returned by the ingest service (numeric code, no `error` field).
+    r = _resp(401, json_body={'code': 1002, 'message': 'API key has been revoked'})
+    assert _server_error_message(r) == 'API key has been revoked'
+    # A generic `error` with nothing else still comes back, rather than ''.
+    assert _server_error_message(_resp(401, json_body={'error': 'Unauthorized'})) == (
+        'Unauthorized'
+    )
+
+
 def test_try_400_does_not_retry_and_raises_server_message():
     iface = _make_iface()
     calls = {'n': 0}
@@ -174,13 +191,21 @@ def test_message_resolves_api_page_from_env(monkeypatch):
     assert 'https://self.hosted/api-keys' in http_401_message()
 
 
-def test_message_keeps_specific_server_reason(monkeypatch):
+def test_message_states_server_reason_as_fact(monkeypatch):
+    """The server knows whether the key expired, was revoked, or was never
+    valid — when it says so, report it rather than guessing."""
     monkeypatch.delenv('PLUTO_API_KEY', raising=False)
     monkeypatch.delenv('MLOP_API_TOKEN', raising=False)
-    # A specific reason is worth surfacing...
-    assert 'token expired' in http_401_message(server_msg='token expired')
-    # ...but a bare restatement of the status code adds nothing.
-    assert 'Server said' not in http_401_message(server_msg='Unauthorized')
+
+    msg = http_401_message(server_msg='API key has expired')
+    assert 'The server says: API key has expired.' in msg
+    assert 'most likely' not in msg, 'do not hedge when the server told us'
+
+    # With nothing useful from the server, the hedge is the honest wording.
+    for uninformative in ('', 'Unauthorized', '401'):
+        msg = http_401_message(server_msg=uninformative)
+        assert 'most likely expired or been revoked' in msg
+        assert 'The server says' not in msg
 
 
 def test_try_persistent_401_without_raise_logs_once(monkeypatch, caplog):

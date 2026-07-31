@@ -38,6 +38,20 @@ RETRYABLE_STATUS_CODES = frozenset({401, 408, 429})
 # sync process, which only receives a settings dict). Mirrors sets.url_token.
 DEFAULT_API_PAGE_URL = 'https://pluto.trainy.ai/api-keys'
 
+# Bodies whose "reason" is just the HTTP status phrase restated — they add
+# nothing over the status code, and the real reason (when there is one) lives
+# in the response's `message` field instead.
+GENERIC_ERRORS = frozenset(
+    {
+        'unauthorized',
+        '401',
+        '401 unauthorized',
+        'forbidden',
+        'bad request',
+        'internal server error',
+    }
+)
+
 
 def _api_page_url_from_env() -> str:
     """Resolve the API-key page without reading anything off ``Settings``.
@@ -96,19 +110,23 @@ def http_401_message(server_msg: str = '', page_url: Optional[str] = None) -> st
     it is resolved from the environment instead — see ``_api_page_url_from_env``.
     """
     source, fix = _source_and_fix()
-    msg = (
-        f'authentication failed (HTTP 401): the Pluto server rejected {source}. '
-        'This is an authentication failure, not a server outage — the key has '
-        'most likely expired or been revoked. Create a new key at '
-        f'{page_url or _api_page_url_from_env()}, then {fix}.'
+    # The server distinguishes expired from revoked from unknown keys and says
+    # which in the response body ("API key has expired"). When we have that,
+    # state it as fact; only guess when the body told us nothing.
+    reason = (server_msg or '').strip().rstrip('.')
+    if reason.lower() in GENERIC_ERRORS:
+        reason = ''
+    cause = (
+        f'The server says: {reason[:200]}.'
+        if reason
+        else 'The key has most likely expired or been revoked.'
     )
-    # The body sometimes carries a more specific reason ("token expired",
-    # "revoked"); keep it, but only when it adds something over bare "401".
-    server_msg = (server_msg or '').strip()
-    uninformative = ('unauthorized', '401', '401 unauthorized')
-    if server_msg and server_msg.lower() not in uninformative:
-        msg += f' Server said: {server_msg[:200]}'
-    return msg
+    return (
+        f'authentication failed (HTTP 401): the Pluto server rejected {source}. '
+        f'{cause} This is an authentication failure, not a server outage. '
+        f'Create a new key at {page_url or _api_page_url_from_env()}, '
+        f'then {fix}.'
+    )
 
 
 class PlutoRequestError(Exception):
@@ -140,13 +158,31 @@ class PlutoAuthError(PlutoRequestError):
 def _server_error_message(r: httpx.Response) -> str:
     """Best-effort extraction of the human-readable reason from a response.
 
-    The backend returns ``{"error": "<reason>"}`` on validation failures; fall
-    back to the raw (truncated) body when the payload isn't the expected shape.
+    Two body shapes are in play, and the reason lives in a different field in
+    each:
+
+    * validation failures return ``{"error": "<reason>"}`` — e.g. "A run can
+      have at most one group:* tag.";
+    * auth failures pair a *generic* ``error`` with the specific reason in
+      ``message`` — ``{"error": "Unauthorized", "message": "API key has
+      expired"}`` — and the ingest service sends ``message`` alone alongside a
+      numeric ``code``.
+
+    So prefer ``error`` when it says something, and fall through to ``message``
+    when it's just the HTTP status phrase; otherwise fall back to the raw
+    (truncated) body.
     """
     try:
         body = r.json()
-        if isinstance(body, dict) and body.get('error'):
-            return str(body['error'])
+        if isinstance(body, dict):
+            error = body.get('error')
+            if error and str(error).strip().rstrip('.').lower() not in GENERIC_ERRORS:
+                return str(error)
+            message = body.get('message')
+            if message:
+                return str(message)
+            if error:
+                return str(error)
     except Exception:
         pass
     return r.text[:500]
