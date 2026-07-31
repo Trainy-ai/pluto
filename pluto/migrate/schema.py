@@ -28,6 +28,7 @@ ATTRIBUTE_TYPES = {
     #           file_value=relative path or inline JSON in string_value)
     'console',  # one console line (string_value, step=line number)
     'artifact',  # one file inside a logged artifact (file_value)
+    'string_series',  # categorical/status history point (string_value per step)
 }
 
 SCHEMA = pa.schema(

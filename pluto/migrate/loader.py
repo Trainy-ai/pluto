@@ -28,6 +28,8 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
+import httpx
+
 import pluto
 from pluto.migrate.schema import iter_part_tables, part_files
 from pluto.migrate.state import (
@@ -42,6 +44,13 @@ logger = logging.getLogger(f'{__name__.split(".")[0]}')
 tag = 'migrate'
 
 CONSOLE_BATCH_SIZE = 1000
+
+# A categorical/string series with more distinct values than this is treated as
+# free-form text, not a set of states — rendering it as a state timeline would
+# be meaningless (one band per point), so we skip it rather than send it. The
+# guard lives here (not the exporter) because it needs the whole run's series to
+# count distinct values.
+STRING_SERIES_MAX_CARDINALITY = 50
 
 # All three take (data, caption=...); table-file and inline histograms are
 # handled separately in _replay_media.
@@ -160,7 +169,7 @@ class PlutoLoader:
             op = None
             try:
                 try:
-                    op = self._init_run(manifest, external_id)
+                    op = self._init_run(manifest, external_id, run_dir)
                     # Remember, before replaying, that we created this run. If
                     # replay crashes now, a later re-run sees the in_progress
                     # marker and resumes to complete it (rather than skipping).
@@ -179,7 +188,7 @@ class PlutoLoader:
                             'duplicate)'
                         )
                         cache.mark_in_progress(cache_key)
-                        op = self._init_run(manifest, external_id, resume=True)
+                        op = self._init_run(manifest, external_id, run_dir, resume=True)
                     else:
                         # Exists but we never started it here (e.g. loaded on
                         # another machine): skip re-replay to avoid duplicating
@@ -196,7 +205,7 @@ class PlutoLoader:
                         )
                         try:
                             restore = self._init_run(
-                                manifest, external_id, resume=True
+                                manifest, external_id, run_dir, resume=True
                             )
                             restore.finish(
                                 code=0 if manifest.get('state') == 'finished' else 1
@@ -258,6 +267,7 @@ class PlutoLoader:
         self,
         manifest: Dict[str, Any],
         external_id: str,
+        run_dir: Path,
         resume: Optional[bool] = None,
     ) -> Any:
         tags = list(manifest.get('tags') or [])
@@ -298,12 +308,31 @@ class PlutoLoader:
                 'url': manifest.get('url'),
                 'state': manifest.get('state'),
                 'summary': manifest.get('summary'),
+                # Custom-chart (wandb.plot.*) panel specs recovered by the
+                # exporter: each binds a Vega preset to a migrated backing
+                # table. Forwarded here so the Pluto side can rebuild the panels.
+                'custom_charts': self._read_custom_charts(run_dir),
             }.items()
             if v
         }
         if wandb_block:
             op.update_config({'wandb': wandb_block})
         return op
+
+    @staticmethod
+    def _read_custom_charts(run_dir: Path) -> Optional[List[Dict[str, Any]]]:
+        """Load the exporter's staged custom-chart panel specs, if any."""
+        path = run_dir / 'custom_charts.json'
+        if not path.exists():
+            return None
+        try:
+            panels = read_json(path).get('panels') or None
+        except Exception as e:
+            logger.warning(
+                f'{tag}: could not read {path.name}: {type(e).__name__}: {e}'
+            )
+            return None
+        return panels
 
     @staticmethod
     def _sys_metric_name(name: str) -> str:
@@ -323,6 +352,12 @@ class PlutoLoader:
         # transaction per flush_every groups (op._log_metrics_batch).
         pending_groups: List[Tuple[Dict[str, float], int, float]] = []
         console_lines: List[Tuple[str, str, float, int]] = []
+        # Categorical/status series buffered per attribute_path for the whole
+        # run: the cardinality guard (STRING_SERIES_MAX_CARDINALITY) needs every
+        # point before it can decide whether the series is renderable, so these
+        # are sent once at the end rather than streamed. Each entry is a list of
+        # (step, timestamp_ms, value).
+        string_series: Dict[str, List[Tuple[int, int, str]]] = {}
 
         def close_group() -> None:
             nonlocal group_key, group_metrics
@@ -420,6 +455,10 @@ class PlutoLoader:
                         op._log_console(console_lines)
                         note_nonmetric(len(console_lines))
                         console_lines = []
+                elif attr_type == 'string_series':
+                    string_series.setdefault(row['attribute_path'], []).append(
+                        (row['step'], row['timestamp_ms'], row['string_value'] or '')
+                    )
                 elif attr_type == 'artifact':
                     try:
                         self._replay_artifact(run_dir, op, row)
@@ -437,6 +476,92 @@ class PlutoLoader:
         if console_lines:
             op._log_console(console_lines)
             self._wait_for_backpressure(op)
+        if string_series:
+            self._send_string_series(op, string_series)
+
+    def _send_string_series(
+        self, op: Any, series: Dict[str, List[Tuple[int, int, str]]]
+    ) -> None:
+        """Send categorical/status series to the data-ingest endpoint.
+
+        String history points have no numeric/media home; Pluto stores them as
+        a ``string-series`` dataType in the data ingest (rendered as a state
+        timeline). This posts NDJSON directly to ``url_data`` — mirroring the
+        sync process's data upload — rather than routing through the scalar or
+        media client paths.
+
+        Applies the cardinality guard (:data:`STRING_SERIES_MAX_CARDINALITY`):
+        a series with too many distinct values is free-form text, not states,
+        so it is skipped. Failures are non-fatal — the run's scalars/media are
+        already loaded and must not be lost to an ingest hiccup here.
+        """
+        s = op.settings
+        if not s.url_data or not s._op_id:
+            return
+        renderable: Dict[str, List[Tuple[int, int, str]]] = {}
+        for name, points in series.items():
+            distinct = {v for _, _, v in points}
+            if len(distinct) > STRING_SERIES_MAX_CARDINALITY:
+                logger.warning(
+                    f'{tag}: string-series {name!r} has {len(distinct)} distinct '
+                    f'values (> {STRING_SERIES_MAX_CARDINALITY}); skipping as '
+                    'free-form text, not a categorical timeline'
+                )
+                continue
+            renderable[name] = points
+        if not renderable:
+            return
+
+        common = {
+            'Authorization': f'Bearer {s._auth}',
+            'User-Agent': str(s.tag),
+            'X-Run-Id': str(s._op_id),
+            'X-Run-Name': str(s._op_name or ''),
+            'X-Project-Name': str(s.project or ''),
+        }
+        # NDJSON: one {time, step, dataType, logName, data} object per point.
+        lines = [
+            json.dumps(
+                {
+                    'time': ts_ms,
+                    'step': step,
+                    'dataType': 'string-series',
+                    'logName': name,
+                    'data': value,
+                }
+            )
+            for name, points in renderable.items()
+            for step, ts_ms, value in points
+        ]
+        body = '\n'.join(lines) + '\n'
+        try:
+            # Register the log names (logType DATA) so the server indexes them,
+            # then ingest the points.
+            resp = httpx.post(
+                s.url_meta,
+                headers={**common, 'Content-Type': 'application/json'},
+                content=json.dumps(
+                    {
+                        'runId': s._op_id,
+                        'logType': 'DATA',
+                        'logName': list(renderable),
+                    }
+                ),
+                timeout=30.0,
+            )
+            resp.raise_for_status()
+            resp = httpx.post(
+                s.url_data,
+                headers={**common, 'Content-Type': 'application/x-ndjson'},
+                content=body,
+                timeout=60.0,
+            )
+            resp.raise_for_status()
+        except Exception as e:
+            logger.warning(
+                f'{tag}: failed to send {len(renderable)} string-series to '
+                f'ingest: {type(e).__name__}: {e}'
+            )
 
     def _build_media_value(self, run_dir: Path, row: Dict[str, Any]) -> Optional[Any]:
         """Convert one staged media row into a pluto media value.

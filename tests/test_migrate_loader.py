@@ -138,6 +138,40 @@ def _stage_run(tmp_path, run_id='abc123', state='finished'):
     return run_dir
 
 
+def _stage_string_series_run(tmp_path, values, run_id='ssrun', name='phase'):
+    """Stage a minimal run whose only history is one string_series attribute."""
+    run_dir = tmp_path / 'acme' / 'vision' / 'runs' / run_id
+    run_dir.mkdir(parents=True)
+    write_json_atomic(
+        run_dir / 'run.json',
+        {
+            'entity': 'acme',
+            'project': 'vision',
+            'run_id': run_id,
+            'name': 'sunny-lion-1',
+            'state': 'finished',
+            'config': {},
+            'summary': {name: values[-1]},
+            'createdAt': CREATED_AT_MS,
+            'updatedAt': UPDATED_AT_MS,
+            'url': f'https://wandb.ai/acme/vision/runs/{run_id}',
+        },
+    )
+    base = dict(project_id='acme/vision', run_id=run_id)
+    with PartWriter(run_dir) as w:
+        for i, v in enumerate(values):
+            w.write_row(
+                **base,
+                attribute_path=name,
+                attribute_type='string_series',
+                step=i,
+                timestamp_ms=T0_MS + i * 1000,
+                string_value=v,
+            )
+    mark_run_exported(run_dir, {'rows': len(values)})
+    return run_dir
+
+
 @pytest.fixture
 def mock_init():
     with mock.patch('pluto.init') as init:
@@ -182,6 +216,31 @@ class TestPlutoLoader:
         assert wandb_block['notes'] == 'baseline run'
         assert wandb_block['state'] == 'finished'
         assert wandb_block['summary'] == {'loss': 0.05}
+
+    def test_custom_charts_forwarded_to_wandb_config(self, tmp_path, mock_init):
+        _, op = mock_init
+        run_dir = _stage_run(tmp_path)
+        panels = [
+            {
+                'key': 'bar',
+                'preset': 'bar',
+                'title': 'per-class',
+                'tableKey': 'bar_table',
+                'fields': {'label': 'label', 'value': 'value'},
+                'specLang': 'vega-lite',
+            }
+        ]
+        write_json_atomic(run_dir / 'custom_charts.json', {'panels': panels})
+        PlutoLoader(tmp_path).load()
+        wandb_block = op.update_config.call_args.args[0]['wandb']
+        assert wandb_block['custom_charts'] == panels
+
+    def test_no_custom_charts_key_when_absent(self, tmp_path, mock_init):
+        _, op = mock_init
+        _stage_run(tmp_path)
+        PlutoLoader(tmp_path).load()
+        wandb_block = op.update_config.call_args.args[0]['wandb']
+        assert 'custom_charts' not in wandb_block
 
     def test_metrics_batched_per_step_with_timestamps(self, tmp_path, mock_init):
         _, op = mock_init
@@ -239,6 +298,38 @@ class TestPlutoLoader:
         )
         assert len(art_calls) == 1
         assert art_calls[0].kwargs['step'] == 0
+
+    def test_string_series_sent_to_ingest_with_data_logtype(self, tmp_path, mock_init):
+        _, op = mock_init
+        op.settings.url_data = 'http://ingest/data'
+        op.settings.url_meta = 'http://api/logName/add'
+        _stage_string_series_run(tmp_path, values=['warmup', 'train', 'train', 'eval'])
+        with mock.patch('pluto.migrate.loader.httpx') as httpx_mock:
+            PlutoLoader(tmp_path).load()
+        calls = httpx_mock.post.call_args_list
+        assert len(calls) == 2
+        # 1st POST registers the log name with logType DATA.
+        meta = json.loads(calls[0].kwargs['content'])
+        assert meta['logType'] == 'DATA'
+        assert meta['logName'] == ['phase']
+        # 2nd POST ingests the points as NDJSON string-series (raw data).
+        lines = [json.loads(x) for x in calls[1].kwargs['content'].strip().split('\n')]
+        assert [x['step'] for x in lines] == [0, 1, 2, 3]
+        assert [x['data'] for x in lines] == ['warmup', 'train', 'train', 'eval']
+        assert all(
+            x['dataType'] == 'string-series' and x['logName'] == 'phase' for x in lines
+        )
+
+    def test_string_series_high_cardinality_skipped(self, tmp_path, mock_init):
+        _, op = mock_init
+        op.settings.url_data = 'http://ingest/data'
+        op.settings.url_meta = 'http://api/logName/add'
+        # 60 distinct values > STRING_SERIES_MAX_CARDINALITY (50): free-form
+        # text, not states -> nothing is sent.
+        _stage_string_series_run(tmp_path, values=[f'v{i}' for i in range(60)])
+        with mock.patch('pluto.migrate.loader.httpx') as httpx_mock:
+            PlutoLoader(tmp_path).load()
+        httpx_mock.post.assert_not_called()
 
     def test_finish_code_mapping(self, tmp_path, mock_init):
         _, op = mock_init

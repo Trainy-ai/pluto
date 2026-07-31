@@ -471,7 +471,7 @@ class TestWandbExporter:
                     '_step': 0,
                     '_timestamp': T0,
                     'loss': 1.0,  # migrated metric
-                    'status': 'running',  # string -> not migrated
+                    'status': 'running',  # string -> migrated string_series
                     'chart': {'_type': 'bokeh-file'},  # unsupported -> not migrated
                     'img': {  # image with dropped annotations
                         '_type': 'image-file',
@@ -485,7 +485,7 @@ class TestWandbExporter:
         cov = summary['coverage']
         assert cov['migrated'].get('metric') == 1
         assert cov['migrated'].get('media') == 1
-        assert cov['not_migrated'].get('string-metric') == 1
+        assert cov['migrated'].get('string_series') == 1
         assert cov['not_migrated'].get('unsupported(bokeh-file)') == 1
         assert cov['not_migrated'].get('image-annotations') == 1
 
@@ -519,7 +519,8 @@ class TestWandbExporter:
 
     def test_nonfinite_string_metrics_are_coerced_to_floats(self, tmp_path):
         # wandb hands NaN/Inf back as strings; they must migrate as real floats,
-        # not be dropped as "text". A genuine text value still counts as skipped.
+        # not as a categorical series. A genuine text value ('running') migrates
+        # as a string_series instead.
         import math
 
         run = FakeRun()
@@ -536,9 +537,76 @@ class TestWandbExporter:
         assert vals[1] == float('inf')
         assert vals[2] == float('-inf')
         assert summary['coverage']['migrated'].get('metric') == 3
-        assert (
-            summary['coverage']['not_migrated'].get('string-metric') == 1
-        )  # 'running'
+        assert summary['coverage']['migrated'].get('string_series') == 1  # 'running'
+
+    def test_string_history_migrated_as_string_series(self, tmp_path):
+        # A non-numeric, non-media string history value ('phase') is a
+        # categorical series: staged as string_series rows (one per step),
+        # preserving the raw label. An over-long value is a stray blob, dropped.
+        run = FakeRun()
+        long_blob = 'x' * 250
+        run.scan_history = lambda page_size=1000: iter(
+            [
+                {'_step': 0, '_timestamp': T0, 'phase': 'warmup', 'blob': long_blob},
+                {'_step': 1, '_timestamp': T0 + 1, 'phase': 'train'},
+                {'_step': 2, '_timestamp': T0 + 2, 'phase': 'done'},
+            ]
+        )
+        _, run_dir, summary = _export(tmp_path, run=run)
+        ss = _rows(run_dir, 'string_series')
+        assert [(r['step'], r['attribute_path'], r['string_value']) for r in ss] == [
+            (0, 'phase', 'warmup'),
+            (1, 'phase', 'train'),
+            (2, 'phase', 'done'),
+        ]
+        cov = summary['coverage']
+        assert cov['migrated'].get('string_series') == 3
+        assert cov['not_migrated'].get('string-series-too-long') == 1
+
+    def test_custom_charts_extracted_from_config_yaml(self, tmp_path):
+        # wandb.plot.* panels live in the raw config.yaml under
+        # _wandb.value.visualize (the API strips _wandb). The exporter recovers
+        # each panel's preset, title, backing-table key, and column mappings.
+        run = FakeRun()
+        config_yaml = (
+            '_wandb:\n'
+            '    value:\n'
+            '        visualize:\n'
+            '            bar:\n'
+            '                panel_type: Vega2\n'
+            '                panel_config:\n'
+            '                    panelDefId: wandb/bar/v0\n'
+            '                    fieldSettings: {label: label, value: value}\n'
+            '                    stringSettings: {title: per-class}\n'
+            '                    userQuery:\n'
+            '                        queryFields:\n'
+            '                            - name: runSets\n'
+            '                              fields:\n'
+            '                                - name: summaryTable\n'
+            '                                  args:\n'
+            '                                    - {name: tableKey, value: bar_table}\n'
+            '            weird:\n'
+            '                panel_type: Vega2\n'
+            '                panel_config:\n'
+            '                    panelDefId: wandb/custom/v0\n'
+        )
+        run._files.append(FakeFile('config.yaml', content=config_yaml.encode()))
+        _, run_dir, summary = _export(tmp_path, run=run)
+        panels = {
+            p['key']: p for p in read_json(run_dir / 'custom_charts.json')['panels']
+        }
+        bar = panels['bar']
+        assert bar['preset'] == 'bar'
+        assert bar['tableKey'] == 'bar_table'
+        assert bar['title'] == 'per-class'
+        assert bar['fields'] == {'label': 'label', 'value': 'value'}
+        assert bar['specLang'] == 'vega-lite'
+        # Unknown preset: staged for reference but flagged, and marked raw Vega.
+        assert panels['weird']['preset'] is None
+        assert panels['weird']['specLang'] == 'vega'
+        cov = summary['coverage']
+        assert cov['migrated'].get('custom-chart') == 1
+        assert cov['not_migrated'].get('custom-chart-unsupported') == 1
 
     def test_media_lists_videos_audio_are_migrated(self, tmp_path):
         # wandb.log({"rollouts": [Video, Video]}) => _type 'videos' with the

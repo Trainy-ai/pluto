@@ -22,6 +22,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, TypedDict, Union
 
+import yaml
+
 from pluto.migrate.schema import PartWriter
 from pluto.migrate.state import is_run_exported, mark_run_exported, write_json_atomic
 
@@ -43,6 +45,14 @@ _NONFINITE_STRINGS = {
     '-Inf': float('-inf'),
 }
 
+# Non-numeric string history points (status labels, phase names, etc.) migrate
+# as a "string-series" (rendered as a categorical/state-timeline in Pluto).
+# Guard pathological values: a single point longer than this is almost never a
+# real categorical state (it's a stray log line / serialized blob), so drop it
+# rather than pollute the timeline. The per-key cardinality guard lives in the
+# loader (it needs the whole series to count distinct values).
+_STRING_SERIES_MAX_LEN = 200
+
 
 class _RowBase(TypedDict):
     """Identity columns shared by every staged row (see schema.write_row)."""
@@ -50,6 +60,21 @@ class _RowBase(TypedDict):
     project_id: str
     run_id: str
 
+
+# wandb built-in custom-chart presets (panelDefId) -> a stable short name.
+# Each corresponds to a Vega-Lite template the Pluto side renders; the backing
+# table (tableKey) migrates as a Table and supplies the chart's data. Presets
+# outside this set (user-authored Vega) are staged but flagged: the server has
+# no template to rebuild them from.
+_WANDB_CHART_PRESETS = {
+    'wandb/bar/v0': 'bar',
+    'wandb/line/v0': 'line',
+    'wandb/scatter/v0': 'scatter',
+    'wandb/pr_curve/v0': 'pr_curve',
+    'wandb/roc_curve/v0': 'roc_curve',
+    'wandb/confusion_matrix/v0': 'confusion_matrix',
+    'wandb/histogram/v0': 'histogram',
+}
 
 # scan_history dict values whose media file lives under the run's files/
 _FILE_MEDIA_TYPES = {
@@ -332,6 +357,11 @@ class WandbExporter:
             if self.include_artifacts:
                 self._export_artifacts(run, writer, tmp_dir)
 
+        # Custom-chart (wandb.plot.*) panel definitions live in the raw
+        # config.yaml (downloaded above), not the staging rows — recover them
+        # once the file is on disk.
+        self._export_custom_charts(run, tmp_dir)
+
         # Run-level context that has no home in the staging schema (sweep
         # membership, input-artifact lineage) — flag it so it's not lost silently.
         self._flag_run_level_omissions(run)
@@ -377,6 +407,99 @@ class WandbExporter:
                 'metadata': getattr(run, 'metadata', None),
             },
         )
+
+    @staticmethod
+    def _chart_table_key(panel_config: Dict[str, Any]) -> Optional[str]:
+        """Pull a custom chart's backing-table key from its userQuery.
+
+        wandb encodes it as a ``summaryTable`` field carrying a ``tableKey``
+        arg: ``userQuery.queryFields[].fields[].{name: summaryTable,
+        args: [{name: tableKey, value: <key>}]}``. That value is the table's
+        log name, which migrates as a Table and supplies the chart data.
+        """
+        user_query = panel_config.get('userQuery') or {}
+        for query_field in user_query.get('queryFields') or []:
+            for field in query_field.get('fields') or []:
+                if field.get('name') != 'summaryTable':
+                    continue
+                for arg in field.get('args') or []:
+                    if arg.get('name') == 'tableKey':
+                        return arg.get('value')
+        return None
+
+    def _export_custom_charts(self, run: Any, tmp_dir: Path) -> None:
+        """Recover wandb custom-chart (``wandb.plot.*``) panel definitions.
+
+        The panels live in the run's raw config under ``_wandb.value.visualize``
+        — the public API strips ``_wandb``, so we read the downloaded
+        ``config.yaml`` instead. Each panel binds a built-in Vega preset
+        (``panelDefId``) to a backing table via ``fieldSettings`` column
+        mappings. We stage a normalized ``custom_charts.json``; the loader
+        forwards it so the Pluto side can rebuild the panel from preset +
+        migrated table. The raw Vega spec is server-side, not reconstructed here.
+        """
+        config_path = tmp_dir / 'files' / 'config.yaml'
+        if not config_path.exists():
+            return  # --no-files/--no-console, or a run without config.yaml
+        try:
+            with open(config_path) as f:
+                raw = yaml.safe_load(f) or {}
+            visualize = ((raw.get('_wandb') or {}).get('value') or {}).get(
+                'visualize'
+            ) or {}
+        except Exception as e:
+            logger.warning(
+                f'{tag}: {run.id} could not parse config.yaml for custom '
+                f'charts: {type(e).__name__}: {e}'
+            )
+            return
+        if not isinstance(visualize, dict) or not visualize:
+            return
+
+        panels = []
+        for key, spec in visualize.items():
+            if not isinstance(spec, dict):
+                continue
+            panel_config = spec.get('panel_config') or {}
+            panel_def = panel_config.get('panelDefId')
+            preset = (
+                _WANDB_CHART_PRESETS.get(panel_def)
+                if isinstance(panel_def, str)
+                else None
+            )
+            table_key = self._chart_table_key(panel_config)
+            field_settings = panel_config.get('fieldSettings')
+            fields = (
+                {k: v for k, v in field_settings.items() if v is not None}
+                if isinstance(field_settings, dict)
+                else {}
+            )
+            string_settings = panel_config.get('stringSettings')
+            title = (
+                string_settings.get('title')
+                if isinstance(string_settings, dict)
+                else None
+            )
+            panels.append(
+                {
+                    'key': key,
+                    'panelDefId': panel_def,
+                    'preset': preset,  # None for user-authored (non-preset) Vega
+                    'title': title,
+                    'tableKey': table_key,  # backing table's log name
+                    'fields': fields,
+                    'specLang': 'vega-lite' if preset else 'vega',
+                }
+            )
+            if preset and table_key:
+                self._migrated('custom-chart')
+            else:
+                # Unknown preset or unresolved backing table: staged for
+                # reference, but the server has no template to rebuild it from.
+                self._skipped('custom-chart-unsupported')
+
+        if panels:
+            write_json_atomic(tmp_dir / 'custom_charts.json', {'panels': panels})
 
     def _row_base(self, run: Any) -> '_RowBase':
         return {'project_id': self.project_path, 'run_id': run.id}
@@ -440,9 +563,22 @@ class WandbExporter:
                 )
                 self._migrated('metric')
                 return
-            # Any other string (a status label, etc.) has no numeric/media home
-            # in the schema; count it so it isn't lost silently.
-            self._skipped('string-metric')
+            # Any other string (a status label, phase name, etc.) is a
+            # categorical series: stage it as a string_series row so it can be
+            # rendered as a state timeline. Over-long values are stray blobs,
+            # not real states -> drop with a flag.
+            if len(value) > _STRING_SERIES_MAX_LEN:
+                self._skipped('string-series-too-long')
+                return
+            writer.write_row(
+                **base,
+                attribute_path=key,
+                attribute_type='string_series',
+                step=step,
+                timestamp_ms=timestamp_ms,
+                string_value=value,
+            )
+            self._migrated('string_series')
             return
         if isinstance(value, dict):
             media_type = value.get('_type')

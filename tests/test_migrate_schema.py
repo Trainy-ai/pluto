@@ -103,6 +103,7 @@ class TestPartWriter:
             'media',
             'console',
             'artifact',
+            'string_series',
         }
 
 
