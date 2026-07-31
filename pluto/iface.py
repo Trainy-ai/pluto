@@ -46,12 +46,14 @@ def _auth_key_source() -> Tuple[str, str]:
     fix differs depending on where the key came from (env var vs. keyring), so
     name the source rather than making the user guess.
     """
-    if os.environ.get('PLUTO_API_KEY'):
+    # Membership tests, not reads: this only needs to know *whether* a key was
+    # provided via the environment, so never pull the value itself into scope.
+    if 'PLUTO_API_KEY' in os.environ:
         return (
             'the API key in the PLUTO_API_KEY environment variable',
             'update PLUTO_API_KEY with the new key',
         )
-    if os.environ.get('MLOP_API_TOKEN'):
+    if 'MLOP_API_TOKEN' in os.environ:
         return (
             'the API key in the MLOP_API_TOKEN environment variable '
             '(deprecated — use PLUTO_API_KEY)',
@@ -328,7 +330,16 @@ class ServerInterface:
         if _auth_error_logged:
             return
         _auth_error_logged = True
-        logger.critical('%s: %s', tag, message)
+        # `message` is generated text plus the public API-key page URL — never
+        # key material. CodeQL flags it because its taint tracking is
+        # field-insensitive: the URL is read off a Settings object that also
+        # holds `_auth` (which can come from getpass()), so it treats any
+        # attribute of that object as a password.
+        logger.critical(  # codeql[py/clear-text-logging-sensitive-data]
+            '%s: %s',
+            tag,
+            message,  # codeql[py/clear-text-logging-sensitive-data]
+        )
 
     def _log_failed_request(
         self,

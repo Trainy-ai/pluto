@@ -94,8 +94,16 @@ def login(settings=None, retry=False):
             # Don't muddy that with "may still be valid" — that wording sends
             # users hunting for an outage when their key has simply expired.
             if isinstance(e, httpx.HTTPStatusError) and e.response.status_code == 401:
-                tlogger.critical(
-                    '%s: %s', tag, auth_error_message(url_token=settings.url_token)
+                # The message is generated text plus the public API-key page
+                # URL — never key material. CodeQL flags it because its taint
+                # tracking is field-insensitive: `settings` also holds `_auth`,
+                # which can come from getpass(), so *any* attribute read off it
+                # counts as logging a password.
+                msg = auth_error_message(url_token=settings.url_token)
+                tlogger.critical(  # codeql[py/clear-text-logging-sensitive-data]
+                    '%s: %s',
+                    tag,
+                    msg,  # codeql[py/clear-text-logging-sensitive-data]
                 )
             else:
                 tlogger.warning(
