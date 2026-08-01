@@ -409,8 +409,36 @@ class WandbExporter:
                 'updatedAt': updated_ms,
                 'url': getattr(run, 'url', None),
                 'metadata': getattr(run, 'metadata', None),
+                'sweep': self._sweep_block(run),
             },
         )
+
+    @staticmethod
+    def _sweep_block(run: Any) -> Optional[Dict[str, Any]]:
+        """Capture the run's wandb sweep — id, name, and search-space config.
+
+        Runs that belong to a sweep carry a Sweep object; migrating it lets Pluto
+        group the runs (tag ``sweep:<id>``) and keep the search space, mirroring
+        the native ``pluto.sweep`` data model. Best-effort: any API hiccup
+        returns None rather than failing the export.
+        """
+        try:
+            sweep = getattr(run, 'sweep', None)
+            if sweep is None:
+                return None
+            sweep_id = getattr(sweep, 'id', None)
+            if not sweep_id:
+                return None
+            block: Dict[str, Any] = {'id': sweep_id}
+            name = getattr(sweep, 'name', None)
+            if name:
+                block['name'] = name
+            config = getattr(sweep, 'config', None)
+            if isinstance(config, dict) and config:
+                block['config'] = config
+            return block
+        except Exception:
+            return None
 
     @staticmethod
     def _chart_table_key(panel_config: Dict[str, Any]) -> Optional[str]:
@@ -820,13 +848,13 @@ class WandbExporter:
         return fallback_ms
 
     def _flag_run_level_omissions(self, run: Any) -> None:
-        """Surface run-level context the migration can't carry over — sweep
-        membership and input-artifact (used_artifacts) lineage — so they show up
-        in the coverage report / --strict instead of vanishing silently. Both are
-        wrapped: these are extra API reads that must never fail an export."""
+        """Surface run-level context for the coverage report / --strict. Sweep
+        membership now migrates (see _sweep_block -> manifest 'sweep'); input-
+        artifact (used_artifacts) lineage still doesn't. Both are wrapped: these
+        are extra API reads that must never fail an export."""
         try:
             if getattr(run, 'sweep', None) is not None:
-                self._skipped('sweep-metadata')
+                self._migrated('sweep')
         except Exception as e:
             logger.debug(f'{tag}: sweep check failed for {run.id}: {e}')
         # Input lineage only matters when artifacts are being migrated at all.

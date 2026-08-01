@@ -24,6 +24,7 @@ from pluto.migrate.schema import PartWriter  # noqa: E402
 from pluto.migrate.state import (  # noqa: E402
     LoadedCache,
     mark_run_exported,
+    read_json,
     write_json_atomic,
 )
 
@@ -234,6 +235,25 @@ class TestPlutoLoader:
         PlutoLoader(tmp_path).load()
         wandb_block = op.update_config.call_args.args[0]['wandb']
         assert wandb_block['custom_charts'] == panels
+
+    def test_sweep_membership_migrated(self, tmp_path, mock_init):
+        init, op = mock_init
+        run_dir = _stage_run(tmp_path)
+        # inject a sweep block into the staged manifest (as the exporter would)
+        manifest = read_json(run_dir / 'run.json')
+        manifest['sweep'] = {
+            'id': 'swp1',
+            'name': 'my-sweep',
+            'config': {'method': 'grid', 'parameters': {'lr': {'values': [0.1]}}},
+        }
+        write_json_atomic(run_dir / 'run.json', manifest)
+        PlutoLoader(tmp_path).load()
+        # run is tagged so it groups under its sweep (like native pluto.sweep)
+        assert 'sweep:swp1' in init.call_args.kwargs['tags']
+        # search space survives in the wandb config block
+        wandb_block = op.update_config.call_args.args[0]['wandb']
+        assert wandb_block['sweep']['id'] == 'swp1'
+        assert wandb_block['sweep']['config']['method'] == 'grid'
 
     def test_no_custom_charts_key_when_absent(self, tmp_path, mock_init):
         _, op = mock_init

@@ -266,6 +266,12 @@ class PlutoLoader:
         tags = list(manifest.get('tags') or [])
         if 'import:wandb' not in tags:
             tags.append('import:wandb')
+        # Group sweep runs the same way native pluto.sweep does: tag sweep:<id>.
+        sweep = manifest.get('sweep')
+        if isinstance(sweep, dict) and sweep.get('id'):
+            sweep_tag = f'sweep:{sweep["id"]}'
+            if sweep_tag not in tags:
+                tags.append(sweep_tag)
         compat: Dict[str, Any] = {
             'createdAt': manifest.get('createdAt'),
             'updatedAt': manifest.get('updatedAt'),
@@ -305,6 +311,9 @@ class PlutoLoader:
                 # exporter: each binds a Vega preset to a migrated backing
                 # table. Forwarded here so the Pluto side can rebuild the panels.
                 'custom_charts': self._read_custom_charts(run_dir),
+                # Sweep membership + search-space config (the run is also tagged
+                # sweep:<id> above), so the sweep survives the migration.
+                'sweep': manifest.get('sweep'),
             }.items()
             if v
         }

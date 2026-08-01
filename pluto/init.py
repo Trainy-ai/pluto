@@ -260,6 +260,26 @@ def init(
                 e,
             )
 
+    # Sweep: if pluto.agent set an active sweep context, merge the sampled
+    # hyperparameters into config (swept values win) and tag the run so it groups
+    # under its sweep. Mirrors how wandb.agent feeds wandb.config. The submodule
+    # is read via sys.modules because the pluto.sweep *function* shadows the
+    # pluto.sweep module attribute, and we need the live _active_sweep global.
+    import sys as _sys
+
+    _sweep_mod = _sys.modules.get('pluto.sweep')
+    _active = getattr(_sweep_mod, '_active_sweep', None) if _sweep_mod else None
+    if _active is not None:
+        combo = _active.get('config') or {}
+        merged = dict(config) if isinstance(config, dict) else {}
+        merged.update(combo)
+        config = merged
+        sweep_tag = f'sweep:{_active["id"]}'
+        if sweep_tag not in normalized_tags:
+            normalized_tags.append(sweep_tag)
+        if project is None and _active.get('project'):
+            settings.project = get_char(_active['project'])
+
     try:
         op_init = OpInit(config=config, tags=normalized_tags or None, resume=resume)
         op_init.setup(settings=settings)

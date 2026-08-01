@@ -67,6 +67,17 @@ class FakeArtifact:
         return str(root)
 
 
+class FakeSweep:
+    def __init__(self, id='sweep-abc', name='my-sweep', config=None):
+        self.id = id
+        self.name = name
+        self.config = (
+            config
+            if config is not None
+            else {'method': 'grid', 'parameters': {'lr': {'values': [0.1, 0.01]}}}
+        )
+
+
 class FakeRun:
     entity = 'acme'
     project = 'vision'
@@ -252,11 +263,16 @@ class TestWandbExporter:
         _, _, summary = _export(tmp_path, run=run)
         assert 'file-download-failed' in summary['coverage']['not_migrated']
 
-    def test_sweep_membership_is_flagged(self, tmp_path):
-        # A run in a sweep loses its sweep membership/config — flag it.
-        run = FakeRun(sweep='sweep-abc')
-        _, _, summary = _export(tmp_path, run=run)
-        assert 'sweep-metadata' in summary['coverage']['not_migrated']
+    def test_sweep_is_migrated(self, tmp_path):
+        # A run in a sweep migrates its sweep membership + search-space config
+        # into the manifest (id/name/config), counted as migrated.
+        run = FakeRun(sweep=FakeSweep(id='swp1'))
+        _, run_dir, summary = _export(tmp_path, run=run)
+        assert summary['coverage']['migrated'].get('sweep') == 1
+        manifest = read_json(run_dir / 'run.json')
+        assert manifest['sweep']['id'] == 'swp1'
+        assert manifest['sweep']['name'] == 'my-sweep'
+        assert manifest['sweep']['config']['method'] == 'grid'
 
     def test_input_artifact_lineage_is_flagged(self, tmp_path):
         # A run that consumed artifacts (used_artifacts) loses that input lineage.
