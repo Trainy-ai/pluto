@@ -45,13 +45,6 @@ tag = 'migrate'
 
 CONSOLE_BATCH_SIZE = 1000
 
-# A categorical/string series with more distinct values than this is treated as
-# free-form text, not a set of states — rendering it as a state timeline would
-# be meaningless (one band per point), so we skip it rather than send it. The
-# guard lives here (not the exporter) because it needs the whole run's series to
-# count distinct values.
-STRING_SERIES_MAX_CARDINALITY = 50
-
 # All three take (data, caption=...); table-file and inline histograms are
 # handled separately in _replay_media.
 _MEDIA_LOADERS = {
@@ -353,10 +346,8 @@ class PlutoLoader:
         pending_groups: List[Tuple[Dict[str, float], int, float]] = []
         console_lines: List[Tuple[str, str, float, int]] = []
         # Categorical/status series buffered per attribute_path for the whole
-        # run: the cardinality guard (STRING_SERIES_MAX_CARDINALITY) needs every
-        # point before it can decide whether the series is renderable, so these
-        # are sent once at the end rather than streamed. Each entry is a list of
-        # (step, timestamp_ms, value).
+        # run, then sent once at the end in a single request. Each entry is a
+        # list of (step, timestamp_ms, value).
         string_series: Dict[str, List[Tuple[int, int, str]]] = {}
 
         def close_group() -> None:
@@ -490,25 +481,14 @@ class PlutoLoader:
         sync process's data upload — rather than routing through the scalar or
         media client paths.
 
-        Applies the cardinality guard (:data:`STRING_SERIES_MAX_CARDINALITY`):
-        a series with too many distinct values is free-form text, not states,
-        so it is skipped. Failures are non-fatal — the run's scalars/media are
-        already loaded and must not be lost to an ingest hiccup here.
+        Every string series is sent regardless of cardinality (no distinct-value
+        guard). Failures are non-fatal — the run's scalars/media are already
+        loaded and must not be lost to an ingest hiccup here.
         """
         s = op.settings
         if not s.url_data or not s._op_id:
             return
-        renderable: Dict[str, List[Tuple[int, int, str]]] = {}
-        for name, points in series.items():
-            distinct = {v for _, _, v in points}
-            if len(distinct) > STRING_SERIES_MAX_CARDINALITY:
-                logger.warning(
-                    f'{tag}: string-series {name!r} has {len(distinct)} distinct '
-                    f'values (> {STRING_SERIES_MAX_CARDINALITY}); skipping as '
-                    'free-form text, not a categorical timeline'
-                )
-                continue
-            renderable[name] = points
+        renderable = series
         if not renderable:
             return
 

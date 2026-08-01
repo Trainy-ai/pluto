@@ -273,7 +273,7 @@ class SyncProcessManager:
         self,
         log_name: str,
         data_type: str,
-        data_dict: Dict[str, Any],
+        data_dict: Union[Dict[str, Any], str],
         timestamp_ms: int,
         step: Optional[int] = None,
     ) -> None:
@@ -1204,12 +1204,17 @@ class _SyncUploader:
         lines = []
         for record in records:
             payload = record.payload
+            raw = payload.get('data', {})
+            data_type = payload.get('data_type', 'UNKNOWN')
+            # string-series carries a raw string value (e.g. 'warmup'); every
+            # other data type carries a dict that must be JSON-encoded.
+            data_field = raw if data_type == 'string-series' else json.dumps(raw)
             lines.append(
                 json.dumps(
                     {
                         'time': record.timestamp_ms,
-                        'data': json.dumps(payload.get('data', {})),
-                        'dataType': payload.get('data_type', 'UNKNOWN'),
+                        'data': data_field,
+                        'dataType': data_type,
                         'logName': payload.get('log_name', ''),
                         'step': record.step or 0,
                     }

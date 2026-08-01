@@ -320,16 +320,22 @@ class TestPlutoLoader:
             x['dataType'] == 'string-series' and x['logName'] == 'phase' for x in lines
         )
 
-    def test_string_series_high_cardinality_skipped(self, tmp_path, mock_init):
+    def test_string_series_high_cardinality_still_sent(self, tmp_path, mock_init):
         _, op = mock_init
         op.settings.url_data = 'http://ingest/data'
         op.settings.url_meta = 'http://api/logName/add'
-        # 60 distinct values > STRING_SERIES_MAX_CARDINALITY (50): free-form
-        # text, not states -> nothing is sent.
+        # No cardinality guard: even an all-distinct series is sent in full
+        # (no data loss).
         _stage_string_series_run(tmp_path, values=[f'v{i}' for i in range(60)])
         with mock.patch('pluto.migrate.loader.httpx') as httpx_mock:
             PlutoLoader(tmp_path).load()
-        httpx_mock.post.assert_not_called()
+        calls = httpx_mock.post.call_args_list
+        assert len(calls) == 2  # logName/add + ingest
+        lines = [
+            json.loads(x)
+            for x in calls[1].kwargs['content'].strip().split('\n')
+        ]
+        assert len(lines) == 60  # every point sent
 
     def test_finish_code_mapping(self, tmp_path, mock_init):
         _, op = mock_init

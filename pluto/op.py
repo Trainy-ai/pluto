@@ -48,6 +48,12 @@ from .util import (
 logger = logging.getLogger(f'{__name__.split(".")[0]}')
 tag = 'Operation'
 
+# A single string-metric value longer than this is a stray blob (a whole log
+# line, serialized object, etc.), not a categorical state label, so it is not
+# sent. There is no cardinality/distinct-value guard: every string value is
+# logged, regardless of how many distinct values the series has.
+STRING_SERIES_MAX_LEN = 200
+
 
 def _is_distributed_environment() -> bool:
     """Check if running in a distributed (DDP/FSDP) environment."""
@@ -559,6 +565,9 @@ class Op:
             else None
         )
         self._step = 0
+        # String-metric keys already warned about (over-long value) — so the
+        # per-value length warning fires at most once per key.
+        self._string_series_warned: set = set()
         self._queue: queue.Queue[QueueItem] = queue.Queue()
         self._finished = False
         self._finish_lock = threading.Lock()
@@ -909,6 +918,10 @@ class Op:
 
         if isinstance(value, (File, Data)):
             new_file_meta[value.__class__.__name__].append(key)
+        elif isinstance(value, str):
+            # A string metric is a string-series (mlop_data); register it under
+            # the DATA log type so the server indexes it like the migration does.
+            new_file_meta['DATA'].append(key)
         elif self._is_numeric_value(value):
             new_metric_names.append(key)
 
@@ -940,6 +953,40 @@ class Op:
                 timestamp_ms=timestamp_ms,
                 step=self._step,
             )
+        elif isinstance(value, str):
+            # A bare string value is a categorical "string metric" (e.g.
+            # phase='warmup'): route it to the string-series data path.
+            self._enqueue_string_series_sync(key, value, timestamp_ms)
+
+    def _enqueue_string_series_sync(
+        self, key: str, value: str, timestamp_ms: int
+    ) -> None:
+        """Route a string metric value to the string-series data path.
+
+        A string logged across steps (e.g. ``phase='warmup'``) is a categorical
+        state series, stored in ``mlop_data`` as ``dataType='string-series'`` and
+        rendered as a state timeline. Every value is sent regardless of the
+        series' cardinality; only a single over-long value (a stray blob, not a
+        state label) is skipped, with a one-time warning per key.
+        """
+        if self._sync_manager is None:
+            return
+        if len(value) > STRING_SERIES_MAX_LEN:
+            if key not in self._string_series_warned:
+                self._string_series_warned.add(key)
+                logger.warning(
+                    f'{tag}: string metric {key!r} value skipped — '
+                    f'{len(value)} chars (> {STRING_SERIES_MAX_LEN}); string '
+                    'metrics are short state labels, not free-form text.'
+                )
+            return
+        self._sync_manager.enqueue_data(
+            log_name=key,
+            data_type='string-series',
+            data_dict=value,  # raw string; the sync sends string-series un-wrapped
+            timestamp_ms=timestamp_ms,
+            step=self._step,
+        )
 
     def _enqueue_file_sync(
         self,
