@@ -273,6 +273,12 @@ def init(
         combo = _active.get('config') or {}
         merged = dict(config) if isinstance(config, dict) else {}
         merged.update(combo)
+        # Stamp the declared sweep spec (method/metric/search-space) so the
+        # server sees a native sweep's real declaration, like config.wandb.sweep
+        # does for migrated sweeps — no separate sweep entity required.
+        declared = getattr(_sweep_mod, '_active_declared', None)
+        if isinstance(declared, dict):
+            merged['sweep'] = declared
         config = merged
         sweep_tag = f'sweep:{_active["id"]}'
         if sweep_tag not in normalized_tags:

@@ -58,6 +58,13 @@ _active_sweep: Optional[Dict[str, Any]] = None
 # run, without relying on pluto.ops (which finish() mutates + ids get reused).
 _last_run_op: Optional[Any] = None
 
+# The active sweep's *declared* spec (id + method + metric + search space),
+# constant for the whole agent() run. init() stamps it onto each run's config
+# (as ``config.sweep``) so the server has the real declaration for a native
+# sweep — mirroring ``config.wandb.sweep`` for migrated sweeps — instead of
+# having to infer method/objective/search-space from the runs.
+_active_declared: Optional[Dict[str, Any]] = None
+
 # id -> config, backed by an on-disk copy so an agent in a separate process can
 # still load the sweep. (When the backend gains a sweep entity, _store_sweep /
 # _load_sweep become the only spots that need to talk to it.)
@@ -176,6 +183,15 @@ def _random_combo(parameters: Dict[str, Any]) -> Dict[str, Any]:
 def _combo_key(config: Dict[str, Any], swept_names: List[str]) -> tuple:
     """A hashable identity for a combination, over just the swept parameters."""
     return tuple((name, config.get(name)) for name in swept_names)
+
+
+def _declared_meta(sweep_id: str, cfg: Dict[str, Any]) -> Dict[str, Any]:
+    """The declared sweep spec to stamp on each run (id + method/metric/params)."""
+    meta: Dict[str, Any] = {'id': sweep_id}
+    for key in ('method', 'metric', 'parameters'):
+        if key in cfg:
+            meta[key] = cfg[key]
+    return meta
 
 
 def _completed_sweep_runs(
@@ -415,40 +431,47 @@ def agent(
     completed = _completed_sweep_runs(proj, sweep_id) if proj else []
     n_done = len(completed)
 
-    if method == 'bayes':
-        _run_bayes(sweep_id, cfg, proj, function, count, completed, metric_name)
-        return
+    global _active_declared
+    _active_declared = _declared_meta(sweep_id, cfg)
+    try:
+        if method == 'bayes':
+            _run_bayes(sweep_id, cfg, proj, function, count, completed, metric_name)
+            return
 
-    if method == 'grid':
-        swept = list(parameters)
-        done_keys = {
-            _combo_key(rc, swept)
-            for r in completed
-            if (rc := _fetch_run_config(proj, r))
-        }
-        combos = [
-            c for c in _grid_combos(parameters) if _combo_key(c, swept) not in done_keys
-        ]
-        if count is not None:
-            combos = combos[:count]  # cap new runs this invocation
-    else:  # random
-        if count is None:
-            raise ValueError(
-                "method='random' needs count=<n> in pluto.agent(sweep_id, fn, "
-                'count=n) — a random search has no natural end'
+        if method == 'grid':
+            swept = list(parameters)
+            done_keys = {
+                _combo_key(rc, swept)
+                for r in completed
+                if (rc := _fetch_run_config(proj, r))
+            }
+            combos = [
+                c
+                for c in _grid_combos(parameters)
+                if _combo_key(c, swept) not in done_keys
+            ]
+            if count is not None:
+                combos = combos[:count]  # cap new runs this invocation
+        else:  # random
+            if count is None:
+                raise ValueError(
+                    "method='random' needs count=<n> in pluto.agent(sweep_id, fn, "
+                    'count=n) — a random search has no natural end'
+                )
+            remaining = max(0, count - n_done)  # count is the sweep's total target
+            combos = [_random_combo(parameters) for _ in range(remaining)]
+
+        if n_done:
+            logger.info(
+                f'{tag}: resuming sweep {sweep_id}: {n_done} run(s) already done, '
+                f'{len(combos)} to go'
             )
-        remaining = max(0, count - n_done)  # count is the sweep's total target
-        combos = [_random_combo(parameters) for _ in range(remaining)]
-
-    if n_done:
-        logger.info(
-            f'{tag}: resuming sweep {sweep_id}: {n_done} run(s) already done, '
-            f'{len(combos)} to go'
-        )
-    logger.info(f'{tag}: agent starting {len(combos)} runs for sweep {sweep_id}')
-    for i, combo in enumerate(combos):
-        _run_combo(sweep_id, combo, proj, function, None, i, len(combos))
-    logger.info(f'{tag}: agent finished {len(combos)} runs for sweep {sweep_id}')
+        logger.info(f'{tag}: agent starting {len(combos)} runs for sweep {sweep_id}')
+        for i, combo in enumerate(combos):
+            _run_combo(sweep_id, combo, proj, function, None, i, len(combos))
+        logger.info(f'{tag}: agent finished {len(combos)} runs for sweep {sweep_id}')
+    finally:
+        _active_declared = None
 
 
 def _run_bayes(

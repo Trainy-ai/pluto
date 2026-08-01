@@ -155,6 +155,30 @@ class TestAgent:
         pluto.agent(sid, boom)  # must not propagate; context cleared
         assert sw._active_sweep is None
 
+    def test_agent_exposes_declared_spec(self, monkeypatch):
+        # The declared spec (method/metric/search-space) is available during the
+        # run so init() can stamp it onto config.sweep; cleared afterwards.
+        monkeypatch.setattr(pluto, 'ops', [])
+        captured = {}
+
+        def fn():
+            captured['declared'] = dict(sw._active_declared)
+
+        sid = pluto.sweep(
+            {
+                'method': 'grid',
+                'metric': {'name': 'loss', 'goal': 'minimize'},
+                'parameters': {'a': {'values': [1]}},
+            }
+        )
+        pluto.agent(sid, fn)
+        d = captured['declared']
+        assert d['id'] == sid
+        assert d['method'] == 'grid'
+        assert d['metric'] == {'name': 'loss', 'goal': 'minimize'}
+        assert d['parameters'] == {'a': {'values': [1]}}
+        assert sw._active_declared is None  # cleared after the agent finishes
+
 
 class TestResume:
     def test_grid_resume_skips_completed_combos(self, monkeypatch):
