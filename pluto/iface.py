@@ -21,7 +21,8 @@ logger = logging.getLogger(f'{__name__.split(".")[0]}')
 tag = 'Interface'
 
 # Set once a persistent 401 has been reported, so the ~4 s heartbeat doesn't
-# repeat the same (static) message for the life of the run.
+# repeat the same (static) message for the life of the run. Reset per run in
+# ServerInterface.__init__ — see there for why it can't be process-wide.
 _logged_401 = False
 
 # 4xx status codes that are commonly *transient* and worth retrying like 5xx:
@@ -262,6 +263,15 @@ class ServerInterface:
         self.config = config
         self.settings = settings
 
+        # One interface is built per run, so this is the per-run reset for the
+        # persistent-401 notice. Without it, a sweep that creates many runs in
+        # one process would report the first bad key and then stay silent for
+        # every later run's heartbeat/status-update/logName failures — even
+        # though those runs got as far as creating a run, so their key worked
+        # at creation time and only failed afterwards.
+        global _logged_401
+        _logged_401 = False
+
         self.headers = {
             'Authorization': f'Bearer {self.settings._auth}',
             'Content-Type': 'application/json',
@@ -438,6 +448,7 @@ class ServerInterface:
         retry: int = 0,
         error_info: str = '',
         last_status: Optional[int] = None,
+        last_server_msg: str = '',
         max_retries: Optional[int] = None,
         timeout: Optional[float] = None,
         suppress_httpx_logs: bool = False,
@@ -480,19 +491,18 @@ class ServerInterface:
             # network error instead, that's a connectivity story, not an auth
             # one, and error_info carries no server message.)
             if last_status == 401 and error_info.startswith('HTTP 401'):
-                server_msg = error_info.partition(': ')[2]
                 if raise_on_error:
                     raise PlutoAuthError(
                         http_401_message(
-                            server_msg=server_msg,
+                            server_msg=last_server_msg,
                             page_url=getattr(self.settings, 'url_token', None),
                         )
                     )
                 # Paths that swallow failures (heartbeats, status updates, log
                 # name registration) still need to tell the user *why* their
                 # data stopped flowing — but the heartbeat fires every ~4 s, so
-                # say it once per process rather than on every cycle.
-                self._log_401_once(server_msg)
+                # say it once per run rather than on every cycle.
+                self._log_401_once(last_server_msg)
                 return None
 
             # Distinguish a persistent server error (we got HTTP responses but
@@ -525,6 +535,10 @@ class ServerInterface:
             # Remember the status so a later retry-exhaustion raise carries the
             # real code, not None (network errors below leave this untouched).
             last_status = r.status_code
+            # Carried in its own parameter rather than re-parsed out of
+            # error_info: that string is built for the failure log, so any
+            # change to its format would silently corrupt the reason.
+            last_server_msg = server_msg
 
             target = len(drained) if drained else 'request'
             # High-frequency endpoints (the trigger/heartbeat that fires
@@ -607,6 +621,7 @@ class ServerInterface:
             retry=retry + 1,
             error_info=error_info,
             last_status=last_status,
+            last_server_msg=last_server_msg,
             max_retries=effective_max_retries,
             timeout=timeout,
             suppress_httpx_logs=suppress_httpx_logs,

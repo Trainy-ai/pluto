@@ -1,16 +1,22 @@
-"""Unit tests for ServerInterface write-error handling (pluto/iface.py).
+"""Unit tests for write-error handling (pluto/iface.py) without a real server.
 
-These exercise the retry/raise policy of ``_try`` without a real server:
+These exercise the retry/raise policy of ``_try``:
 - 4xx responses are terminal (no retry) and surface the server's message.
 - 5xx responses are retried.
 - Network exceptions never raise PlutoRequestError (caller sees None).
+
+Plus how a persistent 401 is reported. An expired API key is the most common
+cause, and ``login()`` (pluto/auth.py) is the first place it can be caught, so
+its wording is pinned here too — it shares the message builder with ``_try``.
 """
 
 import logging
+from unittest.mock import MagicMock
 
 import httpx
 import pytest
 
+import pluto.auth as auth
 from pluto.iface import (
     PlutoAuthError,
     PlutoRequestError,
@@ -228,6 +234,25 @@ def test_try_persistent_401_without_raise_logs_once(monkeypatch, caplog):
     assert 'expired' in auth_logs[0].message
 
 
+def test_persistent_401_notice_resets_per_run(monkeypatch, caplog):
+    """ "Once" is once per run, not once per process: a sweep creating many runs
+    in one process must not have run N's bad key silence run N+1's uploads."""
+    monkeypatch.setattr('pluto.iface._logged_401', False)
+
+    def fake_method(url, content=None, headers=None, **kwargs):
+        return _resp(401, text='Unauthorized')
+
+    with caplog.at_level(logging.CRITICAL, logger='pluto'):
+        for _ in range(2):
+            # A new ServerInterface is built per run.
+            iface = _make_iface()
+            for _ in range(2):
+                iface._try(fake_method, 'https://x', {}, b'{}', name='trigger')
+
+    auth_logs = [r for r in caplog.records if 'authentication failed' in r.message]
+    assert len(auth_logs) == 2, 'each run gets its own one-time notice'
+
+
 def test_try_network_error_returns_none_not_request_error():
     iface = _make_iface()
 
@@ -304,3 +329,111 @@ def test_sync_post_500_is_retried():
     # retry_max = 2 → 2 attempts total; never a PlutoRequestError (that's 4xx).
     assert uploader.client.calls == 2
     assert not isinstance(excinfo.value, PlutoRequestError)
+
+
+# --- login()-time reporting (pluto/auth.py) ---------------------------------
+#
+# login() runs before create-run, so it is the earliest place a rejected key
+# can be reported. It builds its message with the same http_401_message() the
+# _try path uses, which is why these live alongside the tests above.
+
+
+def _make_login_settings(token='expired-key'):
+    settings = Settings()
+    settings.mode = 'noop'
+    settings.update_host()
+    settings._auth = token
+    return settings
+
+
+@pytest.fixture
+def no_keyring(monkeypatch):
+    """Keep login() away from the real keyring (and the darwin/fallback fork)."""
+    monkeypatch.setattr(auth.sys, 'platform', 'darwin')
+    monkeypatch.setattr(auth.keyring, 'get_password', lambda *a, **k: None)
+    monkeypatch.setattr(auth.keyring, 'set_password', lambda *a, **k: None)
+
+
+def _patch_login_response(monkeypatch, response):
+    client = MagicMock()
+    client.post.return_value = response
+    monkeypatch.setattr(auth.httpx, 'Client', lambda **kwargs: client)
+    return client
+
+
+def _login_response(
+    status_code, url='https://pluto-api.trainy.ai/api/slug', text='', json_body=None
+):
+    request = httpx.Request('POST', url)
+    if json_body is not None:
+        return httpx.Response(status_code, json=json_body, request=request)
+    return httpx.Response(status_code, text=text, request=request)
+
+
+def test_login_401_reports_expired_key_not_maybe_valid(monkeypatch, caplog, no_keyring):
+    """The server saw the key and rejected it — that is definitive, and it says
+    which problem it is, so login() must pass that reason through."""
+    monkeypatch.delenv('PLUTO_API_KEY', raising=False)
+    monkeypatch.delenv('MLOP_API_TOKEN', raising=False)
+    _patch_login_response(
+        monkeypatch,
+        _login_response(
+            401, json_body={'error': 'Unauthorized', 'message': 'API key has expired'}
+        ),
+    )
+
+    with caplog.at_level(logging.CRITICAL, logger='auth'):
+        auth.login(settings=_make_login_settings())
+
+    joined = '\n'.join(rec.getMessage() for rec in caplog.records)
+    # The server's own words, not the generic fallback.
+    assert 'The server says: API key has expired.' in joined
+    assert 'most likely' not in joined
+    assert 'not a server outage' in joined
+    assert 'pluto login' in joined
+    assert (
+        'may still be valid' not in joined
+    ), 'a 401 is definitive — never suggest the key might be fine'
+
+
+def test_login_401_without_a_reason_falls_back_to_the_hedge(
+    monkeypatch, caplog, no_keyring
+):
+    monkeypatch.delenv('PLUTO_API_KEY', raising=False)
+    monkeypatch.delenv('MLOP_API_TOKEN', raising=False)
+    _patch_login_response(monkeypatch, _login_response(401, text='Unauthorized'))
+
+    with caplog.at_level(logging.CRITICAL, logger='auth'):
+        auth.login(settings=_make_login_settings())
+
+    joined = '\n'.join(rec.getMessage() for rec in caplog.records)
+    assert 'most likely expired or been revoked' in joined
+    assert 'The server says' not in joined
+
+
+def test_login_5xx_keeps_may_still_be_valid_wording(monkeypatch, caplog, no_keyring):
+    """A server-side failure genuinely says nothing about the key's validity,
+    so that path must keep its softer wording."""
+    _patch_login_response(monkeypatch, _login_response(500, text='boom'))
+
+    with caplog.at_level(logging.WARNING, logger='auth'):
+        auth.login(settings=_make_login_settings())
+
+    joined = '\n'.join(rec.getMessage() for rec in caplog.records)
+    assert 'may still be valid' in joined
+    assert 'expired' not in joined
+
+
+def test_login_unreachable_server_does_not_blame_the_key(
+    monkeypatch, caplog, no_keyring
+):
+    client = MagicMock()
+    client.post.side_effect = httpx.ConnectError('no route')
+    monkeypatch.setattr(auth.httpx, 'Client', lambda **kwargs: client)
+
+    with caplog.at_level(logging.WARNING, logger='auth'):
+        auth.login(settings=_make_login_settings())
+
+    joined = '\n'.join(rec.getMessage() for rec in caplog.records)
+    assert 'server not reachable' in joined
+    assert 'expired' not in joined

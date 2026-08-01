@@ -7,7 +7,7 @@ import webbrowser
 import httpx
 import keyring
 
-from .iface import http_401_message
+from .iface import _server_error_message, http_401_message
 from .log import setup_logger, teardown_logger
 from .sets import get_console, setup
 from .util import ANSI, import_lib, print_url
@@ -94,9 +94,12 @@ def login(settings=None, retry=False):
             # Don't muddy that with "may still be valid" — that wording sends
             # users hunting for an outage when their key has simply expired.
             if isinstance(e, httpx.HTTPStatusError) and e.response.status_code == 401:
-                # Built without reading `settings` — it holds the key, so
-                # nothing off it feeds a log line (see _api_page_url_from_env).
-                tlogger.critical('%s: %s', tag, http_401_message())
+                # The body says which problem it is ("API key has expired"), so
+                # pass it through rather than falling back to the guess. Built
+                # without reading `settings` — it holds the key, so nothing off
+                # it feeds a log line (see _api_page_url_from_env).
+                reason = _server_error_message(e.response)
+                tlogger.critical('%s: %s', tag, http_401_message(reason))
             else:
                 tlogger.warning(
                     '%s: server validation failed (token may still be valid); '
