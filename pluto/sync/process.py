@@ -32,8 +32,10 @@ except ImportError:
 
 from ..iface import (
     RETRYABLE_STATUS_CODES,
+    PlutoAuthError,
     PlutoRequestError,
     _server_error_message,
+    http_401_message,
 )
 from .store import FileRecord, RecordType, SyncRecord, SyncStore
 
@@ -1462,6 +1464,21 @@ class _SyncUploader:
                     f'retrying in {wait}s: {last_error}'
                 )
                 time.sleep(wait)
+
+        # A 401 that outlasted every retry means the key itself is bad (expired
+        # or revoked), not that the server is having a moment. The caller logs
+        # this as "Failed to upload metrics: <error>", so the error text is the
+        # only thing the user sees — make it the actionable version.
+        if (
+            isinstance(last_error, httpx.HTTPStatusError)
+            and last_error.response.status_code == 401
+        ):
+            # No url_token: the caller logs this exception, and the key page is
+            # resolved from the environment rather than read off the settings
+            # dict, which carries `_auth`.
+            raise PlutoAuthError(
+                http_401_message(_server_error_message(last_error.response))
+            ) from last_error
 
         raise last_error or Exception('Request failed after retries')
 

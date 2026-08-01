@@ -312,6 +312,43 @@ Environment variables use the `PLUTO_*` prefix. The old `MLOP_*` prefix is suppo
 **Deprecated (still supported with warnings):**
 - `MLOP_API_TOKEN`, `MLOP_PROJECT`, `MLOP_DEBUG_LEVEL`, `MLOP_URL_*`, `MLOP_DIR`
 
+### Auth failures (401) vs. server outages
+
+401 stays in `RETRYABLE_STATUS_CODES` (`pluto/iface.py`) because token-validation
+races do clear on retry. But a 401 that survives every retry means the key is
+expired or revoked — a local problem that used to read like an outage in the logs
+("response code 401 ... from https://pluto-api..."). Those paths now report it as
+an auth failure:
+
+- `http_401_message()` (`pluto/iface.py`) builds the single user-facing message:
+  names the key source (`PLUTO_API_KEY` vs. `pluto login` keyring), says it is not
+  an outage, and links the API-key page.
+- **The server already says which key problem it is** — the web API returns
+  `{"error": "Unauthorized", "message": "API key has expired"}` (also "has been
+  revoked" / "Key not found"), and the ingest service returns `{"code": 1002,
+  "message": ...}`. `_server_error_message` reads `error` first (validation
+  failures put the reason there) and falls through to `message` when `error` is
+  only the status phrase — see `GENERIC_ERRORS`. When a reason comes back, the
+  message states it ("The server says: API key has expired."); the "most likely
+  expired or been revoked" hedge is only for when the body says nothing.
+  Note the server has no *stable* code for this — matching is on prose.
+- Log paths must not build strings from anything read off `Settings` (it holds
+  `_auth`), so they resolve the key page via `_api_page_url_from_env()`
+  (`PLUTO_URL_APP`), while the raised `PlutoAuthError` carries the exact
+  `settings.url_token`. Helper names avoid credential words on purpose: CodeQL's
+  `py/clear-text-logging-sensitive-data` classifies a call's result as sensitive
+  by callee name, and inline `# codeql[...]` suppressions are not honored here.
+- `PlutoAuthError` (subclass of `PlutoRequestError`) is raised on retry
+  exhaustion by `ServerInterface._try` and `_SyncUploader._post_with_retry`, so a
+  key that expires *mid-run* surfaces through the sync process too. `init()`
+  re-raises it verbatim rather than under "Failed to create run".
+- Fire-and-forget callers (heartbeat, status update, logName registration) don't
+  raise, so `_try` logs the message at CRITICAL — once per process, since the
+  heartbeat fires every ~4 s.
+- `login()` (`pluto/auth.py`) catches this earliest: a 401 on a pre-provided key
+  is definitive, so it no longer says "token may still be valid" (5xx/network
+  failures keep that softer wording).
+
 ### Network Filesystems (NFS/Lustre/SMB) and SQLite WAL
 
 The sync DB uses SQLite WAL mode (`pluto/sync/store.py`), which relies on POSIX

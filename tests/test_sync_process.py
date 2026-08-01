@@ -1215,6 +1215,73 @@ class TestSyncUploaderErrorHandling:
             uploader.upload_metrics_batch(records)
             assert mock_client.post.call_count == 3
 
+    def test_persistent_401_raises_actionable_auth_error(self, uploader, monkeypatch):
+        """A key that expires mid-run surfaces only through this exception's
+        message ("Failed to upload metrics: <error>"), so it must say the key
+        is bad — not leave the user reading a bare 401 as a server outage."""
+        import httpx
+
+        from pluto.iface import PlutoAuthError
+
+        monkeypatch.delenv('PLUTO_API_KEY', raising=False)
+        monkeypatch.delenv('MLOP_API_TOKEN', raising=False)
+        # The key page comes from the environment, never off the settings dict
+        # (it carries `_auth`, and this exception gets logged by the caller).
+        monkeypatch.setenv('PLUTO_URL_APP', 'https://self.hosted')
+
+        request = httpx.Request('POST', 'https://test.example.com/ingest/metrics')
+        response = httpx.Response(401, text='Unauthorized', request=request)
+
+        with patch('httpx.Client') as MockClient:
+            mock_client = MagicMock()
+            mock_client.post.return_value = response
+            MockClient.return_value = mock_client
+            uploader._client = None
+
+            with pytest.raises(PlutoAuthError) as excinfo:
+                uploader._post_with_retry('https://x', b'{}', {})
+
+        # 401 stays retryable (transient token-service races do happen)...
+        assert mock_client.post.call_count == 3
+        # ...but once it's clearly persistent, the message names the cause,
+        # the fix, and the right key page for self-hosted deployments.
+        msg = str(excinfo.value)
+        assert 'expired' in msg
+        assert 'not a server outage' in msg
+        assert 'pluto login' in msg
+        assert 'https://self.hosted/api-keys' in msg
+
+    def test_persistent_401_surfaces_server_reason(self, uploader, monkeypatch):
+        """The ingest service sends the reason as JSON (`{"code": 1002,
+        "message": ...}`), so the parsed reason must survive this path too —
+        not just the plain-text one above."""
+        import httpx
+
+        from pluto.iface import PlutoAuthError
+
+        monkeypatch.delenv('PLUTO_API_KEY', raising=False)
+        monkeypatch.delenv('MLOP_API_TOKEN', raising=False)
+
+        request = httpx.Request('POST', 'https://test.example.com/ingest/metrics')
+        response = httpx.Response(
+            401,
+            json={'code': 1002, 'message': 'API key has expired'},
+            request=request,
+        )
+
+        with patch('httpx.Client') as MockClient:
+            mock_client = MagicMock()
+            mock_client.post.return_value = response
+            MockClient.return_value = mock_client
+            uploader._client = None
+
+            with pytest.raises(PlutoAuthError) as excinfo:
+                uploader._post_with_retry('https://x', b'{}', {})
+
+        msg = str(excinfo.value)
+        assert 'The server says: API key has expired.' in msg
+        assert 'most likely' not in msg, 'do not hedge when the server told us'
+
 
 class TestDistributedEnvironmentDetection:
     """Tests for DDP/distributed environment detection."""

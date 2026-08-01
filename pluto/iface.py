@@ -1,10 +1,11 @@
 import json
 import logging
+import os
 import queue
 import time
 from contextlib import contextmanager
 from datetime import datetime, timezone
-from typing import Any, Dict, Iterable, List, Optional, Union
+from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
 
 import httpx
 
@@ -19,6 +20,11 @@ from .sets import Settings
 logger = logging.getLogger(f'{__name__.split(".")[0]}')
 tag = 'Interface'
 
+# Set once a persistent 401 has been reported, so the ~4 s heartbeat doesn't
+# repeat the same (static) message for the life of the run. Reset per run in
+# ServerInterface.__init__ — see there for why it can't be process-wide.
+_logged_401 = False
+
 # 4xx status codes that are commonly *transient* and worth retrying like 5xx:
 #   401 Unauthorized     — auth/token validation races (e.g. the token service
 #                          timing out mid-request), which clear on retry.
@@ -28,6 +34,100 @@ tag = 'Interface'
 # validation error — e.g. 400 "A run can have at most one group:* tag." —
 # where retrying the identical request would just fail again, so it's terminal.
 RETRYABLE_STATUS_CODES = frozenset({401, 408, 429})
+
+# Fallback for the API-key page when the caller has no Settings handy (e.g. the
+# sync process, which only receives a settings dict). Mirrors sets.url_token.
+DEFAULT_API_PAGE_URL = 'https://pluto.trainy.ai/api-keys'
+
+# Bodies whose "reason" is just the HTTP status phrase restated — they add
+# nothing over the status code, and the real reason (when there is one) lives
+# in the response's `message` field instead.
+GENERIC_ERRORS = frozenset(
+    {
+        'unauthorized',
+        '401',
+        '401 unauthorized',
+        'forbidden',
+        'bad request',
+        'internal server error',
+    }
+)
+
+
+def _api_page_url_from_env() -> str:
+    """Resolve the API-key page without reading anything off ``Settings``.
+
+    ``Settings`` holds ``_auth``, so a string read off it — even a public URL —
+    is credential-adjacent data, and log lines shouldn't be built from it. Log
+    paths call this instead; the raised ``PlutoAuthError`` still carries the
+    exact configured URL, since an exception message isn't a log sink.
+
+    Self-hosted deployments configured via ``PLUTO_URL_APP`` still get their own
+    key page; ones configured only through ``init(host=...)`` fall back to the
+    default here, and to the exact URL in the exception.
+    """
+    url_app = os.environ.get('PLUTO_URL_APP') or os.environ.get('MLOP_URL_APP')
+    if url_app:
+        return f'{url_app.rstrip("/")}/api-keys'
+    return DEFAULT_API_PAGE_URL
+
+
+def _source_and_fix() -> Tuple[str, str]:
+    """Describe *which* key the server rejected, so the fix is unambiguous.
+
+    An expired key is the single most common cause of a persistent 401, and the
+    fix differs depending on where the key came from (env var vs. keyring), so
+    name the source rather than making the user guess.
+    """
+    # Membership tests, not reads: this only needs to know *whether* a key was
+    # provided via the environment, so never pull the value itself into scope.
+    if 'PLUTO_API_KEY' in os.environ:
+        return (
+            'the API key in the PLUTO_API_KEY environment variable',
+            'update PLUTO_API_KEY with the new key',
+        )
+    if 'MLOP_API_TOKEN' in os.environ:
+        return (
+            'the API key in the MLOP_API_TOKEN environment variable '
+            '(deprecated — use PLUTO_API_KEY)',
+            'update PLUTO_API_KEY with the new key',
+        )
+    return (
+        'the API key saved by `pluto login`',
+        'run `pluto login <key>` with the new key',
+    )
+
+
+def http_401_message(server_msg: str = '', page_url: Optional[str] = None) -> str:
+    """Build the user-facing message for a 401 that never cleared.
+
+    A persistent 401 reads like a server outage in the logs ("response code 401
+    ... from https://pluto-api...") even though it is almost always a local
+    problem: the key expired or was revoked. Say that outright, name the key
+    source, and give the exact command that fixes it.
+
+    ``page_url`` is the configured API-key page (``settings.url_token``). Pass
+    it when the message is going into an exception; omit it on log paths, where
+    it is resolved from the environment instead — see ``_api_page_url_from_env``.
+    """
+    source, fix = _source_and_fix()
+    # The server distinguishes expired from revoked from unknown keys and says
+    # which in the response body ("API key has expired"). When we have that,
+    # state it as fact; only guess when the body told us nothing.
+    reason = (server_msg or '').strip().rstrip('.')
+    if reason.lower() in GENERIC_ERRORS:
+        reason = ''
+    cause = (
+        f'The server says: {reason[:200]}.'
+        if reason
+        else 'The key has most likely expired or been revoked.'
+    )
+    return (
+        f'authentication failed (HTTP 401): the Pluto server rejected {source}. '
+        f'{cause} This is an authentication failure, not a server outage. '
+        f'Create a new key at {page_url or _api_page_url_from_env()}, '
+        f'then {fix}.'
+    )
 
 
 class PlutoRequestError(Exception):
@@ -44,16 +144,46 @@ class PlutoRequestError(Exception):
         super().__init__(message)
 
 
+class PlutoAuthError(PlutoRequestError):
+    """Raised when a 401 never clears — i.e. the API key is bad, not the server.
+
+    A subclass of ``PlutoRequestError`` so existing ``except PlutoRequestError``
+    handlers keep working; callers that want to say something more specific
+    (``init()`` does) can catch this first.
+    """
+
+    def __init__(self, message: str):
+        super().__init__(message, status_code=401)
+
+
 def _server_error_message(r: httpx.Response) -> str:
     """Best-effort extraction of the human-readable reason from a response.
 
-    The backend returns ``{"error": "<reason>"}`` on validation failures; fall
-    back to the raw (truncated) body when the payload isn't the expected shape.
+    Two body shapes are in play, and the reason lives in a different field in
+    each:
+
+    * validation failures return ``{"error": "<reason>"}`` — e.g. "A run can
+      have at most one group:* tag.";
+    * auth failures pair a *generic* ``error`` with the specific reason in
+      ``message`` — ``{"error": "Unauthorized", "message": "API key has
+      expired"}`` — and the ingest service sends ``message`` alone alongside a
+      numeric ``code``.
+
+    So prefer ``error`` when it says something, and fall through to ``message``
+    when it's just the HTTP status phrase; otherwise fall back to the raw
+    (truncated) body.
     """
     try:
         body = r.json()
-        if isinstance(body, dict) and body.get('error'):
-            return str(body['error'])
+        if isinstance(body, dict):
+            error = body.get('error')
+            if error and str(error).strip().rstrip('.').lower() not in GENERIC_ERRORS:
+                return str(error)
+            message = body.get('message')
+            if message:
+                return str(message)
+            if error:
+                return str(error)
     except Exception:
         pass
     return r.text[:500]
@@ -132,6 +262,15 @@ class ServerInterface:
     def __init__(self, config: dict, settings: Settings) -> None:
         self.config = config
         self.settings = settings
+
+        # One interface is built per run, so this is the per-run reset for the
+        # persistent-401 notice. Without it, a sweep that creates many runs in
+        # one process would report the first bad key and then stay silent for
+        # every later run's heartbeat/status-update/logName failures — even
+        # though those runs got as far as creating a run, so their key worked
+        # at creation time and only failed afterwards.
+        global _logged_401
+        _logged_401 = False
 
         self.headers = {
             'Authorization': f'Bearer {self.settings._auth}',
@@ -253,6 +392,19 @@ class ServerInterface:
                     suppress_httpx_logs=True,
                 )
 
+    def _log_401_once(self, server_msg: str) -> None:
+        """Log a persistent-401 message at most once per process.
+
+        Builds the message here, from ``server_msg`` and the environment only:
+        nothing read off ``self.settings`` (which holds the API key) reaches a
+        log line.
+        """
+        global _logged_401
+        if _logged_401:
+            return
+        _logged_401 = True
+        logger.critical('%s: %s', tag, http_401_message(server_msg))
+
     def _log_failed_request(
         self,
         request_type: str,
@@ -296,6 +448,7 @@ class ServerInterface:
         retry: int = 0,
         error_info: str = '',
         last_status: Optional[int] = None,
+        last_server_msg: str = '',
         max_retries: Optional[int] = None,
         timeout: Optional[float] = None,
         suppress_httpx_logs: bool = False,
@@ -330,6 +483,28 @@ class ServerInterface:
                 retry_count=retry,
             )
 
+            # A 401 that survived every retry is not the transient auth race
+            # RETRYABLE_STATUS_CODES is there for — it's an expired/revoked key.
+            # Report it as such instead of as a generic "HTTP 401" that reads
+            # like a server outage.
+            # (Only when the *final* attempt was the 401 — if it ended on a
+            # network error instead, that's a connectivity story, not an auth
+            # one, and error_info carries no server message.)
+            if last_status == 401 and error_info.startswith('HTTP 401'):
+                if raise_on_error:
+                    raise PlutoAuthError(
+                        http_401_message(
+                            server_msg=last_server_msg,
+                            page_url=getattr(self.settings, 'url_token', None),
+                        )
+                    )
+                # Paths that swallow failures (heartbeats, status updates, log
+                # name registration) still need to tell the user *why* their
+                # data stopped flowing — but the heartbeat fires every ~4 s, so
+                # say it once per run rather than on every cycle.
+                self._log_401_once(last_server_msg)
+                return None
+
             # Distinguish a persistent server error (we got HTTP responses but
             # they never succeeded) from an unreachable server (network
             # exceptions → error_info doesn't start with "HTTP"). Only the
@@ -360,6 +535,10 @@ class ServerInterface:
             # Remember the status so a later retry-exhaustion raise carries the
             # real code, not None (network errors below leave this untouched).
             last_status = r.status_code
+            # Carried in its own parameter rather than re-parsed out of
+            # error_info: that string is built for the failure log, so any
+            # change to its format would silently corrupt the reason.
+            last_server_msg = server_msg
 
             target = len(drained) if drained else 'request'
             # High-frequency endpoints (the trigger/heartbeat that fires
@@ -442,6 +621,7 @@ class ServerInterface:
             retry=retry + 1,
             error_info=error_info,
             last_status=last_status,
+            last_server_msg=last_server_msg,
             max_retries=effective_max_retries,
             timeout=timeout,
             suppress_httpx_logs=suppress_httpx_logs,
