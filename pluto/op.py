@@ -565,6 +565,9 @@ class Op:
             else None
         )
         self._step = 0
+        # Latest numeric value logged per key (last write wins). Lets a sweep
+        # agent read a run's objective metric without a server round-trip.
+        self._latest_metrics: Dict[str, float] = {}
         # String-metric keys already warned about (over-long value) — so the
         # per-value length warning fires at most once per key.
         self._string_series_warned: set = set()
@@ -814,6 +817,9 @@ class Op:
 
         if metrics:
             self._sync_manager.enqueue_metrics(metrics, timestamp_ms, self._step)
+            # Cache the latest numeric value per key so a sweep agent (bayes) can
+            # read the objective back after the run without a server round-trip.
+            self._latest_metrics.update(metrics)
 
         # Register new metric/file names with server (required for dashboard display)
         if (new_metric_names or new_file_meta) and self._iface:

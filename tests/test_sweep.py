@@ -73,9 +73,19 @@ class TestValidation:
         with pytest.raises(ValueError, match="non-empty 'parameters'"):
             sw._validate_config({'method': 'grid'})
 
-    def test_bayes_not_implemented(self):
-        with pytest.raises(NotImplementedError, match='bayes'):
+    def test_bayes_requires_metric(self):
+        with pytest.raises(ValueError, match='bayes sweep needs metric'):
             pluto.sweep({'method': 'bayes', 'parameters': {'a': {'values': [1]}}})
+
+    def test_bayes_with_metric_is_accepted(self):
+        sid = pluto.sweep(
+            {
+                'method': 'bayes',
+                'metric': {'name': 'loss', 'goal': 'minimize'},
+                'parameters': {'a': {'min': 0.0, 'max': 1.0}},
+            }
+        )
+        assert isinstance(sid, str)
 
 
 class TestSweepStorage:
@@ -144,3 +154,132 @@ class TestAgent:
         sid = pluto.sweep({'method': 'grid', 'parameters': {'a': {'values': [1]}}})
         pluto.agent(sid, boom)  # must not propagate; context cleared
         assert sw._active_sweep is None
+
+
+class TestResume:
+    def test_grid_resume_skips_completed_combos(self, monkeypatch):
+        monkeypatch.setattr(pluto, 'ops', [])
+        import pluto.query as pq
+
+        # two combos (lr=0.1) already COMPLETED in the sweep
+        monkeypatch.setattr(
+            pq,
+            'list_runs',
+            lambda project, tags=None, limit=200, offset=0: (
+                [
+                    {'displayId': 'A', 'status': 'COMPLETED'},
+                    {'displayId': 'B', 'status': 'COMPLETED'},
+                ]
+                if offset == 0
+                else []
+            ),
+        )
+        configs = {'A': {'lr': 0.1, 'bs': 16}, 'B': {'lr': 0.1, 'bs': 32}}
+        monkeypatch.setattr(
+            pq, 'get_run', lambda project, did: {'config': configs[did]}
+        )
+
+        seen = []
+        sid = pluto.sweep(
+            {
+                'method': 'grid',
+                'parameters': {
+                    'lr': {'values': [0.1, 0.01]},
+                    'bs': {'values': [16, 32]},
+                },
+            },
+            project='p',
+        )
+        pluto.agent(
+            sid,
+            lambda: seen.append(
+                (sw._active_sweep['config']['lr'], sw._active_sweep['config']['bs'])
+            ),
+        )
+        assert seen == [(0.01, 16), (0.01, 32)]  # only the not-done combos
+
+    def test_random_resume_runs_remaining_count(self, monkeypatch):
+        monkeypatch.setattr(pluto, 'ops', [])
+        import pluto.query as pq
+
+        # 3 of a target 5 already done -> run 2 more
+        monkeypatch.setattr(
+            pq,
+            'list_runs',
+            lambda project, tags=None, limit=200, offset=0: (
+                [{'displayId': str(i), 'status': 'COMPLETED'} for i in range(3)]
+                if offset == 0
+                else []
+            ),
+        )
+        n = []
+        sid = pluto.sweep(
+            {'method': 'random', 'parameters': {'a': {'min': 0.0, 'max': 1.0}}},
+            project='p',
+        )
+        pluto.agent(sid, lambda: n.append(1), count=5)
+        assert len(n) == 2
+
+    def test_resume_query_failure_runs_everything(self, monkeypatch):
+        monkeypatch.setattr(pluto, 'ops', [])
+        import pluto.query as pq
+
+        def boom(*a, **k):
+            raise RuntimeError('backend down')
+
+        monkeypatch.setattr(pq, 'list_runs', boom)
+        n = []
+        sid = pluto.sweep(
+            {'method': 'grid', 'parameters': {'a': {'values': [1, 2, 3]}}}, project='p'
+        )
+        pluto.agent(sid, lambda: n.append(1))  # query fails -> run all 3
+        assert len(n) == 3
+
+
+class TestBayes:
+    def test_optuna_suggest_honors_spec(self):
+        import optuna
+
+        trial = optuna.create_study().ask()
+        assert sw._optuna_suggest(trial, 'c', {'value': 5}) == 5
+        assert sw._optuna_suggest(trial, 'ch', {'values': ['a', 'b']}) in ('a', 'b')
+        iv = sw._optuna_suggest(trial, 'i', {'min': 1, 'max': 3})
+        assert isinstance(iv, int) and 1 <= iv <= 3
+        fv = sw._optuna_suggest(trial, 'f', {'min': 0.0, 'max': 1.0})
+        assert isinstance(fv, float) and 0.0 <= fv <= 1.0
+
+    def test_bayes_runs_count_and_optimizes(self, monkeypatch):
+        # Drive _run_bayes without the network by faking the run: objective is
+        # (x-0.7)^2, so optuna should home in near x=0.7.
+        monkeypatch.setattr(pluto, 'ops', [])
+        tried = []
+
+        def fake_run_combo(sweep_id, combo, project, function, metric_name, i, total):
+            x = combo['x']
+            tried.append(x)
+            return (x - 0.7) ** 2
+
+        monkeypatch.setattr(sw, '_run_combo', fake_run_combo)
+        sid = pluto.sweep(
+            {
+                'method': 'bayes',
+                'metric': {'name': 'loss', 'goal': 'minimize'},
+                'parameters': {'x': {'min': 0.0, 'max': 1.0}},
+            }
+        )
+        pluto.agent(sid, lambda: None, count=25)
+        assert len(tried) == 25
+        best = min(tried, key=lambda x: (x - 0.7) ** 2)
+        assert abs(best - 0.7) < 0.15  # optuna found the neighborhood
+
+    def test_bayes_requires_count(self, monkeypatch):
+        monkeypatch.setattr(pluto, 'ops', [])
+        sid = pluto.sweep(
+            {
+                'method': 'bayes',
+                'metric': {'name': 'loss', 'goal': 'minimize'},
+                'parameters': {'x': {'min': 0.0, 'max': 1.0}},
+            }
+        )
+        with pytest.raises(ValueError, match='needs count'):
+            pluto.agent(sid, lambda: None)

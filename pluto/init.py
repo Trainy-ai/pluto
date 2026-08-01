@@ -285,6 +285,11 @@ def init(
         op_init.setup(settings=settings)
         op = op_init.init()
 
+        # If this run was started under a sweep agent, hand the op back so the
+        # agent can read its objective metric (bayes) and finish it.
+        if _active is not None and _sweep_mod is not None:
+            setattr(_sweep_mod, '_last_run_op', op)
+
         # Set Sentry context for this run
         _sentry.set_tag('project', settings.project)
         _sentry.set_tag('run_id', str(settings._op_id))
