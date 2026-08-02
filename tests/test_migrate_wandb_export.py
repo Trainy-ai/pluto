@@ -503,9 +503,9 @@ class TestWandbExporter:
         assert cov['migrated'].get('metric') == 1
         assert cov['migrated'].get('media') == 1
         assert cov['migrated'].get('string_series') == 1
-        assert cov['migrated'].get('image-boxes') == 1  # boxes now migrate
+        assert cov['migrated'].get('image-boxes') == 1  # boxes migrate
+        assert cov['migrated'].get('image-masks') == 1  # masks migrate too
         assert cov['not_migrated'].get('unsupported(bokeh-file)') == 1
-        assert cov['not_migrated'].get('image-masks') == 1  # masks still deferred
 
     def test_annotated_image_stages_box_refs(self, tmp_path):
         # An image with boxes stages the wandb box refs in annotation_value; the

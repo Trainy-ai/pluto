@@ -236,22 +236,31 @@ class TestPlutoLoader:
         wandb_block = op.update_config.call_args.args[0]['wandb']
         assert wandb_block['custom_charts'] == panels
 
-    def test_image_annotations_resolved_from_box_file(self, tmp_path):
-        # The loader inlines the referenced .boxes2D.json into the image's
-        # annotations JSON (wandb-shape {boxes: {layer: {box_data, class_labels}}}).
+    def test_image_annotations_resolves_boxes_and_masks(self, tmp_path):
+        # Boxes: the .boxes2D.json is inlined into the annotations JSON. Masks:
+        # the .mask.png is resolved to a path spec for pluto.Image to re-upload.
         run_dir = tmp_path / 'run'
         box_dir = run_dir / 'files' / 'media' / 'metadata' / 'boxes2D'
         box_dir.mkdir(parents=True)
         box_content = {'box_data': [{'class_id': 1}], 'class_labels': {'1': 'cat'}}
         (box_dir / 'a.boxes2D.json').write_text(json.dumps(box_content))
+        mask_dir = run_dir / 'files' / 'media' / 'images' / 'mask'
+        mask_dir.mkdir(parents=True)
+        (mask_dir / 'a.mask.png').write_bytes(b'PNG')
         annotation_value = json.dumps(
-            {'boxes': {'pred': {'path': 'media/metadata/boxes2D/a.boxes2D.json'}}}
+            {
+                'boxes': {'pred': {'path': 'media/metadata/boxes2D/a.boxes2D.json'}},
+                'masks': {'pred': {'path': 'media/images/mask/a.mask.png'}},
+            }
         )
-        anno = PlutoLoader(tmp_path)._image_annotations(run_dir, annotation_value)
-        assert json.loads(anno) == {'boxes': {'pred': box_content}}
+        boxes_str, masks_spec = PlutoLoader(tmp_path)._image_annotations(
+            run_dir, annotation_value
+        )
+        assert json.loads(boxes_str) == {'boxes': {'pred': box_content}}
+        assert masks_spec['pred']['path'].endswith('media/images/mask/a.mask.png')
 
     def test_image_annotations_none_when_absent(self, tmp_path):
-        assert PlutoLoader(tmp_path)._image_annotations(tmp_path, None) is None
+        assert PlutoLoader(tmp_path)._image_annotations(tmp_path, None) == (None, None)
 
     def test_sweep_membership_migrated(self, tmp_path, mock_init):
         init, op = mock_init

@@ -1022,7 +1022,10 @@ class Op:
                 local_path=file_obj._path,
                 file_name=file_obj._name,
                 file_ext=file_obj._ext,
-                file_type=file_obj._type,
+                # A file may override its upload fileType (e.g. a mask PNG →
+                # "mask"); otherwise the server derives it from the extension.
+                file_type=getattr(file_obj, '_upload_file_type', None)
+                or file_obj._type,
                 file_size=file_obj._stat.st_size,
                 log_name=log_name,
                 timestamp_ms=timestamp_ms,
@@ -1038,6 +1041,12 @@ class Op:
             logger.warning(
                 f'{tag}: Cannot enqueue file for sync - path is None after load'
             )
+
+        # Upload any annotation sub-files (segmentation-mask PNGs) in the same
+        # log group; they carry _upload_file_type="mask" and are referenced from
+        # the parent image's annotations by fileName.
+        for extra in getattr(file_obj, '_annotation_files', None) or []:
+            self._enqueue_file_sync(log_name, extra, timestamp_ms, sample_index)
 
     def finish(self, code: Union[int, None] = None) -> None:
         """Finish logging and mark the run as a terminal status on the server.

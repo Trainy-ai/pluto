@@ -627,10 +627,10 @@ class WandbExporter:
                     self._skipped('media-file(--no-files)')
                     return
                 # Bounding boxes / segmentation masks ride on the image value as
-                # references to sidecar files (…​.boxes2D.json / …​.mask.png). Stage
-                # those refs; the loader resolves them into the image's
-                # annotations. Masks (a separate PNG to re-upload) aren't wired
-                # yet — flag them.
+                # references to sidecar files (….boxes2D.json / ….mask.png). Stage
+                # those refs; the loader resolves the box JSON inline and
+                # re-uploads the mask PNG (as fileType "mask") into the image's
+                # annotations.
                 annotation_value = None
                 boxes, masks = value.get('boxes'), value.get('masks')
                 if boxes or masks:
@@ -640,7 +640,7 @@ class WandbExporter:
                     if boxes:
                         self._migrated('image-boxes')
                     if masks:
-                        self._skipped('image-masks')
+                        self._migrated('image-masks')
                 writer.write_row(
                     **base,
                     attribute_path=key,

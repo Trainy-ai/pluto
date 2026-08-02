@@ -1326,7 +1326,12 @@ class _SyncUploader:
         batch = []
         for f in file_records:
             file_ext = f.file_ext
-            file_type = file_ext[1:] if file_ext.startswith('.') else file_ext
+            # A special upload fileType (e.g. "mask") is stored on file_type and
+            # sent verbatim; otherwise derive it from the extension as before.
+            if f.file_type == 'mask':
+                file_type = 'mask'
+            else:
+                file_type = file_ext[1:] if file_ext.startswith('.') else file_ext
             entry: Dict[str, Any] = {
                 'fileName': f'{f.file_name}{f.file_ext}',
                 'fileSize': f.file_size,

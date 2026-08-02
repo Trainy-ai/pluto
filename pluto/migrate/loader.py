@@ -554,27 +554,27 @@ class PlutoLoader:
 
     def _image_annotations(
         self, run_dir: Path, annotation_value: Optional[str]
-    ) -> Optional[str]:
-        """Resolve staged box refs into the image's annotations JSON.
+    ) -> Tuple[Optional[str], Optional[Dict[str, Any]]]:
+        """Resolve staged box/mask refs for an annotated image.
 
-        ``annotation_value`` is ``{"boxes": {layer: {path,...}}, ...}`` (wandb's
-        refs staged by the exporter). Each box layer points at a sidecar
-        ``.boxes2D.json`` ({box_data, class_labels}); read it and inline it, so
-        the result is the wandb-shape ``{"boxes": {layer: {box_data,
-        class_labels}}}`` the frontend draws. Masks (a separate PNG to
-        re-upload) aren't wired yet, so they're not included.
+        ``annotation_value`` is ``{"boxes": {layer: {path,...}}, "masks":
+        {layer: {path,...}}}`` (wandb's refs staged by the exporter). Boxes: read
+        each sidecar ``.boxes2D.json`` ({box_data, class_labels}) and inline it →
+        the wandb-shape ``{"boxes": {layer: ...}}`` annotations string. Masks:
+        resolve each ``.mask.png`` to a path so ``pluto.Image`` re-uploads it (as
+        fileType "mask"). Returns ``(boxes_annotations_str, masks_spec)``.
         """
         if not annotation_value:
-            return None
+            return None, None
         try:
             refs = json.loads(annotation_value)
         except (ValueError, TypeError):
-            return None
+            return None, None
+
         boxes_out: Dict[str, Any] = {}
         for layer, ref in (refs.get('boxes') or {}).items():
-            rel = ref.get('path') if isinstance(ref, dict) else None
-            fp = _resolve_within(run_dir, f'files/{rel}') if rel else None
-            if fp is None or not fp.exists():
+            fp = self._resolve_ref(run_dir, ref)
+            if fp is None:
                 continue
             try:
                 content = read_json(fp)
@@ -582,9 +582,21 @@ class PlutoLoader:
                 continue
             if isinstance(content, dict):
                 boxes_out[layer] = content
-        if not boxes_out:
-            return None
-        return json.dumps({'boxes': boxes_out})
+        boxes_str = json.dumps({'boxes': boxes_out}) if boxes_out else None
+
+        masks_spec: Dict[str, Any] = {}
+        for layer, ref in (refs.get('masks') or {}).items():
+            fp = self._resolve_ref(run_dir, ref)
+            if fp is not None:
+                masks_spec[layer] = {'path': str(fp)}
+        return boxes_str, (masks_spec or None)
+
+    @staticmethod
+    def _resolve_ref(run_dir: Path, ref: Any) -> Optional[Path]:
+        """Resolve a staged annotation file ref ({path: 'media/...'}) to a Path."""
+        rel = ref.get('path') if isinstance(ref, dict) else None
+        fp = _resolve_within(run_dir, f'files/{rel}') if rel else None
+        return fp if fp is not None and fp.exists() else None
 
     def _build_media_value(self, run_dir: Path, row: Dict[str, Any]) -> Optional[Any]:
         """Convert one staged media row into a pluto media value.
@@ -634,8 +646,12 @@ class PlutoLoader:
                 columns=table_json.get('columns', []),
             )
         if media_type == 'image-file':
-            annotations = self._image_annotations(run_dir, row.get('annotation_value'))
-            return pluto.Image(str(path), caption=caption, annotations=annotations)
+            boxes_str, masks_spec = self._image_annotations(
+                run_dir, row.get('annotation_value')
+            )
+            return pluto.Image(
+                str(path), caption=caption, annotations=boxes_str, masks=masks_spec
+            )
         make = _MEDIA_LOADERS.get(media_type)
         if make is not None:
             return make(str(path), caption=caption)
