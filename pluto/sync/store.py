@@ -163,6 +163,10 @@ class FileRecord:
     error_message: Optional[str]
     presigned_url: Optional[str]
     caption: Optional[str] = None
+    # Opaque JSON string of image annotations (wandb-shape boxes/masks),
+    # forwarded verbatim to the server (mlop_files.annotations) and parsed by the
+    # frontend. None for un-annotated files.
+    annotations: Optional[str] = None
     # 0-based position of this file within a single (log_name, step) log() call
     # (e.g. pluto.log({"k": [a, b, c]}) → 0, 1, 2). Lets the server restore the
     # logged order instead of sorting by fileName. Scalars get 0.
@@ -198,8 +202,9 @@ class SyncStore:
     - Health diagnostics (queue depth, write latency, WAL size)
     """
 
-    # v2: added file_uploads.caption (backfilled via _add_column_if_missing)
-    SCHEMA_VERSION = 2
+    # v2: file_uploads.caption; v3: file_uploads.annotations (both backfilled
+    # via _add_column_if_missing, so the version bump is informational).
+    SCHEMA_VERSION = 3
 
     # SQLite's own busy handler wait. Kept deliberately short because we layer
     # application-level exponential backoff (see _retry_on_locked) on top: a
@@ -327,6 +332,7 @@ class SyncStore:
                     file_ext TEXT,
                     log_name TEXT,
                     caption TEXT,
+                    annotations TEXT,
                     sample_index INTEGER DEFAULT 0,
                     timestamp_ms INTEGER NOT NULL,
                     step INTEGER,
@@ -343,6 +349,7 @@ class SyncStore:
             # CREATE TABLE IF NOT EXISTS above is a no-op on an existing table,
             # so backfill new columns here. Idempotent (skips if present).
             self._add_column_if_missing(cursor, 'file_uploads', 'caption', 'TEXT')
+            self._add_column_if_missing(cursor, 'file_uploads', 'annotations', 'TEXT')
             self._add_column_if_missing(
                 cursor, 'file_uploads', 'sample_index', 'INTEGER DEFAULT 0'
             )
@@ -702,6 +709,7 @@ class SyncStore:
         timestamp_ms: int,
         step: Optional[int] = None,
         caption: Optional[str] = None,
+        annotations: Optional[str] = None,
         sample_index: int = 0,
     ) -> int:
         """Add a file to the upload queue. Returns file record ID."""
@@ -713,9 +721,9 @@ class SyncStore:
                 INSERT INTO file_uploads (
                     run_id, local_path, file_type, file_size,
                     timestamp_ms, step, created_at, file_name, file_ext,
-                    log_name, caption, sample_index
+                    log_name, caption, annotations, sample_index
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     run_id,
@@ -729,6 +737,7 @@ class SyncStore:
                     file_ext,
                     log_name,
                     caption,
+                    annotations,
                     sample_index,
                 ),
             )
@@ -773,6 +782,9 @@ class SyncStore:
                         error_message=row['error_message'],
                         presigned_url=row['remote_url'],
                         caption=(row['caption'] if 'caption' in row.keys() else None),
+                        annotations=(
+                            row['annotations'] if 'annotations' in row.keys() else None
+                        ),
                         sample_index=(
                             row['sample_index']
                             if 'sample_index' in row.keys()

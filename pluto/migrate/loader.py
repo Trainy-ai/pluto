@@ -552,6 +552,40 @@ class PlutoLoader:
                 f'ingest: {type(e).__name__}: {e}'
             )
 
+    def _image_annotations(
+        self, run_dir: Path, annotation_value: Optional[str]
+    ) -> Optional[str]:
+        """Resolve staged box refs into the image's annotations JSON.
+
+        ``annotation_value`` is ``{"boxes": {layer: {path,...}}, ...}`` (wandb's
+        refs staged by the exporter). Each box layer points at a sidecar
+        ``.boxes2D.json`` ({box_data, class_labels}); read it and inline it, so
+        the result is the wandb-shape ``{"boxes": {layer: {box_data,
+        class_labels}}}`` the frontend draws. Masks (a separate PNG to
+        re-upload) aren't wired yet, so they're not included.
+        """
+        if not annotation_value:
+            return None
+        try:
+            refs = json.loads(annotation_value)
+        except (ValueError, TypeError):
+            return None
+        boxes_out: Dict[str, Any] = {}
+        for layer, ref in (refs.get('boxes') or {}).items():
+            rel = ref.get('path') if isinstance(ref, dict) else None
+            fp = _resolve_within(run_dir, f'files/{rel}') if rel else None
+            if fp is None or not fp.exists():
+                continue
+            try:
+                content = read_json(fp)
+            except Exception:
+                continue
+            if isinstance(content, dict):
+                boxes_out[layer] = content
+        if not boxes_out:
+            return None
+        return json.dumps({'boxes': boxes_out})
+
     def _build_media_value(self, run_dir: Path, row: Dict[str, Any]) -> Optional[Any]:
         """Convert one staged media row into a pluto media value.
 
@@ -599,6 +633,9 @@ class PlutoLoader:
                 data=table_json.get('data'),
                 columns=table_json.get('columns', []),
             )
+        if media_type == 'image-file':
+            annotations = self._image_annotations(run_dir, row.get('annotation_value'))
+            return pluto.Image(str(path), caption=caption, annotations=annotations)
         make = _MEDIA_LOADERS.get(media_type)
         if make is not None:
             return make(str(path), caption=caption)

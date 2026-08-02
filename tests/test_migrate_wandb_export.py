@@ -489,10 +489,11 @@ class TestWandbExporter:
                     'loss': 1.0,  # migrated metric
                     'status': 'running',  # string -> migrated string_series
                     'chart': {'_type': 'bokeh-file'},  # unsupported -> not migrated
-                    'img': {  # image with dropped annotations
+                    'img': {  # image with bounding boxes (migrated) + a mask
                         '_type': 'image-file',
                         'path': 'media/images/sample_3_abc.png',
-                        'boxes': {'predictions': {}},
+                        'boxes': {'predictions': {'path': 'x.boxes2D.json'}},
+                        'masks': {'predictions': {'path': 'x.mask.png'}},
                     },
                 }
             ]
@@ -502,8 +503,38 @@ class TestWandbExporter:
         assert cov['migrated'].get('metric') == 1
         assert cov['migrated'].get('media') == 1
         assert cov['migrated'].get('string_series') == 1
+        assert cov['migrated'].get('image-boxes') == 1  # boxes now migrate
         assert cov['not_migrated'].get('unsupported(bokeh-file)') == 1
-        assert cov['not_migrated'].get('image-annotations') == 1
+        assert cov['not_migrated'].get('image-masks') == 1  # masks still deferred
+
+    def test_annotated_image_stages_box_refs(self, tmp_path):
+        # An image with boxes stages the wandb box refs in annotation_value; the
+        # loader later resolves them into the image's annotations.
+        run = FakeRun()
+        boxes = {
+            'pred': {
+                'path': 'media/metadata/boxes2D/a.boxes2D.json',
+                '_type': 'boxes2D',
+            }
+        }
+        run.scan_history = lambda page_size=1000: iter(
+            [
+                {
+                    '_step': 0,
+                    '_timestamp': T0,
+                    'annotated': {
+                        '_type': 'image-file',
+                        'path': 'media/images/sample_3_abc.png',
+                        'boxes': boxes,
+                    },
+                }
+            ]
+        )
+        _, run_dir, _ = _export(tmp_path, run=run)
+        media = next(
+            r for r in _rows(run_dir, 'media') if r['attribute_path'] == 'annotated'
+        )
+        assert json.loads(media['annotation_value']) == {'boxes': boxes}
 
     def test_histogram_bins_reconstructed_from_packed(self, tmp_path):
         # Real wandb histograms carry edges in packedBins ({min,size,count}),

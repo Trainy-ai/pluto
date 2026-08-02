@@ -1028,6 +1028,7 @@ class Op:
                 timestamp_ms=timestamp_ms,
                 step=self._step,
                 caption=file_obj._caption,
+                annotations=getattr(file_obj, '_annotations', None),
                 sample_index=sample_index,
             )
             logger.debug(

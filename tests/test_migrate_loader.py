@@ -236,6 +236,23 @@ class TestPlutoLoader:
         wandb_block = op.update_config.call_args.args[0]['wandb']
         assert wandb_block['custom_charts'] == panels
 
+    def test_image_annotations_resolved_from_box_file(self, tmp_path):
+        # The loader inlines the referenced .boxes2D.json into the image's
+        # annotations JSON (wandb-shape {boxes: {layer: {box_data, class_labels}}}).
+        run_dir = tmp_path / 'run'
+        box_dir = run_dir / 'files' / 'media' / 'metadata' / 'boxes2D'
+        box_dir.mkdir(parents=True)
+        box_content = {'box_data': [{'class_id': 1}], 'class_labels': {'1': 'cat'}}
+        (box_dir / 'a.boxes2D.json').write_text(json.dumps(box_content))
+        annotation_value = json.dumps(
+            {'boxes': {'pred': {'path': 'media/metadata/boxes2D/a.boxes2D.json'}}}
+        )
+        anno = PlutoLoader(tmp_path)._image_annotations(run_dir, annotation_value)
+        assert json.loads(anno) == {'boxes': {'pred': box_content}}
+
+    def test_image_annotations_none_when_absent(self, tmp_path):
+        assert PlutoLoader(tmp_path)._image_annotations(tmp_path, None) is None
+
     def test_sweep_membership_migrated(self, tmp_path, mock_init):
         init, op = mock_init
         run_dir = _stage_run(tmp_path)
@@ -351,10 +368,7 @@ class TestPlutoLoader:
             PlutoLoader(tmp_path).load()
         calls = httpx_mock.post.call_args_list
         assert len(calls) == 2  # logName/add + ingest
-        lines = [
-            json.loads(x)
-            for x in calls[1].kwargs['content'].strip().split('\n')
-        ]
+        lines = [json.loads(x) for x in calls[1].kwargs['content'].strip().split('\n')]
         assert len(lines) == 60  # every point sent
 
     def test_finish_code_mapping(self, tmp_path, mock_init):

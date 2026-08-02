@@ -43,6 +43,10 @@ SCHEMA = pa.schema(
         pa.field('string_value', pa.string()),
         pa.field('file_value', pa.string()),
         pa.field('caption', pa.string()),
+        # For annotated images: JSON of the raw wandb boxes/masks refs
+        # ({"boxes": {layer: {path,...}}, "masks": {...}}); the loader resolves
+        # the referenced files into the image's annotations.
+        pa.field('annotation_value', pa.string()),
     ]
 )
 
@@ -99,6 +103,7 @@ class PartWriter:
         string_value: Optional[str] = None,
         file_value: Optional[str] = None,
         caption: Optional[str] = None,
+        annotation_value: Optional[str] = None,
     ) -> None:
         if attribute_type not in ATTRIBUTE_TYPES:
             raise ValueError(
@@ -117,6 +122,7 @@ class PartWriter:
                 'string_value': string_value,
                 'file_value': file_value,
                 'caption': caption,
+                'annotation_value': annotation_value,
             }
         )
         if len(self._buffer) >= self._rows_per_flush:

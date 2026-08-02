@@ -1,4 +1,5 @@
 import hashlib
+import json
 import logging
 import mimetypes
 import os
@@ -56,6 +57,9 @@ class File:
     # override this instance attribute in their __init__; the class-level default
     # ensures it always exists (e.g. on a directly-constructed File).
     _caption: Optional[str] = None
+    # Optional opaque JSON string of image annotations (wandb-shape boxes/masks),
+    # sent to the server as mlop_files.annotations. Only Image sets it.
+    _annotations: Optional[str] = None
 
     def __init__(
         self,
@@ -225,12 +229,22 @@ class Image(File):
         self,
         data: Union[str, 'PILImage.Image', np.ndarray, bytes, bytearray],
         caption: Optional[str] = None,
+        boxes: Optional[Dict[str, Any]] = None,
+        annotations: Optional[Union[str, Dict[str, Any]]] = None,
     ) -> None:
         self._name = caption + f'.{uuid.uuid4()}' if caption else f'{uuid.uuid4()}'
         # Preserve the raw caption separately so it can be sent to the server
         # as a dedicated field (mlop_files.caption); _name keeps the legacy
         # caption-as-filename behavior for back-compat with older servers.
         self._caption = caption
+        # Image annotations (wandb-shape boxes/masks) → mlop_files.annotations.
+        # ``annotations`` is a ready JSON blob (raw string or dict) — used by the
+        # wandb migration, which forwards wandb's own {boxes, masks} verbatim.
+        # ``boxes`` is the native, ergonomic form ({layer: {box_data,
+        # class_labels}}, wandb's shape); it's folded into the annotations JSON.
+        # Coordinates are pixel-domain; each box carries ``domain: "pixel"`` so
+        # the frontend doesn't misread them as 0–1 fractions.
+        self._annotations = self._build_annotations(annotations, boxes)
         self._id = f'{uuid.uuid4()}{uuid.uuid4()}'.replace('-', '')
         self._ext = '.png'
         self._image: Any = None
@@ -263,6 +277,48 @@ class Image(File):
             else:
                 logger.debug(f'{self.tag}: attempted conversion from array')
                 self._image = make_compat_image_numpy(data)
+
+    @staticmethod
+    def _build_annotations(
+        annotations: Optional[Union[str, Dict[str, Any]]],
+        boxes: Optional[Dict[str, Any]],
+    ) -> Optional[str]:
+        """Assemble the annotations JSON string sent to the server.
+
+        ``annotations`` (a ready JSON string or dict, in wandb's {boxes, masks}
+        shape) is forwarded as-is; ``boxes`` ({layer: {box_data, class_labels}})
+        is folded into ``annotations.boxes``, with each box defaulted to
+        ``domain: "pixel"`` so coordinates aren't misread as 0–1 fractions.
+        Returns None when there is nothing to attach.
+        """
+        # Ready JSON string with nothing to merge → forward verbatim.
+        if isinstance(annotations, str) and not boxes:
+            return annotations or None
+        result: Dict[str, Any] = {}
+        if isinstance(annotations, str):
+            try:
+                parsed = json.loads(annotations)
+                result = parsed if isinstance(parsed, dict) else {}
+            except (ValueError, TypeError):
+                result = {}
+        elif isinstance(annotations, dict):
+            result = dict(annotations)
+        if boxes:
+            merged = dict(result.get('boxes') or {})
+            for layer, spec in boxes.items():
+                if not isinstance(spec, dict):
+                    continue
+                out = dict(spec)
+                box_data = out.get('box_data')
+                if isinstance(box_data, list):
+                    out['box_data'] = [
+                        {'domain': 'pixel', **b} if isinstance(b, dict) else b
+                        for b in box_data
+                    ]
+                merged[layer] = out
+            if merged:
+                result['boxes'] = merged
+        return json.dumps(result) if result else None
 
     def load(self, dir: Optional[str] = None) -> None:
         if not self._path:

@@ -372,6 +372,7 @@ class SyncProcessManager:
         timestamp_ms: int,
         step: Optional[int] = None,
         caption: Optional[str] = None,
+        annotations: Optional[str] = None,
         sample_index: int = 0,
     ) -> None:
         """
@@ -391,6 +392,7 @@ class SyncProcessManager:
             timestamp_ms=timestamp_ms,
             step=step,
             caption=caption,
+            annotations=annotations,
             sample_index=sample_index,
         )
         # Update heartbeat to show we're alive
@@ -1341,6 +1343,10 @@ class _SyncUploader:
             # unknown fields anyway).
             if f.caption is not None:
                 entry['caption'] = f.caption
+            # Opaque wandb-shape annotations JSON (boxes/masks); only when set so
+            # the payload is unchanged for un-annotated files / older servers.
+            if getattr(f, 'annotations', None) is not None:
+                entry['annotations'] = f.annotations
             batch.append(entry)
 
         body = json.dumps({'files': batch})

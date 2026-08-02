@@ -626,10 +626,21 @@ class WandbExporter:
                     # row pointing at it (a dangling ref would fail the loader).
                     self._skipped('media-file(--no-files)')
                     return
-                # Bounding boxes / segmentation masks ride on the image value
-                # but aren't part of the media file — flag that they're dropped.
-                if value.get('boxes') or value.get('masks'):
-                    self._skipped('image-annotations')
+                # Bounding boxes / segmentation masks ride on the image value as
+                # references to sidecar files (…​.boxes2D.json / …​.mask.png). Stage
+                # those refs; the loader resolves them into the image's
+                # annotations. Masks (a separate PNG to re-upload) aren't wired
+                # yet — flag them.
+                annotation_value = None
+                boxes, masks = value.get('boxes'), value.get('masks')
+                if boxes or masks:
+                    annotation_value = json.dumps(
+                        {k: v for k, v in {'boxes': boxes, 'masks': masks}.items() if v}
+                    )
+                    if boxes:
+                        self._migrated('image-boxes')
+                    if masks:
+                        self._skipped('image-masks')
                 writer.write_row(
                     **base,
                     attribute_path=key,
@@ -639,6 +650,7 @@ class WandbExporter:
                     string_value=media_type,
                     file_value=f'files/{value["path"]}',
                     caption=value.get('caption'),
+                    annotation_value=annotation_value,
                 )
                 self._migrated('media')
             elif media_type == 'histogram':
