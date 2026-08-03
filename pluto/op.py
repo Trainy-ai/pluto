@@ -819,6 +819,10 @@ class Op:
             self._sync_manager.enqueue_metrics(metrics, timestamp_ms, self._step)
             # Cache the latest numeric value per key so a sweep agent (bayes) can
             # read the objective back after the run without a server round-trip.
+            # Lazy-init: logging is best-effort and must never crash, and some
+            # call sites build a bare Op (Op.__new__) that skips __init__.
+            if not hasattr(self, '_latest_metrics'):
+                self._latest_metrics = {}
             self._latest_metrics.update(metrics)
 
         # Register new metric/file names with server (required for dashboard display)

@@ -26,6 +26,9 @@ File(path: str, name: Optional[str] = None, **kwargs) -> None
 Image(
     data: Union[str, PILImage.Image, np.ndarray, bytes, bytearray],
     caption: Optional[str] = None,
+    boxes: Optional[Dict[str, Any]] = None,
+    masks: Optional[Dict[str, Any]] = None,
+    annotations: Optional[Union[str, Dict[str, Any]]] = None,
 ) -> None
 ```
 

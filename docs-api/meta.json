@@ -15,6 +15,7 @@
     "Table",
     "Text",
     "Video",
+    "agent",
     "alert",
     "finish",
     "generate_run_id",
@@ -23,6 +24,7 @@
     "logout",
     "query",
     "setup",
+    "sweep",
     "watch"
   ],
   "pages": [
