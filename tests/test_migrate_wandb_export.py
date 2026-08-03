@@ -67,6 +67,47 @@ class FakeArtifact:
         return str(root)
 
 
+def _table_artifact_json(media=True):
+    """A wandb run_table artifact's .table.json, with or without a media column."""
+    number = {'wb_type': 'number', 'params': {}}
+    img = {
+        'wb_type': 'union',
+        'params': {
+            'allowed_types': [
+                {'wb_type': 'none', 'params': {}},
+                {'wb_type': 'image-file', 'params': {}},
+            ]
+        },
+    }
+    type_map = {'idx': number, 'img': img if media else number, 'score': number}
+    return {
+        '_type': 'table',
+        'columns': ['idx', 'img', 'score'],
+        'column_types': {'wb_type': 'typedDict', 'params': {'type_map': type_map}},
+        'data': [[0, 'Image' if media else 1.0, 0.0]],
+    }
+
+
+class FakeTableArtifact:
+    """A run_table artifact whose download writes a .table.json (media or not)."""
+
+    def __init__(self, name='run-abc-media_table:v0', media=True):
+        self.name = name
+        self.type = 'run_table'
+        self.size = 200
+        self.version = 'v0'
+        self.aliases = ['latest']
+        self.created_at = CREATED_AT
+        self._media = media
+
+    def download(self, root):
+        root = Path(root)
+        root.mkdir(parents=True, exist_ok=True)
+        with open(root / 'media_table.table.json', 'w') as fh:
+            json.dump(_table_artifact_json(self._media), fh)
+        return str(root)
+
+
 class FakeSweep:
     def __init__(self, id='sweep-abc', name='my-sweep', config=None):
         self.id = id
@@ -303,6 +344,20 @@ class TestWandbExporter:
         assert 'sweep-metadata' not in nm
         assert 'artifact-input-lineage' not in nm
         assert 'artifact-versioning' not in nm
+
+    def test_media_table_is_flagged(self, tmp_path):
+        # A logged table with an image column migrates degraded (cells become
+        # text placeholders); flag it as table-media-cell so the gap is visible
+        # and trips --strict instead of migrating silently.
+        run = FakeRun(artifacts=[FakeTableArtifact(media=True)])
+        _, _, summary = _export(tmp_path, run=run)
+        assert summary['coverage']['not_migrated'].get('table-media-cell') == 1
+
+    def test_plain_table_not_flagged(self, tmp_path):
+        # A table with only scalar columns is fully migrated — no media flag.
+        run = FakeRun(artifacts=[FakeTableArtifact(media=False)])
+        _, _, summary = _export(tmp_path, run=run)
+        assert 'table-media-cell' not in summary['coverage']['not_migrated']
 
     def test_system_metric_rows_keep_source_names(self, tmp_path):
         # Staging is source-faithful; the loader owns the sys/ translation.

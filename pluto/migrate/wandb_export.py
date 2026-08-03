@@ -91,6 +91,47 @@ _FILE_MEDIA_TYPES = {
     'html-file',
 }
 
+# wandb column-type markers for media cells. A table with any of these columns
+# loses its media on migration: we stage wandb's lossy run-files table copy,
+# where media cells are text placeholders ("Image", ...), and the cell media
+# migrates only as the sibling run_table artifact — unlinked from the table.
+_MEDIA_COLUMN_WB_TYPES = (
+    'image-file',
+    'audio-file',
+    'video-file',
+    'html-file',
+    'object3D-file',
+    'molecule-file',
+)
+
+
+def _table_media_columns(artifact_dir: Path) -> List[str]:
+    """Names of media columns in a downloaded table artifact, if any.
+
+    The artifact copy of a logged ``wandb.Table`` carries ``column_types``
+    (the lossy run-files copy does not). A column whose type tree references a
+    media ``*-file`` wb_type holds media cells that don't survive migration as
+    media. Returns [] for plain tables and non-table artifacts.
+    """
+    hits: List[str] = []
+    for table_json in artifact_dir.rglob('*.table.json'):
+        try:
+            with open(table_json) as fh:
+                data = json.load(fh)
+        except (OSError, ValueError):
+            continue
+        column_types = data.get('column_types')
+        if not isinstance(column_types, dict):
+            continue
+        type_map = column_types.get('params', {}).get('type_map', {})
+        if not isinstance(type_map, dict):
+            continue
+        for col, col_type in type_map.items():
+            if any(t in json.dumps(col_type) for t in _MEDIA_COLUMN_WB_TYPES):
+                hits.append(col)
+    return hits
+
+
 # Leading "<iso timestamp> <message>" console lines (wandb writes these
 # when x_show_timestamps is enabled).
 _CONSOLE_TS_RE = re.compile(
@@ -915,6 +956,20 @@ class WandbExporter:
                 logger.warning(f'{tag}: failed to download {artifact.name}: {e}')
                 self._skipped('artifact-download-failed')
                 continue
+            # A logged table with media columns migrates degraded: the table
+            # itself lands (from the run-files copy) but its media cells become
+            # text placeholders, and the cell media arrives as this artifact,
+            # unlinked. Flag it so the gap is visible (and trips --strict)
+            # instead of migrating silently.
+            media_cols = _table_media_columns(dest)
+            if media_cols:
+                logger.warning(
+                    f'{tag}: table {artifact.name!r} has media column(s) '
+                    f'{media_cols}: cells migrate as text placeholders, and the '
+                    f'cell media migrates as this artifact but is not linked '
+                    f'back to the table'
+                )
+                self._skipped('table-media-cell', len(media_cols))
             timestamp_ms = parse_iso_ms(getattr(artifact, 'created_at', None)) or 0
             meta = json.dumps(
                 {
