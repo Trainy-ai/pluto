@@ -139,6 +139,77 @@ def _stage_run(tmp_path, run_id='abc123', state='finished'):
     return run_dir
 
 
+def _stage_media_table_run(tmp_path, run_id='mtable'):
+    """Stage a run with a wandb media table (an image column).
+
+    Mirrors what the exporter actually stages today: the ``table-file`` row
+    points at wandb's *run-files* copy of the table, where media cells are
+    collapsed to the literal string ``"Image"`` (the full-fidelity
+    ``{_type: image-file, path, sha256}`` refs live only in the separate
+    artifact copy). The cell images are staged as their own artifact.
+    """
+    run_dir = tmp_path / 'acme' / 'vision' / 'runs' / run_id
+    run_dir.mkdir(parents=True)
+    write_json_atomic(
+        run_dir / 'run.json',
+        {
+            'entity': 'acme',
+            'project': 'vision',
+            'run_id': run_id,
+            'name': 'rich-table-1',
+            'notes': '',
+            'tags': [],
+            'state': 'finished',
+            'config': {},
+            'summary': {},
+            'createdAt': CREATED_AT_MS,
+            'updatedAt': UPDATED_AT_MS,
+            'url': f'https://wandb.ai/acme/vision/runs/{run_id}',
+        },
+    )
+    # wandb's lossy run-files table copy: image cells are the string "Image".
+    table_rel = 'files/media/table/media_table.table.json'
+    table_file = run_dir / table_rel
+    table_file.parent.mkdir(parents=True)
+    write_json_atomic(
+        table_file,
+        {
+            'columns': ['idx', 'img', 'score'],
+            'data': [[0, 'Image', 0.0], [1, 'Image', 0.25]],
+        },
+    )
+    # the cell images arrive separately, as the auto-created run-table artifact.
+    img_rel = 'artifacts/run-mtable-media_table:v0/media/images/a.png'
+    img_file = run_dir / img_rel
+    img_file.parent.mkdir(parents=True)
+    img_file.write_bytes(b'PNG')
+
+    base = dict(project_id='acme/vision', run_id=run_id)
+    with PartWriter(run_dir) as w:
+        w.write_row(
+            **base,
+            attribute_path='media_table',
+            attribute_type='media',
+            step=0,
+            timestamp_ms=T0_MS,
+            string_value='table-file',
+            file_value=table_rel,
+        )
+        w.write_row(
+            **base,
+            attribute_path='run-mtable-media_table:v0',
+            attribute_type='artifact',
+            step=0,
+            timestamp_ms=CREATED_AT_MS,
+            string_value=json.dumps(
+                {'name': 'run-mtable-media_table:v0', 'type': 'run_table'}
+            ),
+            file_value=img_rel,
+        )
+    mark_run_exported(run_dir, {'rows': 2})
+    return run_dir
+
+
 def _stage_string_series_run(tmp_path, values, run_id='ssrun', name='phase'):
     """Stage a minimal run whose only history is one string_series attribute."""
     run_dir = tmp_path / 'acme' / 'vision' / 'runs' / run_id
@@ -317,6 +388,33 @@ class TestPlutoLoader:
         hist = hist_calls[0].args[0]['weights']
         assert hist._freq == [1, 2, 1]
         assert hist._bins == [0, 1, 2, 3]
+
+    def test_media_in_table_migrates_degraded_not_dropped(self, tmp_path, mock_init):
+        # Characterization test for the known media-in-table gap. wandb keeps
+        # two copies of a media table; the exporter stages the lossy run-files
+        # copy, so image cells load as the literal text "Image". The table is
+        # NOT dropped and does NOT crash, and the cell images arrive as a
+        # separate, unlinked artifact. When we wire cells to real images this
+        # test should flip to assert image cells.
+        _, op = mock_init
+        _stage_media_table_run(tmp_path)
+        summary = PlutoLoader(tmp_path).load()
+        assert summary == {'loaded': 1, 'skipped': 0, 'failed': []}
+
+        table_calls = _log_calls_with(
+            op, lambda d: any(isinstance(v, pluto.Table) for v in d.values())
+        )
+        assert len(table_calls) == 1
+        table = table_calls[0].args[0]['media_table']
+        assert table._col == ['idx', 'img', 'score']
+        # image column (index 1) is the degraded literal string, not a picture
+        assert [row[1] for row in table._table] == ['Image', 'Image']
+
+        # the cell images still migrate, but as a disconnected artifact
+        art_calls = _log_calls_with(
+            op, lambda d: any(isinstance(v, pluto.Artifact) for v in d.values())
+        )
+        assert len(art_calls) == 1
 
     def test_system_metrics_translated_to_sys_names(self, tmp_path, mock_init):
         # Staged rows keep wandb's source-native 'system.*' names; the
