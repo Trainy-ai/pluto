@@ -130,6 +130,7 @@ class FakeRun:
         output_log=None,
         sweep=None,
         used_artifacts=None,
+        history_rows=None,
     ):
         self.id = run_id
         self.name = 'sunny-lion-1'
@@ -143,6 +144,7 @@ class FakeRun:
         self.url = f'https://wandb.ai/acme/vision/runs/{run_id}'
         self.metadata = {'gpu': 'NVIDIA H100'}
         self.sweep = sweep
+        self._history_rows = history_rows
         self._used_artifacts = used_artifacts if used_artifacts is not None else []
         self._artifacts = artifacts if artifacts is not None else [FakeArtifact()]
         self._files = [
@@ -159,6 +161,8 @@ class FakeRun:
 
     def scan_history(self, page_size=1000):
         self.scan_history_calls += 1
+        if self._history_rows is not None:
+            return iter(self._history_rows)
         return iter(
             [
                 {'_step': 0, '_timestamp': T0, 'loss': 1.0, 'acc': 0.1},
@@ -358,6 +362,36 @@ class TestWandbExporter:
         run = FakeRun(artifacts=[FakeTableArtifact(media=False)])
         _, _, summary = _export(tmp_path, run=run)
         assert 'table-media-cell' not in summary['coverage']['not_migrated']
+
+    def test_unknown_media_types_flagged(self, tmp_path):
+        # Any media _type the exporter doesn't handle (bokeh, molecule, joined/
+        # partitioned tables, ...) is dropped with an unsupported(<type>) flag
+        # naming exactly what was lost, and trips --strict.
+        run = FakeRun(
+            history_rows=[
+                {'_step': 0, '_timestamp': T0, 'viz': {'_type': 'bokeh-file'}},
+                {'_step': 1, '_timestamp': T0 + 1, 'jt': {'_type': 'joined-table'}},
+            ]
+        )
+        _, _, summary = _export(tmp_path, run=run)
+        nm = summary['coverage']['not_migrated']
+        assert nm.get('unsupported(bokeh-file)') == 1
+        assert nm.get('unsupported(joined-table)') == 1
+
+    def test_string_series_too_long_dropped(self, tmp_path):
+        # A per-step string over the cap is a stray blob, not a real state:
+        # drop it with string-series-too-long while normal labels still migrate.
+        run = FakeRun(
+            history_rows=[
+                {'_step': 0, '_timestamp': T0, 'phase': 'train'},
+                {'_step': 1, '_timestamp': T0 + 1, 'blob': 'x' * 250},
+            ]
+        )
+        _, run_dir, summary = _export(tmp_path, run=run)
+        assert summary['coverage']['not_migrated'].get('string-series-too-long') == 1
+        series = _rows(run_dir, 'string_series')
+        assert any(r['attribute_path'] == 'phase' for r in series)
+        assert all(r['attribute_path'] != 'blob' for r in series)
 
     def test_system_metric_rows_keep_source_names(self, tmp_path):
         # Staging is source-faithful; the loader owns the sys/ translation.
