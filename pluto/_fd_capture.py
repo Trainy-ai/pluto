@@ -21,6 +21,15 @@ Shutdown notes (``stop()``):
   restored. When the reader sees it, everything written before ``stop()``
   has been enqueued — ``stop()`` waits on that (bounded), giving a
   deterministic flush without racing the reader.
+- The pipe is SHARED with every process that inherited the fd (forked
+  DataLoader/compile workers, the sync subprocess, anything spawned during
+  training). So both the sentinel and ``stop()`` itself are scoped to the
+  process that called ``start()``: the sentinel carries that pid and the
+  reader only honours its own, and ``stop()`` is a no-op anywhere else.
+  Without that scoping, a child that runs pluto's teardown on its way out
+  (atexit handlers are inherited across fork) writes the sentinel into the
+  shared pipe, and the parent's reader — still very much alive, still
+  teeing to the terminal — mutes its own uploads for the rest of the run.
 - The reader thread is NOT joined/killed. Child processes forked while
   capture was active (e.g. DataLoader workers) inherit the pipe write end;
   if nobody drained it, their writes would block once the pipe buffer
@@ -32,6 +41,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import threading
 import time
 from typing import Any, List, Optional, Tuple
@@ -42,7 +52,21 @@ logger = logging.getLogger(f'{__name__.split(".")[0]}')
 # pre-stop output". Control bytes make a collision with real output
 # effectively impossible; writes <= PIPE_BUF are atomic so it can't
 # interleave with a concurrent writer's bytes.
-_STOP_SENTINEL = b'\x00\x1dpluto:fdcap:flush\x1d\x00'
+#
+# The trailing pid names the capture that emitted it. The pipe is shared
+# with every process that inherited the fd, so a reader must ignore any
+# sentinel it did not write itself (see module docstring).
+_SENTINEL_PREFIX = b'\x00\x1dpluto:fdcap:flush:'
+_SENTINEL_SUFFIX = b'\x1d\x00'
+_SENTINEL_RE = re.compile(
+    re.escape(_SENTINEL_PREFIX) + rb'(\d+)' + re.escape(_SENTINEL_SUFFIX)
+)
+# Upper bound on the pid field, for detecting a sentinel split across reads.
+_MAX_PID_DIGITS = 20
+
+
+def _stop_sentinel(pid: int) -> bytes:
+    return _SENTINEL_PREFIX + str(pid).encode('ascii') + _SENTINEL_SUFFIX
 
 
 class FdCapture:
@@ -70,6 +94,11 @@ class FdCapture:
         self._thread: Optional[threading.Thread] = None
         self._started = False
         self._stopped = False
+        # Owner of the redirected fd. Set in start(); everything that
+        # touches the shared pipe checks it (see module docstring).
+        self._owner_pid: Optional[int] = None
+        self._own_sentinel = b''
+        self._own_sentinel_pid = b''
 
         # Guards line/batch state shared between the reader thread and a
         # stop() caller doing a last-resort flush.
@@ -92,6 +121,9 @@ class FdCapture:
         """Redirect self.fd into a pipe drained by a daemon reader thread."""
         if self._started or self._stopped:
             return
+        self._owner_pid = os.getpid()
+        self._own_sentinel = _stop_sentinel(self._owner_pid)
+        self._own_sentinel_pid = str(self._owner_pid).encode('ascii')
         self._orig_fd = os.dup(self.fd)
         read_fd, write_fd = os.pipe()
         os.dup2(write_fd, self.fd)
@@ -113,6 +145,13 @@ class FdCapture:
         """
         if not self._started or self._stopped:
             return
+        if os.getpid() != self._owner_pid:
+            # A forked child inherited this object (pluto's atexit handlers
+            # come along with it, so a child exiting through the normal
+            # interpreter path lands here). It shares the parent's pipe:
+            # writing the sentinel would mute the parent's uploads for the
+            # rest of the run, and restoring fds is the parent's business.
+            return
         self._stopped = True
 
         # 1. Sentinel into the pipe while self.fd still points at it — it
@@ -122,7 +161,7 @@ class FdCapture:
         #    paths that must never block (DDP).
         def _write_sentinel() -> None:
             try:
-                os.write(self.fd, _STOP_SENTINEL)
+                os.write(self.fd, self._own_sentinel)
             except OSError:
                 pass
 
@@ -161,18 +200,23 @@ class FdCapture:
             data = held + chunk
             held = b''
 
-            idx = data.find(_STOP_SENTINEL)
-            if idx != -1:
-                before = data[:idx]
-                after = data[idx + len(_STOP_SENTINEL) :]
+            # Sentinels are never teed or ingested — they're control bytes.
+            # Only our own marks the flush point; one written by a process
+            # that inherited this pipe is dropped and capture continues.
+            while True:
+                match = _SENTINEL_RE.search(data)
+                if match is None:
+                    break
+                before = data[: match.start()]
                 self._tee(before)
                 self._ingest(before)
-                with self._state_lock:
-                    self._flush_locked(drain_partial=True)
-                    self._enqueue_enabled = False
-                self._flushed.set()
-                self._tee(after)
-                continue  # drain mode: _ingest below is a no-op now
+                data = data[match.end() :]
+                if match.group(1) == self._own_sentinel_pid:
+                    with self._state_lock:
+                        self._flush_locked(drain_partial=True)
+                        self._enqueue_enabled = False
+                    self._flushed.set()
+                    # drain mode from here: _ingest below is a no-op now
 
             # A sentinel prefix at the very end of the chunk may be the
             # sentinel split across reads — hold those bytes back until the
@@ -197,10 +241,24 @@ class FdCapture:
 
     @staticmethod
     def _partial_sentinel_suffix(data: bytes) -> int:
-        """Length of the longest proper sentinel prefix that ends ``data``."""
-        max_k = min(len(_STOP_SENTINEL) - 1, len(data))
+        """Length of the trailing bytes that could still become a sentinel.
+
+        Two shapes to hold back: a partial ``_SENTINEL_PREFIX``, or a
+        complete prefix whose pid field (and closing suffix) is still
+        arriving on the next read.
+        """
+        idx = data.rfind(_SENTINEL_PREFIX)
+        if idx != -1:
+            tail = data[idx + len(_SENTINEL_PREFIX) :]
+            pid_part = tail[:-1] if tail.endswith(_SENTINEL_SUFFIX[:1]) else tail
+            if len(tail) <= _MAX_PID_DIGITS + 1 and (
+                pid_part == b'' or pid_part.isdigit()
+            ):
+                return len(data) - idx
+
+        max_k = min(len(_SENTINEL_PREFIX) - 1, len(data))
         for k in range(max_k, 0, -1):
-            if data.endswith(_STOP_SENTINEL[:k]):
+            if data.endswith(_SENTINEL_PREFIX[:k]):
                 return k
         return 0
 
