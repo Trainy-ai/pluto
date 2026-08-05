@@ -162,9 +162,9 @@ class TestForkedChildCannotDisableParentCapture:
             cap.stop()
 
         assert any('before-fork' in line for line in sm.lines)
-        assert any('after-fork' in line for line in sm.lines), (
-            'parent capture was silenced by a forked child'
-        )
+        assert any(
+            'after-fork' in line for line in sm.lines
+        ), 'parent capture was silenced by a forked child'
 
     def test_child_stop_leaks_no_control_bytes(self):
         """A foreign sentinel is swallowed, not teed or logged as output."""
