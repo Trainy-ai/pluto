@@ -308,6 +308,24 @@ class TestWandbExporter:
         _, _, summary = _export(tmp_path, run=run)
         assert 'file-download-failed' in summary['coverage']['not_migrated']
 
+    def test_failed_artifact_download_is_counted(self, tmp_path):
+        # An artifact whose download raises (transient storage error) must be
+        # flagged, not silently dropped, so coverage/--strict surface the loss.
+        class _FailingArtifact:
+            name = 'model:v0'
+            type = 'model'
+            size = 10
+            version = 'v0'
+            aliases = ['latest']
+            created_at = CREATED_AT
+
+            def download(self, root):
+                raise RuntimeError('storage 503')
+
+        run = FakeRun(artifacts=[_FailingArtifact()])
+        _, _, summary = _export(tmp_path, run=run)
+        assert 'artifact-download-failed' in summary['coverage']['not_migrated']
+
     def test_sweep_is_migrated(self, tmp_path):
         # A run in a sweep migrates its sweep membership + search-space config
         # into the manifest (id/name/config), counted as migrated.
@@ -624,6 +642,47 @@ class TestWandbExporter:
             r for r in _rows(run_dir, 'media') if r['attribute_path'] == 'annotated'
         )
         assert json.loads(media['annotation_value']) == {'boxes': boxes}
+
+    def test_mask_class_labels_folded_from_config(self, tmp_path):
+        # wandb keeps a mask's class_labels in the run config (not the mask
+        # descriptor). The exporter must fold them into the mask annotation,
+        # keyed '<image>_wandb_delimeter_<layer>', or the mask renders blank.
+        run = FakeRun()
+        run.json_config = json.dumps(
+            {
+                '_wandb': {
+                    'value': {
+                        'mask/class_labels': {
+                            'seg_wandb_delimeter_predictions': {
+                                'value': {'0': 'bg', '1': 'cat'}
+                            }
+                        }
+                    }
+                }
+            }
+        )
+        run.scan_history = lambda page_size=1000: iter(
+            [
+                {
+                    '_step': 0,
+                    '_timestamp': T0,
+                    'seg': {
+                        '_type': 'image-file',
+                        'path': 'media/images/seg.png',
+                        'masks': {
+                            'predictions': {
+                                '_type': 'mask',
+                                'path': 'media/images/mask/seg.mask.png',
+                            }
+                        },
+                    },
+                }
+            ]
+        )
+        _, run_dir, _ = _export(tmp_path, run=run)
+        media = next(r for r in _rows(run_dir, 'media') if r['attribute_path'] == 'seg')
+        ann = json.loads(media['annotation_value'])
+        assert ann['masks']['predictions']['class_labels'] == {'0': 'bg', '1': 'cat'}
 
     def test_histogram_bins_reconstructed_from_packed(self, tmp_path):
         # Real wandb histograms carry edges in packedBins ({min,size,count}),

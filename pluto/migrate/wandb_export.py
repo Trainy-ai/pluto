@@ -583,6 +583,38 @@ class WandbExporter:
     def _row_base(self, run: Any) -> '_RowBase':
         return {'project_id': self.project_path, 'run_id': run.id}
 
+    def _mask_class_labels(self, run: Any) -> Dict[str, Dict[str, str]]:
+        """The id→name key for segmentation masks, from the run's config.
+
+        wandb does NOT put ``class_labels`` in a mask's media descriptor (the
+        thing ``scan_history`` returns). It stores them in the run config under
+        ``_wandb.value['mask/class_labels']``, keyed by
+        ``'<image_key>_wandb_delimeter_<mask_layer>'``. Without this key a
+        migrated mask renders blank. Returns ``{that_key: {id: name}}``; parsed
+        once per run and cached. ``run.config`` strips ``_wandb``, so this reads
+        ``run.json_config`` (which keeps it).
+        """
+        cache_id = getattr(run, 'id', None)
+        if getattr(self, '_mask_labels_run', None) != cache_id:
+            self._mask_labels_run = cache_id
+            out: Dict[str, Dict[str, str]] = {}
+            try:
+                raw = getattr(run, 'json_config', None)
+                cfg = json.loads(raw) if raw else dict(getattr(run, 'config', {}))
+                entries = (
+                    cfg.get('_wandb', {}).get('value', {}).get('mask/class_labels', {})
+                )
+                for k, v in (entries or {}).items():
+                    val = v.get('value') if isinstance(v, dict) else None
+                    if isinstance(val, dict):
+                        out[k] = val
+            except Exception as e:
+                logger.debug(
+                    f'{tag}: mask class_labels parse failed for {cache_id}: {e}'
+                )
+            self._mask_labels_cache = out
+        return self._mask_labels_cache
+
     def _export_history(self, run: Any, writer: PartWriter) -> None:
         for row in run.scan_history(page_size=self.history_page_size):
             step = row.get('_step')
@@ -674,6 +706,16 @@ class WandbExporter:
                 # annotations.
                 annotation_value = None
                 boxes, masks = value.get('boxes'), value.get('masks')
+                if masks:
+                    # wandb keeps mask class_labels in the run config, not the
+                    # mask descriptor; fold them back in per layer so the mask
+                    # renders coloured instead of blank.
+                    label_map = self._mask_class_labels(run)
+                    for layer_name, layer in masks.items():
+                        if isinstance(layer, dict) and 'class_labels' not in layer:
+                            cl = label_map.get(f'{key}_wandb_delimeter_{layer_name}')
+                            if cl:
+                                layer['class_labels'] = cl
                 if boxes or masks:
                     annotation_value = json.dumps(
                         {k: v for k, v in {'boxes': boxes, 'masks': masks}.items() if v}

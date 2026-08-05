@@ -588,7 +588,12 @@ class PlutoLoader:
         for layer, ref in (refs.get('masks') or {}).items():
             fp = self._resolve_ref(run_dir, ref)
             if fp is not None:
-                masks_spec[layer] = {'path': str(fp)}
+                spec: Dict[str, Any] = {'path': str(fp)}
+                # Carry the id→name key through so the mask renders coloured
+                # instead of blank (the exporter recovers it from run config).
+                if isinstance(ref, dict) and ref.get('class_labels'):
+                    spec['class_labels'] = ref['class_labels']
+                masks_spec[layer] = spec
         return boxes_str, (masks_spec or None)
 
     @staticmethod

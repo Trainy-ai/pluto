@@ -330,6 +330,30 @@ class TestPlutoLoader:
         assert json.loads(boxes_str) == {'boxes': {'pred': box_content}}
         assert masks_spec['pred']['path'].endswith('media/images/mask/a.mask.png')
 
+    def test_mask_class_labels_preserved(self, tmp_path):
+        # A staged mask carrying class_labels (folded in by the exporter) keeps
+        # them in the mask spec, so pluto.Image re-uploads a coloured mask
+        # instead of a blank one.
+        run_dir = tmp_path / 'run'
+        mask_dir = run_dir / 'files' / 'media' / 'images' / 'mask'
+        mask_dir.mkdir(parents=True)
+        (mask_dir / 'a.mask.png').write_bytes(b'PNG')
+        annotation_value = json.dumps(
+            {
+                'masks': {
+                    'pred': {
+                        'path': 'media/images/mask/a.mask.png',
+                        'class_labels': {'0': 'bg', '1': 'cat'},
+                    }
+                }
+            }
+        )
+        _, masks_spec = PlutoLoader(tmp_path)._image_annotations(
+            run_dir, annotation_value
+        )
+        assert masks_spec['pred']['class_labels'] == {'0': 'bg', '1': 'cat'}
+        assert masks_spec['pred']['path'].endswith('a.mask.png')
+
     def test_image_annotations_none_when_absent(self, tmp_path):
         assert PlutoLoader(tmp_path)._image_annotations(tmp_path, None) == (None, None)
 
