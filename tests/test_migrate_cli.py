@@ -235,6 +235,48 @@ class TestMigrateCli:
             )
         assert cls.call_args.kwargs['run_ids'] == ['r1', 'r2']
 
+    def test_all_attempts_failed_run_once_via_skip_run_ids(self, tmp_path):
+        # A run that fails in one poll pass must not be re-attempted on the next
+        # (re-running identical staged data can't help and risks duplicate media).
+        # The cli feeds already-failed run-ids into the loader's skip_run_ids, so
+        # each failure is at-most-once and the reported failure count stays exact.
+        import time
+
+        exporter = _mock_exporter()
+
+        def _slow_export(*a, **k):
+            time.sleep(0.25)  # stay alive across several fast poll passes
+            return {'exported': 1, 'skipped': 0, 'failed': []}
+
+        exporter.export.side_effect = _slow_export
+        loader = _mock_loader(
+            {'loaded': 0, 'skipped': 0, 'failed': [{'run_id': 'boom', 'error': 'e'}]}
+        )
+        with (
+            mock.patch(
+                'pluto.migrate.wandb_export.WandbExporter', return_value=exporter
+            ),
+            mock.patch('pluto.migrate.loader.PlutoLoader', return_value=loader) as cls,
+            mock.patch('pluto.migrate.cli._ALL_POLL_SECONDS', 0.02),
+        ):
+            code = run_migrate(
+                [
+                    'wandb',
+                    'all',
+                    '--entity',
+                    'acme',
+                    '--project',
+                    'vision',
+                    '--output',
+                    str(tmp_path),
+                ]
+            )
+        assert code == 1  # the single failure is reported once
+        # First pass skips nothing; once 'boom' has failed, every later pass
+        # passes it into skip_run_ids so the loader bypasses it.
+        assert cls.call_args_list[0].kwargs['skip_run_ids'] == []
+        assert any(c.kwargs['skip_run_ids'] == ['boom'] for c in cls.call_args_list[1:])
+
     def test_all_rejects_dry_run(self, tmp_path):
         with mock.patch('pluto.migrate.wandb_export.WandbExporter') as cls:
             code = run_migrate(

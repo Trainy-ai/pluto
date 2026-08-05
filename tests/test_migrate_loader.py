@@ -648,6 +648,42 @@ class TestPlutoLoader:
         assert init.call_args_list[-1].kwargs['resume'] is True  # healed via resume
         assert LoadedCache(tmp_path / 'loaded_runs.json').is_loaded(CACHE_KEY)
 
+    def test_collision_restore_failure_reported_not_marked_loaded(
+        self, tmp_path, mock_init
+    ):
+        # Collision restore path: if re-attaching to finish() the existing run
+        # throws, the run is still RUNNING server-side with no terminal status.
+        # It must NOT be marked loaded (that would strand it RUNNING and skip it
+        # forever) — it's reported failed so a later run retries it.
+        from pluto.op import RunExistsError
+
+        init, _ = mock_init
+        restore_op = mock.MagicMock()
+        restore_op.finish.side_effect = RuntimeError('server rejected finish')
+        init.side_effect = [
+            RunExistsError(
+                "Run with externalId 'wandb::acme/vision/abc123' already exists."
+            ),
+            restore_op,  # resume re-attach; its finish() blows up below
+        ]
+        _stage_run(tmp_path)
+        summary = PlutoLoader(tmp_path).load()
+        assert summary['loaded'] == 0 and summary['skipped'] == 0
+        assert [f['run_id'] for f in summary['failed']] == ['abc123']
+        assert 'restore failed' in summary['failed'][0]['error']
+        # Crucially: NOT marked loaded, so a re-run gets another shot.
+        assert not LoadedCache(tmp_path / 'loaded_runs.json').is_loaded(CACHE_KEY)
+
+    def test_skip_run_ids_bypasses_run_without_attempting(self, tmp_path, mock_init):
+        # A run whose id is in skip_run_ids (already attempted-and-failed in an
+        # earlier `all` pass) is skipped outright — never re-initialized, never
+        # counted as loaded/skipped/failed.
+        init, _ = mock_init
+        _stage_run(tmp_path)
+        summary = PlutoLoader(tmp_path, skip_run_ids=['abc123']).load()
+        assert summary == {'loaded': 0, 'skipped': 0, 'failed': []}
+        init.assert_not_called()
+
     def test_backpressure_throttles_then_gives_up(self, tmp_path, mock_init):
         _, op = mock_init
         op._sync_manager.get_pending_count.side_effect = [10, 10, 3]

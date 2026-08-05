@@ -86,6 +86,7 @@ class PlutoLoader:
         max_pending: int = 5000,
         dry_run: bool = False,
         run_ids: Optional[List[str]] = None,
+        skip_run_ids: Optional[List[str]] = None,
         force_resume: bool = False,
         stall_timeout: float = 600.0,
         cleanup: bool = False,
@@ -106,6 +107,14 @@ class PlutoLoader:
         self.max_pending = max_pending
         self.dry_run = dry_run
         self.run_ids = set(run_ids) if run_ids else None
+        # Runs to skip outright (already attempted-and-failed in an earlier pass
+        # of the same `all` invocation). The loader only ever sees a run once
+        # its export is complete, so a load failure is genuine, not "needs more
+        # time" — re-attempting the identical staged data every poll can't help
+        # and risks duplicating media on a mid-replay resume. Skipping such runs
+        # for the rest of the run makes each failure at-most-once; the user
+        # re-runs `all`/`load` to retry (in-progress runs resume from the ledger).
+        self.skip_run_ids = set(skip_run_ids) if skip_run_ids else None
         # Which staged projects to load: include-list (None = all) minus excludes.
         self.projects = set(projects) if projects else None
         self.exclude_projects = set(exclude_projects) if exclude_projects else set()
@@ -142,6 +151,10 @@ class PlutoLoader:
                 continue
 
             if self.run_ids is not None and run_id not in self.run_ids:
+                continue
+            # Already attempted-and-failed in an earlier pass of this same `all`
+            # run: don't re-attempt (see skip_run_ids note in __init__).
+            if self.skip_run_ids is not None and run_id in self.skip_run_ids:
                 continue
             # Key the load cache on (run, destination project) so loading the
             # same export into a *different* Pluto project isn't wrongly skipped.
@@ -204,10 +217,22 @@ class PlutoLoader:
                                 code=0 if manifest.get('state') == 'finished' else 1
                             )
                         except Exception as e:
+                            # Restore failed: the run is still RUNNING server-side
+                            # and its terminal status was never written. Do NOT
+                            # mark it loaded — that would strand it RUNNING and
+                            # skip it forever. Record a failure so it's reported
+                            # and retried on the next `all`/`load` invocation.
                             logger.warning(
                                 f'{tag}: could not restore terminal status for '
                                 f'{external_id}: {e}'
                             )
+                            failed.append(
+                                {
+                                    'run_id': run_id,
+                                    'error': f'restore failed: {type(e).__name__}: {e}',
+                                }
+                            )
+                            continue
                         cache.mark_loaded(cache_key, {'note': 'existed-on-server'})
                         skipped += 1
                         continue

@@ -265,7 +265,11 @@ def _all_one_project(
 
     loaded_total = 0
     failed: List[Dict[str, str]] = []
-    failed_ids: set = set()  # a run that keeps failing recurs every poll pass
+    # A run that failed once is attempted at most once: skip it in later passes
+    # (skip_run_ids below) rather than re-running the identical staged data every
+    # poll. That both stops the every-poll re-attempt and keeps `failed` accurate
+    # — a skipped run can't later succeed, so it never lingers as a false failure.
+    failed_ids: set = set()
 
     def _load_pass() -> None:
         nonlocal loaded_total
@@ -276,6 +280,7 @@ def _all_one_project(
             max_pending=args.max_pending,
             dry_run=False,
             run_ids=getattr(args, 'run_ids', None),
+            skip_run_ids=list(failed_ids),
             force_resume=args.force_resume,
             cleanup=getattr(args, 'cleanup', False),
             projects=[project],
