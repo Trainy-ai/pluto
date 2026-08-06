@@ -131,6 +131,106 @@ class TestStopSemantics:
         assert not any('zombie' in line for line in sm.lines)
 
 
+class TestForkedChildCannotDisableParentCapture:
+    """A forked child shares the parent's pipe — and pluto's atexit handlers.
+
+    Any child exiting through the normal interpreter path runs Op.finish()
+    -> flush_console_buffers() -> FdCapture.stop(). Before the sentinel was
+    scoped to the process that called start(), that stop() wrote the flush
+    mark into the SHARED pipe, and the parent's reader — alive and still
+    teeing to the terminal — muted its own uploads for the rest of the run.
+    Observed on a torchtitan job: console logs stopped ~10s in, at the point
+    torch.compile spun up its workers, while the terminal stayed complete.
+    """
+
+    def test_child_stop_does_not_mute_parent(self):
+        with capture_fd(2, logging.ERROR) as (cap, sm):
+            os.write(2, b'before-fork\n')
+            time.sleep(0.3)
+
+            pid = os.fork()
+            if pid == 0:
+                try:
+                    cap.stop()  # inherited teardown, in the child
+                finally:
+                    os._exit(0)
+            os.waitpid(pid, 0)
+            time.sleep(0.3)
+
+            os.write(2, b'after-fork\n')
+            time.sleep(0.3)
+            cap.stop()
+
+        assert any('before-fork' in line for line in sm.lines)
+        assert any(
+            'after-fork' in line for line in sm.lines
+        ), 'parent capture was silenced by a forked child'
+
+    def test_child_stop_leaks_no_control_bytes(self):
+        """A foreign sentinel is swallowed, not teed or logged as output."""
+        with capture_fd(2, logging.ERROR) as (cap, sm):
+            pid = os.fork()
+            if pid == 0:
+                try:
+                    cap.stop()
+                finally:
+                    os._exit(0)
+            os.waitpid(pid, 0)
+            time.sleep(0.3)
+
+            os.write(2, b'still here\n')
+            time.sleep(0.3)
+            cap.stop()
+
+        assert any('still here' in line for line in sm.lines)
+        assert not any('fdcap:flush' in line for line in sm.lines)
+        assert not any('\x00' in line for line in sm.lines)
+
+    def test_owner_stop_still_flushes_and_mutes(self):
+        """The scoping must not break the flush stop() exists to provide."""
+        with capture_fd(2, logging.ERROR) as (cap, sm):
+            os.write(2, b'pre-stop')  # no trailing newline
+            cap.stop()
+            os.write(2, b'post-stop\n')
+            time.sleep(0.1)
+        assert any('pre-stop' in line for line in sm.lines)
+        assert not any('post-stop' in line for line in sm.lines)
+
+
+class TestSentinelSplitAcrossReads:
+    def test_partial_sentinel_suffix_holds_incomplete_marks(self):
+        from pluto import _fd_capture as fc
+
+        hold = FdCapture._partial_sentinel_suffix
+        assert hold(b'plain output') == 0
+        # partial prefix at the edge
+        assert hold(b'out' + fc._SENTINEL_PREFIX[:5]) == 5
+        # complete prefix, pid still arriving
+        assert hold(b'out' + fc._SENTINEL_PREFIX) == len(fc._SENTINEL_PREFIX)
+        assert hold(b'out' + fc._SENTINEL_PREFIX + b'123') == (
+            len(fc._SENTINEL_PREFIX) + 3
+        )
+        # pid complete, closing suffix half arrived
+        assert hold(b'out' + fc._SENTINEL_PREFIX + b'123\x1d') == (
+            len(fc._SENTINEL_PREFIX) + 4
+        )
+
+    def test_sentinel_split_across_two_writes_still_flushes(self):
+        """stop()'s mark can land across a read boundary; it must still hit."""
+        with capture_fd(2, logging.ERROR) as (cap, sm):
+            os.write(2, b'line-a\n')
+            sentinel = cap._own_sentinel
+            os.write(2, sentinel[:8])
+            time.sleep(0.15)
+            os.write(2, sentinel[8:])
+            time.sleep(0.15)
+            os.write(2, b'line-b\n')
+            time.sleep(0.15)
+        assert any('line-a' in line for line in sm.lines)
+        assert not any('line-b' in line for line in sm.lines)
+        assert not any('fdcap:flush' in line for line in sm.lines)
+
+
 class TestLineHandling:
     def test_partial_writes_coalesce_into_one_line(self):
         with capture_fd(2, logging.ERROR) as (cap, sm):

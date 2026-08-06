@@ -349,6 +349,33 @@ an auth failure:
   is definitive, so it no longer says "token may still be valid" (5xx/network
   failures keep that softer wording).
 
+### fd-level console capture and forked children
+
+`FdCapture` (`pluto/_fd_capture.py`) `dup2`s a pipe over fds 1/2 so logging
+handlers bound before `init()` still get uploaded. That pipe is **shared with
+every process that inherits the fd** — forked DataLoader/`torch.compile`
+workers, the sync subprocess, anything spawned during training — and forked
+children inherit pluto's `atexit` handlers too. So a child exiting through the
+normal interpreter path runs `Op.finish()` → `flush_console_buffers()` →
+`FdCapture.stop()`.
+
+Anything in `stop()` that touches the shared pipe must therefore be scoped to
+the process that called `start()`:
+
+- `stop()` is a **no-op off the owner pid**. Restoring fds and writing the
+  flush sentinel are the owner's business.
+- The flush sentinel **carries the owner's pid** (`_stop_sentinel()`), and the
+  reader only honours its own; a foreign one is dropped from both the tee and
+  the capture.
+
+Without that scoping the failure is silent and total: the child's sentinel
+lands in the shared pipe, the parent's reader sets `_enqueue_enabled = False`
+and drops into tee-only drain mode, so the terminal keeps every line while the
+run's console section stops dead — mid-batch, with no error anywhere. Seen on a
+torchtitan job where capture died ~10 s in, exactly when inductor spun up its
+compile workers. Regression tests:
+`tests/test_fd_capture.py::TestForkedChildCannotDisableParentCapture`.
+
 ### Network Filesystems (NFS/Lustre/SMB) and SQLite WAL
 
 The sync DB uses SQLite WAL mode (`pluto/sync/store.py`), which relies on POSIX
