@@ -168,6 +168,8 @@ class TestForkedChildCannotDisableParentCapture:
 
     def test_child_stop_leaks_no_control_bytes(self):
         """A foreign sentinel is swallowed, not teed or logged as output."""
+        from pluto import _fd_capture as fc
+
         with capture_fd(2, logging.ERROR) as (cap, sm):
             pid = os.fork()
             if pid == 0:
@@ -176,6 +178,10 @@ class TestForkedChildCannotDisableParentCapture:
                 finally:
                     os._exit(0)
             os.waitpid(pid, 0)
+            # Child stop() is a no-op off the owner pid, so it never writes a
+            # sentinel. Inject a foreign PID-tagged mark to exercise the
+            # reader path that must drop it without muting capture.
+            os.write(2, fc._stop_sentinel(pid))
             time.sleep(0.3)
 
             os.write(2, b'still here\n')
