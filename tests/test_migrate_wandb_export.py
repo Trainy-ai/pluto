@@ -684,6 +684,45 @@ class TestWandbExporter:
         ann = json.loads(media['annotation_value'])
         assert ann['masks']['predictions']['class_labels'] == {'0': 'bg', '1': 'cat'}
 
+    def test_gallery_images_keep_per_image_boxes_and_masks(self, tmp_path):
+        # Images logged as a LIST (wandb type images/separated) carry their
+        # boxes/masks in parallel all_boxes[i]/all_masks[i] arrays. Each staged
+        # image row must get its own annotation_value — else galleries migrate
+        # as plain pictures with the annotations silently dropped.
+        run = FakeRun()
+        b0 = {'pred': {'path': 'meta/g0.boxes2D.json', '_type': 'boxes2D'}}
+        b1 = {'pred': {'path': 'meta/g1.boxes2D.json', '_type': 'boxes2D'}}
+        m0 = {'pred': {'path': 'mask/g0.mask.png', '_type': 'mask'}}
+        m1 = {'pred': {'path': 'mask/g1.mask.png', '_type': 'mask'}}
+        run.scan_history = lambda page_size=1000: iter(
+            [
+                {
+                    '_step': 0,
+                    '_timestamp': T0,
+                    'val/annotated': {
+                        '_type': 'images/separated',
+                        'filenames': [
+                            'media/images/val/annotated_0.png',
+                            'media/images/val/annotated_1.png',
+                        ],
+                        'captions': ['idx0', 'idx1'],
+                        'all_boxes': [b0, b1],
+                        'all_masks': [m0, m1],
+                    },
+                }
+            ]
+        )
+        _, run_dir, _ = _export(tmp_path, run=run)
+        rows = [
+            r for r in _rows(run_dir, 'media') if r['attribute_path'] == 'val/annotated'
+        ]
+        assert len(rows) == 2
+        rows.sort(key=lambda r: r['file_value'])
+        ann0 = json.loads(rows[0]['annotation_value'])
+        ann1 = json.loads(rows[1]['annotation_value'])
+        assert ann0 == {'boxes': b0, 'masks': m0}
+        assert ann1 == {'boxes': b1, 'masks': m1}
+
     def test_histogram_bins_reconstructed_from_packed(self, tmp_path):
         # Real wandb histograms carry edges in packedBins ({min,size,count}),
         # not a `bins` array. Reconstruct the true edges so the migrated

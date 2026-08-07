@@ -615,6 +615,34 @@ class WandbExporter:
             self._mask_labels_cache = out
         return self._mask_labels_cache
 
+    def _image_annotation_value(
+        self, run: Any, key: str, boxes: Any, masks: Any
+    ) -> Optional[str]:
+        """Build the staged ``annotation_value`` JSON for one image's boxes/masks.
+
+        Shared by the single-image and gallery (``images/separated``) paths so
+        list-logged images keep their annotations too. Folds mask class_labels
+        back in from the run config (wandb stores them there, not on the mask
+        descriptor) so masks render coloured. Returns None if the image has
+        neither boxes nor masks.
+        """
+        if masks:
+            label_map = self._mask_class_labels(run)
+            for layer_name, layer in masks.items():
+                if isinstance(layer, dict) and 'class_labels' not in layer:
+                    cl = label_map.get(f'{key}_wandb_delimeter_{layer_name}')
+                    if cl:
+                        layer['class_labels'] = cl
+        if not (boxes or masks):
+            return None
+        if boxes:
+            self._migrated('image-boxes')
+        if masks:
+            self._migrated('image-masks')
+        return json.dumps(
+            {k: v for k, v in {'boxes': boxes, 'masks': masks}.items() if v}
+        )
+
     def _export_history(self, run: Any, writer: PartWriter) -> None:
         for row in run.scan_history(page_size=self.history_page_size):
             step = row.get('_step')
@@ -704,26 +732,12 @@ class WandbExporter:
                 # those refs; the loader resolves the box JSON inline and
                 # re-uploads the mask PNG (as fileType "mask") into the image's
                 # annotations.
-                annotation_value = None
-                boxes, masks = value.get('boxes'), value.get('masks')
-                if masks:
-                    # wandb keeps mask class_labels in the run config, not the
-                    # mask descriptor; fold them back in per layer so the mask
-                    # renders coloured instead of blank.
-                    label_map = self._mask_class_labels(run)
-                    for layer_name, layer in masks.items():
-                        if isinstance(layer, dict) and 'class_labels' not in layer:
-                            cl = label_map.get(f'{key}_wandb_delimeter_{layer_name}')
-                            if cl:
-                                layer['class_labels'] = cl
-                if boxes or masks:
-                    annotation_value = json.dumps(
-                        {k: v for k, v in {'boxes': boxes, 'masks': masks}.items() if v}
-                    )
-                    if boxes:
-                        self._migrated('image-boxes')
-                    if masks:
-                        self._migrated('image-masks')
+                # Bounding boxes / segmentation masks ride on the image value as
+                # references to sidecar files; stage the refs (loader resolves box
+                # JSON inline and re-uploads the mask PNG into the annotations).
+                annotation_value = self._image_annotation_value(
+                    run, key, value.get('boxes'), value.get('masks')
+                )
                 writer.write_row(
                     **base,
                     attribute_path=key,
@@ -765,7 +779,19 @@ class WandbExporter:
                     self._skipped('media-file(--no-files)', len(value['filenames']))
                     return
                 captions = value.get('captions') or []
+                # Per-image boxes/masks ride in parallel lists (all_boxes[i] /
+                # all_masks[i]), same shape as a single image's boxes/masks. Carry
+                # each image's annotations so galleries keep them (not just plain
+                # pictures).
+                all_boxes = value.get('all_boxes') or []
+                all_masks = value.get('all_masks') or []
                 for i, filename in enumerate(value['filenames']):
+                    annotation_value = self._image_annotation_value(
+                        run,
+                        key,
+                        all_boxes[i] if i < len(all_boxes) else None,
+                        all_masks[i] if i < len(all_masks) else None,
+                    )
                     writer.write_row(
                         **base,
                         attribute_path=key,
@@ -775,6 +801,7 @@ class WandbExporter:
                         string_value='image-file',
                         file_value=f'files/{filename}',
                         caption=captions[i] if i < len(captions) else None,
+                        annotation_value=annotation_value,
                     )
                 self._migrated('media', len(value['filenames']))
             elif isinstance(value.get(media_type), list) and all(
