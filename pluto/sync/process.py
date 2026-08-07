@@ -199,20 +199,53 @@ class SyncProcessManager:
         timeout = timeout or self.settings.get('sync_process_shutdown_timeout', 30.0)
 
         start = time.time()
+        completed = False
         while time.time() - start < timeout:
             pending = self.store.get_pending_count(self.run_id)
             if pending == 0:
                 self.store.mark_run_synced(self.run_id)
                 logger.info('Sync process completed successfully')
-                return True
+                completed = True
+                break
             time.sleep(0.1)
 
-        pending = self.store.get_pending_count(self.run_id)
-        logger.warning(
-            f'Sync process did not complete within {timeout}s, '
-            f'{pending} records pending. Data preserved in {self.db_path}'
-        )
-        return False
+        if not completed:
+            pending = self.store.get_pending_count(self.run_id)
+            logger.warning(
+                f'Sync process did not complete within {timeout}s, '
+                f'{pending} records pending. Data preserved in {self.db_path}'
+            )
+
+        # The data is flushed, but the sync process is a persistent daemon: its
+        # main loop only breaks on SIGTERM or when the PARENT dies. If we just
+        # return here it keeps running until *this* process exits. A long-lived
+        # caller that spawns one sync process per run (e.g. a bulk pluto.migrate
+        # load of hundreds of runs in a single invocation) would then accumulate
+        # one live subprocess per run and exhaust memory. Terminate it now so its
+        # lifetime is scoped to the run, not to the whole caller.
+        self._terminate_process(timeout)
+        return completed
+
+    def _terminate_process(self, timeout: float) -> None:
+        """SIGTERM the sync subprocess and reap it, escalating to SIGKILL.
+
+        Safe to call after the data flush above: the process drains (a no-op
+        when pending is already 0), closes its clients, and exits. Bounded so a
+        subprocess that hangs on exit can't stall the caller.
+        """
+        proc = self._process
+        if proc is None or proc.poll() is not None:
+            return
+        try:
+            proc.terminate()
+            try:
+                proc.wait(timeout=max(5.0, min(timeout, 30.0)))
+            except subprocess.TimeoutExpired:
+                logger.warning('Sync process did not exit on SIGTERM; killing it')
+                proc.kill()
+                proc.wait(timeout=5)
+        except Exception as e:
+            logger.debug(f'Failed to terminate sync process: {e}')
 
     def enqueue_metrics(
         self,
