@@ -353,6 +353,61 @@ class TestNoopRunStatus:
         assert STATUS[settings._op_status] == 'FAILED'
 
 
+class TestTerminalStatusResilience:
+    """finish() must not silently swallow a failed terminal status update — it
+    records it on the op so callers (the migration loader) can tell the run was
+    not actually finalized, and a post-status teardown error must not re-flip a
+    confirmed run to FAILED.
+    """
+
+    def test_finish_records_unconfirmed_status_without_crashing(self):
+        from unittest.mock import MagicMock
+
+        from pluto.iface import PlutoRequestError
+        from pluto.op import Op
+        from pluto.sets import Settings
+
+        settings = Settings()
+        settings.mode = 'noop'
+        op = Op(config={}, settings=settings)
+        op.start()
+
+        # Terminal status POST fails after its own retries (raises up to finish).
+        failing_iface = MagicMock()
+        failing_iface.update_status.side_effect = PlutoRequestError(
+            'peer reset', status_code=None
+        )
+        op._iface = failing_iface
+
+        op.finish()  # must NOT raise
+
+        failing_iface.update_status.assert_called_once()
+        assert isinstance(op._status_update_error, PlutoRequestError)
+        # The intended terminal code stands — the failed POST is not re-reported
+        # as FAILED (status_confirmed guard); the run's code stays COMPLETED (0).
+        assert settings._op_status == 0
+
+    def test_finish_confirmed_status_clears_error_flag(self):
+        from unittest.mock import MagicMock
+
+        from pluto.op import Op
+        from pluto.sets import Settings
+
+        settings = Settings()
+        settings.mode = 'noop'
+        op = Op(config={}, settings=settings)
+        op.start()
+
+        ok_iface = MagicMock()  # update_status() succeeds
+        op._iface = ok_iface
+
+        op.finish()
+
+        ok_iface.update_status.assert_called_once()
+        assert op._status_update_error is None
+        assert settings._op_status == 0
+
+
 class TestExcepthookSubprocess:
     """
     End-to-end test: run a script that raises an unhandled exception

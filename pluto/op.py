@@ -574,6 +574,11 @@ class Op:
         self._queue: queue.Queue[QueueItem] = queue.Queue()
         self._finished = False
         self._finish_lock = threading.Lock()
+        # Set by _teardown() when the terminal status update could not be
+        # confirmed on the server (after retries). Callers that must know the
+        # run was actually finalized — notably the migration loader — check
+        # this instead of trusting finish() to have succeeded silently.
+        self._status_update_error: Union[Exception, None] = None
         # (log-key, exc-type) pairs already surfaced at error from a dropped log
         # item, so a per-step failure is shouted once then drops to debug.
         self._dropped_item_warned: set = set()
@@ -1118,6 +1123,13 @@ class Op:
         # because all ranks must progress together for collective operations
         is_distributed = _is_distributed_environment()
 
+        # Reset per teardown. status_confirmed tracks whether the terminal
+        # status update actually landed on the server, so (a) a later teardown
+        # error doesn't wrongly re-mark a finished run FAILED, and (b) the
+        # migration loader can tell a dropped finish from a real one.
+        self._status_update_error = None
+        status_confirmed = False
+
         try:
             # Stop the monitor (system metrics and heartbeats)
             self._monitor.stop(code)
@@ -1156,9 +1168,24 @@ class Op:
                 self._sync_manager.close()
                 self._sync_manager = None
 
-            # Update run status on server (only when finishing)
+            # Update run status on server (only when finishing). This is the
+            # run's terminal transition; update_status() retries transient
+            # resets and raises if it can't confirm. Record — but don't abort
+            # teardown on — that failure: the store/HTTP-client cleanup below
+            # still has to run, and the caller inspects _status_update_error.
             if update_status and self._iface:
-                self._iface.update_status()
+                try:
+                    self._iface.update_status()
+                    status_confirmed = True
+                except Exception as status_exc:
+                    self._status_update_error = status_exc
+                    logger.error(
+                        '%s: terminal status update not confirmed after '
+                        'retries: %s: %s',
+                        tag,
+                        type(status_exc).__name__,
+                        status_exc,
+                    )
 
             # Clean up data store if used (legacy mode)
             if self._store:
@@ -1175,26 +1202,33 @@ class Op:
                 logger.debug(f'{tag}: closed (run status unchanged)')
         except (Exception, KeyboardInterrupt) as e:
             _sentry.capture_exception(e)
-            if update_status:
+            # Only report FAILED if we hadn't already confirmed the terminal
+            # status — otherwise a teardown hiccup *after* a successful finish
+            # (e.g. an HTTP-client close error) would flip a COMPLETED run to
+            # FAILED. Guard the report itself too: it can now raise.
+            if update_status and not status_confirmed:
                 self.settings._op_status = signal.SIGINT.value
                 if self._iface:
-                    self._iface._update_status(
-                        self.settings,
-                        trace={
-                            'type': e.__class__.__name__,
-                            'message': str(e),
-                            'frames': [
-                                {
-                                    'filename': frame.filename,
-                                    'lineno': frame.lineno,
-                                    'name': frame.name,
-                                    'line': frame.line,
-                                }
-                                for frame in traceback.extract_tb(e.__traceback__)
-                            ],
-                            'trace': traceback.format_exc(),
-                        },
-                    )
+                    try:
+                        self._iface._update_status(
+                            self.settings,
+                            trace={
+                                'type': e.__class__.__name__,
+                                'message': str(e),
+                                'frames': [
+                                    {
+                                        'filename': frame.filename,
+                                        'lineno': frame.lineno,
+                                        'name': frame.name,
+                                        'line': frame.line,
+                                    }
+                                    for frame in traceback.extract_tb(e.__traceback__)
+                                ],
+                                'trace': traceback.format_exc(),
+                            },
+                        )
+                    except Exception as report_exc:
+                        self._status_update_error = report_exc
             logger.critical('%s: interrupted %s', tag, e)
             # Re-raise user-initiated termination so the process actually
             # exits as the user expects. Post-cleanup (sentry flush,

@@ -250,6 +250,10 @@ def mock_init():
         op = mock.MagicMock()
         op.settings._op_id = 42
         op._sync_manager.get_pending_count.return_value = 0
+        # A real Op sets this to None on a confirmed finish; without it a bare
+        # MagicMock auto-vivifies a truthy attribute and looks like a failed
+        # status update to the loader.
+        op._status_update_error = None
         init.return_value = op
         yield init, op
 
@@ -586,6 +590,7 @@ class TestPlutoLoader:
 
         init, _ = mock_init
         restore_op = mock.MagicMock()
+        restore_op._status_update_error = None  # finish() confirmed the status
         init.side_effect = [
             RunExistsError(
                 "Run with externalId 'wandb::acme/vision/abc123' already exists."
@@ -672,6 +677,45 @@ class TestPlutoLoader:
         assert [f['run_id'] for f in summary['failed']] == ['abc123']
         assert 'restore failed' in summary['failed'][0]['error']
         # Crucially: NOT marked loaded, so a re-run gets another shot.
+        assert not LoadedCache(tmp_path / 'loaded_runs.json').is_loaded(CACHE_KEY)
+
+    def test_unconfirmed_terminal_status_reported_not_marked_loaded(
+        self, tmp_path, mock_init
+    ):
+        # finish() replayed everything but could NOT confirm the run's terminal
+        # status on the server (a dropped connection that outlasted retries, now
+        # surfaced via op._status_update_error). The run must be recorded as
+        # failed and NOT cached as loaded — else a re-run skips it and it stays
+        # stranded RUNNING/FAILED forever (the real-world bug this guards).
+        _, op = mock_init
+        op._status_update_error = ConnectionResetError('peer reset during finish')
+        _stage_run(tmp_path)
+        summary = PlutoLoader(tmp_path).load()
+        assert summary['loaded'] == 0 and summary['skipped'] == 0
+        assert [f['run_id'] for f in summary['failed']] == ['abc123']
+        assert 'status unconfirmed' in summary['failed'][0]['error']
+        assert not LoadedCache(tmp_path / 'loaded_runs.json').is_loaded(CACHE_KEY)
+
+    def test_restore_unconfirmed_terminal_status_reported_not_marked_loaded(
+        self, tmp_path, mock_init
+    ):
+        # Same guarantee on the collision→restore path: if the restoring
+        # finish() couldn't confirm the terminal status, don't mark it loaded.
+        from pluto.op import RunExistsError
+
+        init, _ = mock_init
+        restore_op = mock.MagicMock()
+        restore_op._status_update_error = ConnectionResetError('reset during restore')
+        init.side_effect = [
+            RunExistsError(
+                "Run with externalId 'wandb::acme/vision/abc123' already exists."
+            ),
+            restore_op,
+        ]
+        _stage_run(tmp_path)
+        summary = PlutoLoader(tmp_path).load()
+        assert summary['loaded'] == 0 and summary['skipped'] == 0
+        assert [f['run_id'] for f in summary['failed']] == ['abc123']
         assert not LoadedCache(tmp_path / 'loaded_runs.json').is_loaded(CACHE_KEY)
 
     def test_skip_run_ids_bypasses_run_without_attempting(self, tmp_path, mock_init):

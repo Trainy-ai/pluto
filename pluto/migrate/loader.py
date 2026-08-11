@@ -216,6 +216,12 @@ class PlutoLoader:
                             restore.finish(
                                 code=0 if manifest.get('state') == 'finished' else 1
                             )
+                            if restore._status_update_error is not None:
+                                # finish() couldn't confirm the terminal status;
+                                # re-raise into the handler below so we record a
+                                # failure instead of marking a still-RUNNING run
+                                # loaded (and skipping it forever).
+                                raise restore._status_update_error
                         except Exception as e:
                             # Restore failed: the run is still RUNNING server-side
                             # and its terminal status was never written. Do NOT
@@ -239,6 +245,27 @@ class PlutoLoader:
 
                 self._replay_run(run_dir, op)
                 op.finish(code=0 if manifest.get('state') == 'finished' else 1)
+                if op._status_update_error is not None:
+                    # finish() replayed all data but could NOT confirm the run's
+                    # terminal status on the server (a dropped connection that
+                    # outlasted retries). Marking it loaded here would strand it
+                    # RUNNING/FAILED and skip it forever. Record a failure so the
+                    # next `all`/`load` pass heals it via the RunExistsError ->
+                    # restore path above.
+                    err = op._status_update_error
+                    logger.error(
+                        f'{tag}: {external_id} replayed but terminal status was '
+                        f'not confirmed: {type(err).__name__}: {err}'
+                    )
+                    failed.append(
+                        {
+                            'run_id': run_id,
+                            'error': (
+                                f'status unconfirmed: {type(err).__name__}: {err}'
+                            ),
+                        }
+                    )
+                    continue
                 cache.mark_loaded(cache_key, {'pluto_run_id': op.settings._op_id})
                 loaded += 1
                 logger.info(f'{tag}: loaded {external_id}')
