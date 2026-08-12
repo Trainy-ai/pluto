@@ -718,6 +718,76 @@ class TestPlutoLoader:
         assert [f['run_id'] for f in summary['failed']] == ['abc123']
         assert not LoadedCache(tmp_path / 'loaded_runs.json').is_loaded(CACHE_KEY)
 
+    def test_stale_reap_healed_via_resume(self, tmp_path, mock_init):
+        # A finished import comes back FAILED (a stale-run reap silently rejected
+        # our COMPLETED). The loader must detect it via read-back and heal it with
+        # a resume+finish, ending up loaded — not stranded.
+        init, op = mock_init
+        _stage_run(tmp_path)
+        with mock.patch.object(
+            PlutoLoader, '_read_run_status', side_effect=['FAILED', 'COMPLETED']
+        ):
+            summary = PlutoLoader(tmp_path).load()
+        assert summary == {'loaded': 1, 'skipped': 0, 'failed': []}
+        # the heal reopened the run: a second init with resume=True
+        assert any(c.kwargs.get('resume') is True for c in init.call_args_list)
+        assert LoadedCache(tmp_path / 'loaded_runs.json').is_loaded(CACHE_KEY)
+
+    def test_stale_reap_unhealable_reported_not_loaded(self, tmp_path, mock_init):
+        # If the run stays FAILED after the bounded heal attempts, it is recorded
+        # failed (a later pass retries) and NOT cached as loaded.
+        _, op = mock_init
+        _stage_run(tmp_path)
+        with mock.patch.object(PlutoLoader, '_read_run_status', return_value='FAILED'):
+            summary = PlutoLoader(tmp_path).load()
+        assert summary['loaded'] == 0
+        assert [f['run_id'] for f in summary['failed']] == ['abc123']
+        assert 'not confirmed' in summary['failed'][0]['error']
+        assert not LoadedCache(tmp_path / 'loaded_runs.json').is_loaded(CACHE_KEY)
+
+    def test_unverifiable_status_proceeds_best_effort(self, tmp_path, mock_init):
+        # If we can't read the status back at all (endpoint down / network),
+        # don't fail a run over our own inability to verify — proceed loaded.
+        _, op = mock_init
+        _stage_run(tmp_path)
+        with mock.patch.object(PlutoLoader, '_read_run_status', return_value=None):
+            summary = PlutoLoader(tmp_path).load()
+        assert summary == {'loaded': 1, 'skipped': 0, 'failed': []}
+
+    def test_wandb_failed_run_not_status_verified(self, tmp_path, mock_init):
+        # A run that failed on wandb is intended FAILED; a FAILED status is
+        # correct, so the loader must not try to "heal" it to COMPLETED — the
+        # read-back is skipped entirely for code=1.
+        _, op = mock_init
+        _stage_run(tmp_path, run_id='crashed1', state='crashed')
+        with mock.patch.object(
+            PlutoLoader, '_read_run_status', return_value='FAILED'
+        ) as read:
+            summary = PlutoLoader(tmp_path).load()
+        assert summary['loaded'] == 1
+        op.finish.assert_called_once_with(code=1)
+        read.assert_not_called()
+
+    def test_read_run_status_parses_and_degrades(self, tmp_path):
+        loader = PlutoLoader(tmp_path)
+        op = mock.MagicMock()
+        op.settings._op_id = 7
+        op.settings.url_api = 'http://api'
+        op.settings._auth = 'tok'
+        ok = mock.MagicMock(status_code=200)
+        ok.json.return_value = {'status': 'COMPLETED'}
+        with mock.patch('pluto.migrate.loader.httpx.get', return_value=ok) as g:
+            assert loader._read_run_status(op) == 'COMPLETED'
+        assert 'api/runs/details/7' in g.call_args.args[0]
+        # a non-200 and an exception both degrade to None (best-effort)
+        with mock.patch(
+            'pluto.migrate.loader.httpx.get',
+            return_value=mock.MagicMock(status_code=404),
+        ):
+            assert loader._read_run_status(op) is None
+        with mock.patch('pluto.migrate.loader.httpx.get', side_effect=Exception('x')):
+            assert loader._read_run_status(op) is None
+
     def test_skip_run_ids_bypasses_run_without_attempting(self, tmp_path, mock_init):
         # A run whose id is in skip_run_ids (already attempted-and-failed in an
         # earlier `all` pass) is skipped outright — never re-initialized, never

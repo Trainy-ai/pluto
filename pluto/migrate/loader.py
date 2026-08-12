@@ -45,6 +45,11 @@ tag = 'migrate'
 
 CONSOLE_BATCH_SIZE = 1000
 
+# After finishing a run we read its status back and, on a mismatch, heal it by
+# resume+finish. This bounds how many heal attempts we make before giving up and
+# reporting the run failed (so a later pass retries it rather than looping).
+_VERIFY_MAX_ATTEMPTS = 3
+
 # All three take (data, caption=...); table-file and inline histograms are
 # handled separately in _replay_media.
 _MEDIA_LOADERS = {
@@ -222,6 +227,14 @@ class PlutoLoader:
                                 # failure instead of marking a still-RUNNING run
                                 # loaded (and skipping it forever).
                                 raise restore._status_update_error
+                            rcode = 0 if manifest.get('state') == 'finished' else 1
+                            if not self._verify_and_heal(
+                                restore, manifest, external_id, run_dir, rcode
+                            ):
+                                raise RuntimeError(
+                                    'terminal status not confirmed after '
+                                    f'{_VERIFY_MAX_ATTEMPTS} heals'
+                                )
                         except Exception as e:
                             # Restore failed: the run is still RUNNING server-side
                             # and its terminal status was never written. Do NOT
@@ -244,7 +257,8 @@ class PlutoLoader:
                         continue
 
                 self._replay_run(run_dir, op)
-                op.finish(code=0 if manifest.get('state') == 'finished' else 1)
+                code = 0 if manifest.get('state') == 'finished' else 1
+                op.finish(code=code)
                 if op._status_update_error is not None:
                     # finish() replayed all data but could NOT confirm the run's
                     # terminal status on the server (a dropped connection that
@@ -262,6 +276,25 @@ class PlutoLoader:
                             'run_id': run_id,
                             'error': (
                                 f'status unconfirmed: {type(err).__name__}: {err}'
+                            ),
+                        }
+                    )
+                    continue
+                # The finish reported success, but a stale-run reap can have
+                # marked this back-dated import FAILED and silently rejected our
+                # COMPLETED. Confirm it stuck (and heal a false reap) before we
+                # cache it as loaded — otherwise a re-run skips a stranded run.
+                if not self._verify_and_heal(op, manifest, external_id, run_dir, code):
+                    logger.error(
+                        f'{tag}: {external_id} not confirmed COMPLETED after '
+                        f'{_VERIFY_MAX_ATTEMPTS} heal attempts (stale-run reap?)'
+                    )
+                    failed.append(
+                        {
+                            'run_id': run_id,
+                            'error': (
+                                'terminal status not confirmed after '
+                                f'{_VERIFY_MAX_ATTEMPTS} heals'
                             ),
                         }
                     )
@@ -307,6 +340,102 @@ class PlutoLoader:
         if project in self.exclude_projects:
             return False
         return self.projects is None or project in self.projects
+
+    def _read_run_status(self, op: Any) -> Optional[str]:
+        """Read the run's current server-side status, or None if unreadable.
+
+        Confirms a finished import actually landed as COMPLETED. The server's
+        stale-run monitor can reap a freshly-created, back-dated import to
+        FAILED in a sub-second race; the client's COMPLETED is then silently
+        rejected (HTTP 200, no effect). Only a read-back catches that. Returns
+        None on any error so the caller degrades to best-effort rather than
+        failing a run because we merely couldn't verify it.
+        """
+        s = getattr(op, 'settings', None)
+        run_id = getattr(s, '_op_id', None)
+        url_api = getattr(s, 'url_api', None)
+        auth = getattr(s, '_auth', None)
+        if run_id is None or not url_api or not auth:
+            return None
+        try:
+            r = httpx.get(
+                f'{url_api}/api/runs/details/{run_id}',
+                headers={'Authorization': f'Bearer {auth}'},
+                timeout=15.0,
+            )
+            if r.status_code == 200:
+                return r.json().get('status')
+            logger.debug(
+                '%s: status read-back for run %s returned HTTP %s',
+                tag,
+                run_id,
+                r.status_code,
+            )
+        except Exception as e:
+            logger.debug('%s: status read-back failed for run %s: %s', tag, run_id, e)
+        return None
+
+    def _verify_and_heal(
+        self,
+        op: Any,
+        manifest: Dict[str, Any],
+        external_id: str,
+        run_dir: Path,
+        code: int,
+    ) -> bool:
+        """Confirm the run reached its intended terminal status; heal a false reap.
+
+        The stale-run monitor can mark a just-created back-dated import FAILED in
+        a race, after which the client's COMPLETED is silently rejected. We read
+        the status back; on a definite mismatch we resume+finish — reopening the
+        run to RUNNING and finishing again, which sidesteps the terminal-status
+        precedence guard the way a plain re-finish cannot, and replays nothing so
+        no data duplicates. Bounded to ``_VERIFY_MAX_ATTEMPTS``.
+
+        Only a ``finished`` import (code 0) is at risk: a wandb failure that
+        lands FAILED is already correct, so we skip it. Returns True once
+        confirmed COMPLETED, or when the status simply can't be read (best-effort
+        — don't fail a run over our inability to verify). Returns False only on a
+        confirmed mismatch we could not heal, so the caller records it failed and
+        a later pass retries rather than caching a stranded run as loaded.
+        """
+        if code != 0:
+            return True
+        expected = 'COMPLETED'
+        for _ in range(_VERIFY_MAX_ATTEMPTS):
+            status = self._read_run_status(op)
+            if status == expected:
+                return True
+            if status is None:
+                # Couldn't read (transient blip or endpoint unavailable): retry
+                # the read; do NOT heal a run we can't prove is broken.
+                continue
+            logger.warning(
+                '%s: %s came back %r, expected COMPLETED (likely a stale-run '
+                'reap); healing via resume+finish',
+                tag,
+                external_id,
+                status,
+            )
+            try:
+                op = self._init_run(manifest, external_id, run_dir, resume=True)
+                op.finish(code=0)
+            except Exception as e:
+                logger.warning(
+                    '%s: heal attempt for %s failed: %s', tag, external_id, e
+                )
+        final = self._read_run_status(op)
+        if final == expected:
+            return True
+        if final is None:
+            logger.warning(
+                '%s: could not verify terminal status for %s; proceeding as '
+                'loaded (best-effort)',
+                tag,
+                external_id,
+            )
+            return True
+        return False
 
     def _init_run(
         self,
