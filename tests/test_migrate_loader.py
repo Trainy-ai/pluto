@@ -746,13 +746,38 @@ class TestPlutoLoader:
         assert not LoadedCache(tmp_path / 'loaded_runs.json').is_loaded(CACHE_KEY)
 
     def test_unverifiable_status_proceeds_best_effort(self, tmp_path, mock_init):
-        # If we can't read the status back at all (endpoint down / network),
-        # don't fail a run over our own inability to verify — proceed loaded.
+        # If we can't read the status back at all (endpoint down / network) and no
+        # heal was attempted, don't fail a run over our inability to verify.
         _, op = mock_init
         _stage_run(tmp_path)
         with mock.patch.object(PlutoLoader, '_read_run_status', return_value=None):
             summary = PlutoLoader(tmp_path).load()
         assert summary == {'loaded': 1, 'skipped': 0, 'failed': []}
+
+    def test_heal_finish_unconfirmed_reported_not_loaded(self, tmp_path, mock_init):
+        # The heal's OWN finish can drop its terminal-status update (recorded, not
+        # raised). If it does AND we then can't read the status back, the run may
+        # still be RUNNING — it must be reported failed (a re-run retries), NOT
+        # best-effort marked loaded. Guards the Cursor "heal ignores status update
+        # failure" finding.
+        _, op = mock_init
+        calls = {'n': 0}
+
+        def _finish(code=None):
+            calls['n'] += 1
+            if calls['n'] >= 2:  # the heal's finish (2nd overall) can't confirm
+                op._status_update_error = ConnectionResetError('heal finish dropped')
+
+        op.finish.side_effect = _finish
+        _stage_run(tmp_path)
+        # first read: FAILED (triggers heal); then unreadable (can't confirm)
+        with mock.patch.object(
+            PlutoLoader, '_read_run_status', side_effect=['FAILED', None, None, None]
+        ):
+            summary = PlutoLoader(tmp_path).load()
+        assert summary['loaded'] == 0
+        assert [f['run_id'] for f in summary['failed']] == ['abc123']
+        assert not LoadedCache(tmp_path / 'loaded_runs.json').is_loaded(CACHE_KEY)
 
     def test_wandb_failed_run_not_status_verified(self, tmp_path, mock_init):
         # A run that failed on wandb is intended FAILED; a FAILED status is

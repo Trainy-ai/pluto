@@ -402,6 +402,11 @@ class PlutoLoader:
         if code != 0:
             return True
         expected = 'COMPLETED'
+        # Set once we heal and the heal's own finish can't confirm its terminal
+        # status (or the heal raises). While set, an unreadable final status must
+        # NOT be treated as best-effort success — the run may be stuck RUNNING, so
+        # we report it failed and let a re-run retry rather than cache it loaded.
+        unconfirmed = False
         for _ in range(_VERIFY_MAX_ATTEMPTS):
             status = self._read_run_status(op)
             if status == expected:
@@ -420,14 +425,22 @@ class PlutoLoader:
             try:
                 op = self._init_run(manifest, external_id, run_dir, resume=True)
                 op.finish(code=0)
+                # finish() records a dropped terminal-status update without
+                # raising (same as the main/restore paths), so check it
+                # explicitly rather than assuming the heal stuck.
+                unconfirmed = op._status_update_error is not None
             except Exception as e:
+                unconfirmed = True
                 logger.warning(
                     '%s: heal attempt for %s failed: %s', tag, external_id, e
                 )
         final = self._read_run_status(op)
         if final == expected:
             return True
-        if final is None:
+        if final is None and not unconfirmed:
+            # Either we never saw a real mismatch (the status endpoint is just
+            # unavailable) or the last heal's finish confirmed — don't fail a run
+            # over our own inability to verify.
             logger.warning(
                 '%s: could not verify terminal status for %s; proceeding as '
                 'loaded (best-effort)',

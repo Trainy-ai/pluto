@@ -16,6 +16,7 @@ import logging
 import os
 import re
 import shutil
+import time
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
@@ -31,6 +32,12 @@ logger = logging.getLogger(f'{__name__.split(".")[0]}')
 tag = 'migrate'
 
 MANIFEST_FILENAME = 'manifest.json'
+
+# A crash-truncated wandb cache parquet is 0 bytes and stays that way; an
+# in-progress download is only briefly 0 bytes at creation. The empty-cache purge
+# reaps only files that have been 0 bytes at least this long, so it never deletes
+# another worker's active download from the shared cache under --workers>1.
+_EMPTY_CACHE_STALE_SECONDS = 60
 
 # wandb encodes non-finite metric points as JSON strings; map them back to the
 # real floats so they migrate instead of being dropped as "text".
@@ -270,10 +277,13 @@ class WandbExporter:
         env = os.environ.get('WANDB_CACHE_DIR')
         cache = Path(env) if env else Path.home() / '.cache' / 'wandb'
         removed: List[str] = []
+        now = time.time()
         try:
             for p in cache.rglob('*.parquet'):
                 try:
-                    if p.stat().st_size == 0:
+                    st = p.stat()
+                    age = now - st.st_mtime
+                    if st.st_size == 0 and age > _EMPTY_CACHE_STALE_SECONDS:
                         p.unlink()
                         removed.append(p.name)
                 except OSError:
@@ -312,6 +322,15 @@ class WandbExporter:
                     continue
                 if self.before_ms is not None and created_ms > self.before_ms:
                     continue
+            elif self.after_ms is not None or self.before_ms is not None:
+                # A date window was requested but this run has no usable
+                # created_at; don't silently widen the export past what was
+                # asked — skip it, loudly.
+                logger.warning(
+                    f'{tag}: {run.id} has no parseable created_at; excluding it '
+                    'from the date-filtered export'
+                )
+                continue
 
             run_dir = runs_root / run.id
             if is_run_exported(run_dir):

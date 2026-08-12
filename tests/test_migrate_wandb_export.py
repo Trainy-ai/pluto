@@ -11,6 +11,8 @@ resume-by-sentinel, and the artifact size cap.
 from __future__ import annotations
 
 import json
+import os
+import time
 from pathlib import Path
 
 import pytest
@@ -522,14 +524,21 @@ class TestWandbExporter:
         cache.mkdir(parents=True)
         good = cache / 'good.parquet'
         good.write_bytes(b'PAR1realdata')
-        empty = cache / 'empty.parquet'  # crash-truncated
+        empty = cache / 'empty.parquet'  # crash-truncated, and stale
         empty.write_bytes(b'')
+        old = time.time() - 3600
+        os.utime(empty, (old, old))  # aged past the stale threshold
+        # A fresh 0-byte file = another worker's in-progress download; the age
+        # gate must spare it so parallel projects don't delete each other's data.
+        fresh = cache / 'fresh.parquet'
+        fresh.write_bytes(b'')
         monkeypatch.setenv('WANDB_CACHE_DIR', str(tmp_path / 'wandbcache'))
         exporter = WandbExporter(
             entity='acme', project='vision', output_dir=tmp_path, api=FakeApi([])
         )
-        assert exporter._purge_empty_wandb_cache() == 1
-        assert good.exists() and not empty.exists()  # only the empty one removed
+        assert exporter._purge_empty_wandb_cache() == 1  # only the stale empty one
+        assert good.exists() and not empty.exists()
+        assert fresh.exists()  # active download spared
 
     def test_run_ids_filter(self, tmp_path):
         wanted, unwanted = FakeRun(run_id='keep'), FakeRun(run_id='drop')
@@ -564,6 +573,23 @@ class TestWandbExporter:
             entity='acme', project='vision', output_dir=tmp_path, api=FakeApi([])
         )
         assert exp.after_ms is None and exp.before_ms is None
+
+    def test_undated_run_excluded_when_date_filter_set(self, tmp_path):
+        # A run with no parseable created_at must NOT silently slip through a
+        # requested date window — it's excluded, not exported.
+        run = FakeRun()
+        run.created_at = 'not-a-date'  # parse_iso_ms -> None
+        _, run_dir, summary = _export(tmp_path, run=run, after='2020-01-01')
+        assert summary['exported'] == 0
+        assert not run_dir.exists()
+
+    def test_undated_run_kept_when_no_date_filter(self, tmp_path):
+        # Without any date filter, an undated run still exports (unchanged).
+        run = FakeRun()
+        run.created_at = 'not-a-date'
+        _, run_dir, summary = _export(tmp_path, run=run)
+        assert summary['exported'] == 1
+        assert run_dir.exists()
 
     def test_boolean_metric_recorded_as_float(self, tmp_path):
         run = FakeRun()
