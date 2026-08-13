@@ -408,6 +408,52 @@ class TestTerminalStatusResilience:
         assert settings._op_status == 0
 
 
+class TestFinishDrainWarning:
+    """finish()'s 'records may not have been uploaded' warning must not fire when
+    the SIGTERM drain already emptied the queue (pending == 0) — otherwise it
+    prints a contradictory '0 records may not have been uploaded' that reads like
+    data loss at the moment nothing was lost.
+    """
+
+    def _noop_op(self):
+        from pluto.op import Op
+        from pluto.sets import Settings
+
+        settings = Settings()
+        settings.mode = 'noop'
+        settings.sync_process_enabled = False  # don't spawn a real sync subprocess
+        op = Op(config={}, settings=settings)
+        op.start()
+        return op
+
+    def _warns(self, op):
+        from unittest.mock import patch
+
+        with patch('pluto.op.logger.warning') as warn:
+            op.finish()
+        return ' '.join(str(c.args[0]) for c in warn.call_args_list if c.args)
+
+    def test_no_warning_when_drain_emptied_queue(self):
+        from unittest.mock import MagicMock
+
+        op = self._noop_op()
+        sm = MagicMock()
+        sm.stop.return_value = False  # 30s wait "timed out"
+        sm.get_pending_count.return_value = 0  # but the drain emptied it
+        op._sync_manager = sm
+        assert 'may not have been uploaded' not in self._warns(op)
+
+    def test_warns_when_records_genuinely_pending(self):
+        from unittest.mock import MagicMock
+
+        op = self._noop_op()
+        sm = MagicMock()
+        sm.stop.return_value = False
+        sm.get_pending_count.return_value = 5  # genuinely unsent
+        op._sync_manager = sm
+        assert '5 records may not have been uploaded' in self._warns(op)
+
+
 class TestExcepthookSubprocess:
     """
     End-to-end test: run a script that raises an unhandled exception

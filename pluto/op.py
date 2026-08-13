@@ -1164,12 +1164,18 @@ class Op:
                         wait=True,
                     )
                     if not sync_completed:
+                        # stop() SIGTERMs the sync process on timeout, and its
+                        # unthrottled drain usually empties the queue before we
+                        # read the count here — so only warn when records are
+                        # genuinely still unsent (avoids a contradictory
+                        # "0 records may not have been uploaded").
                         pending = self._sync_manager.get_pending_count()
-                        logger.warning(
-                            f'{tag}: Sync did not complete within timeout, '
-                            f'{pending} records may not have been uploaded. '
-                            f'Data is preserved in {self._sync_manager.db_path}'
-                        )
+                        if pending > 0:
+                            logger.warning(
+                                f'{tag}: Sync did not complete within timeout, '
+                                f'{pending} records may not have been uploaded. '
+                                f'Data is preserved in {self._sync_manager.db_path}'
+                            )
                 self._sync_manager.close()
                 self._sync_manager = None
 
