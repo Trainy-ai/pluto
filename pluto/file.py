@@ -1,4 +1,6 @@
 import hashlib
+import io
+import json
 import logging
 import mimetypes
 import os
@@ -56,6 +58,13 @@ class File:
     # override this instance attribute in their __init__; the class-level default
     # ensures it always exists (e.g. on a directly-constructed File).
     _caption: Optional[str] = None
+    # Optional opaque JSON string of image annotations (wandb-shape boxes/masks),
+    # sent to the server as mlop_files.annotations. Only Image sets it.
+    _annotations: Optional[str] = None
+    # Optional override for the upload payload's fileType (e.g. "mask" for a
+    # segmentation-mask PNG, so the frontend hides it from the media grid).
+    # None → fileType is derived from the extension as usual.
+    _upload_file_type: Optional[str] = None
 
     def __init__(
         self,
@@ -225,12 +234,25 @@ class Image(File):
         self,
         data: Union[str, 'PILImage.Image', np.ndarray, bytes, bytearray],
         caption: Optional[str] = None,
+        boxes: Optional[Dict[str, Any]] = None,
+        masks: Optional[Dict[str, Any]] = None,
+        annotations: Optional[Union[str, Dict[str, Any]]] = None,
     ) -> None:
         self._name = caption + f'.{uuid.uuid4()}' if caption else f'{uuid.uuid4()}'
         # Preserve the raw caption separately so it can be sent to the server
         # as a dedicated field (mlop_files.caption); _name keeps the legacy
         # caption-as-filename behavior for back-compat with older servers.
         self._caption = caption
+        # Image annotations (wandb-shape boxes/masks) → mlop_files.annotations.
+        # ``annotations`` is a ready JSON blob (raw string/dict) — used by the
+        # wandb migration, which forwards wandb's own {boxes, masks} verbatim.
+        # ``boxes`` ({layer: {box_data, class_labels}}) is folded in with each box
+        # defaulted to domain="pixel". ``masks`` ({layer: {mask_data|path,
+        # class_labels}}) each become a separate PNG uploaded as fileType "mask"
+        # and referenced by fileName; the mask PNGs to upload alongside are
+        # collected in ``_annotation_files``.
+        self._annotation_files: list = []
+        self._annotations = self._build_annotations(annotations, boxes, masks)
         self._id = f'{uuid.uuid4()}{uuid.uuid4()}'.replace('-', '')
         self._ext = '.png'
         self._image: Any = None
@@ -263,6 +285,92 @@ class Image(File):
             else:
                 logger.debug(f'{self.tag}: attempted conversion from array')
                 self._image = make_compat_image_numpy(data)
+
+    def _build_annotations(
+        self,
+        annotations: Optional[Union[str, Dict[str, Any]]],
+        boxes: Optional[Dict[str, Any]],
+        masks: Optional[Dict[str, Any]],
+    ) -> Optional[str]:
+        """Assemble the annotations JSON string sent to the server.
+
+        ``annotations`` (a ready JSON string/dict, wandb's {boxes, masks} shape)
+        is forwarded as-is; ``boxes`` is folded into ``annotations.boxes`` with
+        each box defaulted to ``domain: "pixel"``; ``masks`` each become a PNG
+        (uploaded separately as fileType "mask") referenced by ``fileName``.
+        Returns None when there is nothing to attach.
+        """
+        # Ready JSON string with nothing to merge → forward verbatim.
+        if isinstance(annotations, str) and not boxes and not masks:
+            return annotations or None
+        result: Dict[str, Any] = {}
+        if isinstance(annotations, str):
+            try:
+                parsed = json.loads(annotations)
+                result = parsed if isinstance(parsed, dict) else {}
+            except (ValueError, TypeError):
+                result = {}
+        elif isinstance(annotations, dict):
+            result = dict(annotations)
+        if boxes:
+            merged = dict(result.get('boxes') or {})
+            for layer, spec in boxes.items():
+                if not isinstance(spec, dict):
+                    continue
+                out = dict(spec)
+                box_data = out.get('box_data')
+                if isinstance(box_data, list):
+                    out['box_data'] = [
+                        {'domain': 'pixel', **b} if isinstance(b, dict) else b
+                        for b in box_data
+                    ]
+                merged[layer] = out
+            if merged:
+                result['boxes'] = merged
+        if masks:
+            merged_masks = dict(result.get('masks') or {})
+            for layer, spec in masks.items():
+                entry = self._stage_mask(spec)
+                if entry is not None:
+                    merged_masks[layer] = entry
+            if merged_masks:
+                result['masks'] = merged_masks
+        return json.dumps(result) if result else None
+
+    def _stage_mask(self, spec: Any) -> Optional[Dict[str, Any]]:
+        """Turn one mask-layer spec into an uploadable PNG + its annotations ref.
+
+        ``spec`` is ``{mask_data: <HxW class-id array>}`` (native — encode a PNG
+        with the class id in the red channel) or ``{path: <mask.png>}``
+        (migration — forward wandb's mask file). The PNG is queued in
+        ``_annotation_files`` (uploaded as fileType "mask"); returns
+        ``{fileName, class_labels?}`` for ``annotations.masks[layer]``.
+        """
+        if not isinstance(spec, dict):
+            return None
+        png: Union[str, bytes, None] = None
+        if spec.get('path'):
+            png = spec['path']  # migration: an existing mask PNG on disk
+        elif spec.get('mask_data') is not None:
+            arr = np.asarray(spec['mask_data']).astype('uint8')
+            zeros = np.zeros_like(arr)
+            rgb = np.stack([arr, zeros, zeros], axis=-1)  # class id → red channel
+            buf = io.BytesIO()
+            PILImage.fromarray(rgb, 'RGB').save(buf, format='PNG')
+            png = buf.getvalue()
+        if png is None:
+            return None
+        mask_name = f'{uuid.uuid4()}.mask'
+        mask_img = Image(png)
+        mask_img._name = mask_name  # uploaded fileName = f'{mask_name}.png'
+        # Marks the upload's fileType as "mask" so the frontend hides it from the
+        # media grid and resolves it from annotations by fileName.
+        mask_img._upload_file_type = 'mask'
+        self._annotation_files.append(mask_img)
+        entry: Dict[str, Any] = {'fileName': f'{mask_name}.png'}
+        if spec.get('class_labels'):
+            entry['class_labels'] = spec['class_labels']
+        return entry
 
     def load(self, dir: Optional[str] = None) -> None:
         if not self._path:

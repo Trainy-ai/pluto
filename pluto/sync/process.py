@@ -22,7 +22,7 @@ import sys
 import time
 from enum import Enum
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 try:
     from filelock import FileLock
@@ -201,20 +201,53 @@ class SyncProcessManager:
         timeout = timeout or self.settings.get('sync_process_shutdown_timeout', 30.0)
 
         start = time.time()
+        completed = False
         while time.time() - start < timeout:
             pending = self.store.get_pending_count(self.run_id)
             if pending == 0:
                 self.store.mark_run_synced(self.run_id)
                 logger.info('Sync process completed successfully')
-                return True
+                completed = True
+                break
             time.sleep(0.1)
 
-        pending = self.store.get_pending_count(self.run_id)
-        logger.warning(
-            f'Sync process did not complete within {timeout}s, '
-            f'{pending} records pending. Data preserved in {self.db_path}'
-        )
-        return False
+        if not completed:
+            pending = self.store.get_pending_count(self.run_id)
+            logger.warning(
+                f'Sync process did not complete within {timeout}s, '
+                f'{pending} records pending. Data preserved in {self.db_path}'
+            )
+
+        # The data is flushed, but the sync process is a persistent daemon: its
+        # main loop only breaks on SIGTERM or when the PARENT dies. If we just
+        # return here it keeps running until *this* process exits. A long-lived
+        # caller that spawns one sync process per run (e.g. a bulk pluto.migrate
+        # load of hundreds of runs in a single invocation) would then accumulate
+        # one live subprocess per run and exhaust memory. Terminate it now so its
+        # lifetime is scoped to the run, not to the whole caller.
+        self._terminate_process(timeout)
+        return completed
+
+    def _terminate_process(self, timeout: float) -> None:
+        """SIGTERM the sync subprocess and reap it, escalating to SIGKILL.
+
+        Safe to call after the data flush above: the process drains (a no-op
+        when pending is already 0), closes its clients, and exits. Bounded so a
+        subprocess that hangs on exit can't stall the caller.
+        """
+        proc = self._process
+        if proc is None or proc.poll() is not None:
+            return
+        try:
+            proc.terminate()
+            try:
+                proc.wait(timeout=max(5.0, min(timeout, 30.0)))
+            except subprocess.TimeoutExpired:
+                logger.warning('Sync process did not exit on SIGTERM; killing it')
+                proc.kill()
+                proc.wait(timeout=5)
+        except Exception as e:
+            logger.debug(f'Failed to terminate sync process: {e}')
 
     def enqueue_metrics(
         self,
@@ -231,6 +264,26 @@ class SyncProcessManager:
             step=step,
         )
         # Update heartbeat to show we're alive
+        self.store.heartbeat(self.run_id)
+
+    def enqueue_metrics_batch(
+        self,
+        items: List[Tuple[Dict[str, Any], int, int]],
+    ) -> None:
+        """Enqueue many metric groups in one SQLite transaction.
+
+        ``items`` are ``(metrics, timestamp_ms, step)`` tuples. Used by
+        backfill tooling (pluto.migrate) where per-group ``enqueue_metrics``
+        transactions would dominate replay time.
+        """
+        if not items:
+            return
+        self.store.enqueue_batch(
+            [
+                (self.run_id, RecordType.METRIC, metrics, timestamp_ms, step)
+                for metrics, timestamp_ms, step in items
+            ]
+        )
         self.store.heartbeat(self.run_id)
 
     def enqueue_config(self, config: Dict[str, Any], timestamp_ms: int) -> None:
@@ -255,7 +308,7 @@ class SyncProcessManager:
         self,
         log_name: str,
         data_type: str,
-        data_dict: Dict[str, Any],
+        data_dict: Union[Dict[str, Any], str],
         timestamp_ms: int,
         step: Optional[int] = None,
     ) -> None:
@@ -354,6 +407,7 @@ class SyncProcessManager:
         timestamp_ms: int,
         step: Optional[int] = None,
         caption: Optional[str] = None,
+        annotations: Optional[str] = None,
         sample_index: int = 0,
     ) -> None:
         """
@@ -373,6 +427,7 @@ class SyncProcessManager:
             timestamp_ms=timestamp_ms,
             step=step,
             caption=caption,
+            annotations=annotations,
             sample_index=sample_index,
         )
         # Update heartbeat to show we're alive
@@ -1158,6 +1213,10 @@ class _SyncUploader:
         """
         if not self.url_num:
             return
+        if self.settings.get('disable_system_metrics'):
+            # Backfill runs (pluto.migrate) must not receive current-time
+            # sync-health datapoints from the migration host.
+            return
 
         data = {f'sys/pluto.{k}': v for k, v in stats.items()}
         timestamp_ms = int(time.time() * 1000)
@@ -1182,12 +1241,17 @@ class _SyncUploader:
         lines = []
         for record in records:
             payload = record.payload
+            raw = payload.get('data', {})
+            data_type = payload.get('data_type', 'UNKNOWN')
+            # string-series carries a raw string value (e.g. 'warmup'); every
+            # other data type carries a dict that must be JSON-encoded.
+            data_field = raw if data_type == 'string-series' else json.dumps(raw)
             lines.append(
                 json.dumps(
                     {
                         'time': record.timestamp_ms,
-                        'data': json.dumps(payload.get('data', {})),
-                        'dataType': payload.get('data_type', 'UNKNOWN'),
+                        'data': data_field,
+                        'dataType': data_type,
                         'logName': payload.get('log_name', ''),
                         'step': record.step or 0,
                     }
@@ -1297,7 +1361,12 @@ class _SyncUploader:
         batch = []
         for f in file_records:
             file_ext = f.file_ext
-            file_type = file_ext[1:] if file_ext.startswith('.') else file_ext
+            # A special upload fileType (e.g. "mask") is stored on file_type and
+            # sent verbatim; otherwise derive it from the extension as before.
+            if f.file_type == 'mask':
+                file_type = 'mask'
+            else:
+                file_type = file_ext[1:] if file_ext.startswith('.') else file_ext
             entry: Dict[str, Any] = {
                 'fileName': f'{f.file_name}{f.file_ext}',
                 'fileSize': f.file_size,
@@ -1314,6 +1383,10 @@ class _SyncUploader:
             # unknown fields anyway).
             if f.caption is not None:
                 entry['caption'] = f.caption
+            # Opaque wandb-shape annotations JSON (boxes/masks); only when set so
+            # the payload is unchanged for un-annotated files / older servers.
+            if getattr(f, 'annotations', None) is not None:
+                entry['annotations'] = f.annotations
             batch.append(entry)
 
         body = json.dumps({'files': batch})

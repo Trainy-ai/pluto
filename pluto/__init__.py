@@ -8,6 +8,7 @@ from .data import Data, Graph, Histogram, Table
 from .file import Artifact, Audio, File, Image, Text, Video
 from .init import finish, init
 from .sets import Settings, setup
+from .sweep import agent, sweep
 from .sys import System
 from .util import generate_run_id
 
@@ -39,6 +40,8 @@ __all__ = (
     'setup',
     'query',
     'generate_run_id',
+    'sweep',
+    'agent',
 )
 
 __version__ = '0.0.27'

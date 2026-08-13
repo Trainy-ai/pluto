@@ -1,0 +1,474 @@
+"""
+Unit tests for the `pluto migrate wandb` CLI (pluto.migrate.cli).
+
+The CLI is thin arg-parsing over WandbExporter/PlutoLoader; both are
+mocked here. Heavy deps (wandb/pyarrow) must only be imported inside
+command handlers so `pluto --help` stays light — pinned by the
+subprocess help test.
+"""
+
+from __future__ import annotations
+
+import subprocess
+import sys
+from unittest import mock
+
+from pluto.migrate.cli import run_migrate
+
+
+def _mock_exporter(summary=None):
+    exporter = mock.MagicMock()
+    exporter.export.return_value = summary or {
+        'exported': 1,
+        'skipped': 0,
+        'failed': [],
+    }
+    return exporter
+
+
+def _mock_loader(summary=None):
+    loader = mock.MagicMock()
+    loader.load.return_value = summary or {'loaded': 1, 'skipped': 0, 'failed': []}
+    return loader
+
+
+class TestMigrateCli:
+    def test_export_wires_flags_to_exporter(self, tmp_path):
+        exporter = _mock_exporter()
+        with mock.patch(
+            'pluto.migrate.wandb_export.WandbExporter', return_value=exporter
+        ) as cls:
+            code = run_migrate(
+                [
+                    'wandb',
+                    'export',
+                    '--entity',
+                    'acme',
+                    '--project',
+                    'vision',
+                    '--output',
+                    str(tmp_path),
+                    '--run-id',
+                    'r1',
+                    '--run-id',
+                    'r2',
+                    '--after',
+                    '2025-01-01',
+                    '--no-artifacts',
+                    '--artifact-max-size-mb',
+                    '512',
+                ]
+            )
+        assert code == 0
+        kwargs = cls.call_args.kwargs
+        assert kwargs['entity'] == 'acme'
+        assert kwargs['project'] == 'vision'
+        assert kwargs['run_ids'] == ['r1', 'r2']
+        assert kwargs['after'] == '2025-01-01'
+        assert kwargs['include_artifacts'] is False
+        assert kwargs['artifact_max_bytes'] == 512 * 1024 * 1024
+        exporter.export.assert_called_once()
+
+    def test_load_wires_flags_to_loader(self, tmp_path):
+        loader = _mock_loader()
+        with mock.patch('pluto.migrate.loader.PlutoLoader', return_value=loader) as cls:
+            code = run_migrate(
+                [
+                    'wandb',
+                    'load',
+                    '--input',
+                    str(tmp_path),
+                    '--dest-project',
+                    'legacy',
+                    '--dry-run',
+                ]
+            )
+        assert code == 0
+        kwargs = cls.call_args.kwargs
+        assert kwargs['dest_project'] == 'legacy'
+        assert kwargs['dry_run'] is True
+        loader.load.assert_called_once()
+
+    def test_all_exports_then_loads(self, tmp_path):
+        exporter, loader = _mock_exporter(), _mock_loader()
+        with (
+            mock.patch(
+                'pluto.migrate.wandb_export.WandbExporter', return_value=exporter
+            ),
+            mock.patch('pluto.migrate.loader.PlutoLoader', return_value=loader),
+        ):
+            code = run_migrate(
+                [
+                    'wandb',
+                    'all',
+                    '--entity',
+                    'acme',
+                    '--project',
+                    'vision',
+                    '--output',
+                    str(tmp_path),
+                ]
+            )
+        assert code == 0
+        exporter.export.assert_called_once()
+        # `all` pipelines export + load, so load runs one or more passes.
+        assert loader.load.call_count >= 1
+
+    def test_artifact_max_size_zero_means_zero_cap(self, tmp_path):
+        exporter = _mock_exporter()
+        with mock.patch(
+            'pluto.migrate.wandb_export.WandbExporter', return_value=exporter
+        ) as cls:
+            run_migrate(
+                [
+                    'wandb',
+                    'export',
+                    '--entity',
+                    'acme',
+                    '--project',
+                    'vision',
+                    '--output',
+                    str(tmp_path),
+                    '--artifact-max-size-mb',
+                    '0',
+                ]
+            )
+        # 0 is an explicit cap (skip everything), not "unlimited"
+        assert cls.call_args.kwargs['artifact_max_bytes'] == 0
+
+    def test_all_still_loads_when_some_exports_failed(self, tmp_path):
+        exporter = _mock_exporter(
+            {'exported': 499, 'skipped': 0, 'failed': [{'run_id': 'x', 'error': 'e'}]}
+        )
+        loader = _mock_loader()
+        with (
+            mock.patch(
+                'pluto.migrate.wandb_export.WandbExporter', return_value=exporter
+            ),
+            mock.patch('pluto.migrate.loader.PlutoLoader', return_value=loader),
+        ):
+            code = run_migrate(
+                [
+                    'wandb',
+                    'all',
+                    '--entity',
+                    'acme',
+                    '--project',
+                    'vision',
+                    '--output',
+                    str(tmp_path),
+                ]
+            )
+        assert loader.load.call_count >= 1  # staged runs still load (pipelined)
+        assert code == 1  # but the failure is reported
+
+    def test_all_export_crash_is_not_reported_as_success(self, tmp_path):
+        # A crash in the export thread must surface as a non-zero exit, not 0.
+        loader = _mock_loader({'loaded': 0, 'skipped': 0, 'failed': []})
+        exporter = _mock_exporter()
+        exporter.export.side_effect = RuntimeError('wandb auth exploded')
+        with (
+            mock.patch(
+                'pluto.migrate.wandb_export.WandbExporter', return_value=exporter
+            ),
+            mock.patch('pluto.migrate.loader.PlutoLoader', return_value=loader),
+        ):
+            code = run_migrate(
+                [
+                    'wandb',
+                    'all',
+                    '--entity',
+                    'acme',
+                    '--project',
+                    'vision',
+                    '--output',
+                    str(tmp_path),
+                ]
+            )
+        assert code == 2  # export crash -> failure, not silent success
+
+    def test_single_project_worker_crash_exits_clean(self, tmp_path):
+        # A single --project whose exporter raises should return 2 with a clean
+        # message, not propagate a raw traceback.
+        exporter = _mock_exporter()
+        exporter.export.side_effect = RuntimeError('wandb auth exploded')
+        with mock.patch(
+            'pluto.migrate.wandb_export.WandbExporter', return_value=exporter
+        ):
+            code = run_migrate(
+                [
+                    'wandb',
+                    'export',
+                    '--entity',
+                    'acme',
+                    '--project',
+                    'vision',
+                    '--output',
+                    str(tmp_path),
+                ]
+            )
+        assert code == 2
+
+    def test_all_forwards_run_id_filter_to_load(self, tmp_path):
+        exporter, loader = _mock_exporter(), _mock_loader()
+        with (
+            mock.patch(
+                'pluto.migrate.wandb_export.WandbExporter', return_value=exporter
+            ),
+            mock.patch('pluto.migrate.loader.PlutoLoader', return_value=loader) as cls,
+        ):
+            run_migrate(
+                [
+                    'wandb',
+                    'all',
+                    '--entity',
+                    'acme',
+                    '--project',
+                    'vision',
+                    '--output',
+                    str(tmp_path),
+                    '--run-id',
+                    'r1',
+                    '--run-id',
+                    'r2',
+                ]
+            )
+        assert cls.call_args.kwargs['run_ids'] == ['r1', 'r2']
+
+    def test_all_attempts_failed_run_once_via_skip_run_ids(self, tmp_path):
+        # A run that fails in one poll pass must not be re-attempted on the next
+        # (re-running identical staged data can't help and risks duplicate media).
+        # The cli feeds already-failed run-ids into the loader's skip_run_ids, so
+        # each failure is at-most-once and the reported failure count stays exact.
+        import time
+
+        exporter = _mock_exporter()
+
+        def _slow_export(*a, **k):
+            time.sleep(0.25)  # stay alive across several fast poll passes
+            return {'exported': 1, 'skipped': 0, 'failed': []}
+
+        exporter.export.side_effect = _slow_export
+        loader = _mock_loader(
+            {'loaded': 0, 'skipped': 0, 'failed': [{'run_id': 'boom', 'error': 'e'}]}
+        )
+        with (
+            mock.patch(
+                'pluto.migrate.wandb_export.WandbExporter', return_value=exporter
+            ),
+            mock.patch('pluto.migrate.loader.PlutoLoader', return_value=loader) as cls,
+            mock.patch('pluto.migrate.cli._ALL_POLL_SECONDS', 0.02),
+        ):
+            code = run_migrate(
+                [
+                    'wandb',
+                    'all',
+                    '--entity',
+                    'acme',
+                    '--project',
+                    'vision',
+                    '--output',
+                    str(tmp_path),
+                ]
+            )
+        assert code == 1  # the single failure is reported once
+        # First pass skips nothing; once 'boom' has failed, every later pass
+        # passes it into skip_run_ids so the loader bypasses it.
+        assert cls.call_args_list[0].kwargs['skip_run_ids'] == []
+        assert any(c.kwargs['skip_run_ids'] == ['boom'] for c in cls.call_args_list[1:])
+
+    def test_all_rejects_dry_run(self, tmp_path):
+        with mock.patch('pluto.migrate.wandb_export.WandbExporter') as cls:
+            code = run_migrate(
+                [
+                    'wandb',
+                    'all',
+                    '--entity',
+                    'acme',
+                    '--project',
+                    'vision',
+                    '--output',
+                    str(tmp_path),
+                    '--dry-run',
+                ]
+            )
+        assert code == 2
+        cls.assert_not_called()  # must not silently do a full export
+
+    def test_failures_produce_nonzero_exit(self, tmp_path):
+        exporter = _mock_exporter(
+            {'exported': 0, 'skipped': 0, 'failed': [{'run_id': 'x', 'error': 'e'}]}
+        )
+        with mock.patch(
+            'pluto.migrate.wandb_export.WandbExporter', return_value=exporter
+        ):
+            code = run_migrate(
+                [
+                    'wandb',
+                    'export',
+                    '--entity',
+                    'acme',
+                    '--project',
+                    'vision',
+                    '--output',
+                    str(tmp_path),
+                ]
+            )
+        assert code == 1
+
+    def test_strict_fails_when_data_not_migrated(self, tmp_path):
+        cov = {'migrated': {'metric': 10}, 'not_migrated': {'unsupported(bokeh)': 3}}
+        exporter = _mock_exporter(
+            {'exported': 1, 'skipped': 0, 'failed': [], 'coverage': cov}
+        )
+        args = [
+            'wandb',
+            'export',
+            '--entity',
+            'acme',
+            '--project',
+            'vision',
+            '--output',
+            str(tmp_path),
+        ]
+        with mock.patch(
+            'pluto.migrate.wandb_export.WandbExporter', return_value=exporter
+        ):
+            # without --strict: dropped data is reported but exit stays 0
+            assert run_migrate(args) == 0
+            # with --strict: non-zero exit
+            assert run_migrate(args + ['--strict']) == 2
+
+    def test_strict_passes_when_full_coverage(self, tmp_path):
+        cov = {'migrated': {'metric': 10}, 'not_migrated': {}}
+        exporter = _mock_exporter(
+            {'exported': 1, 'skipped': 0, 'failed': [], 'coverage': cov}
+        )
+        with mock.patch(
+            'pluto.migrate.wandb_export.WandbExporter', return_value=exporter
+        ):
+            code = run_migrate(
+                [
+                    'wandb',
+                    'export',
+                    '--entity',
+                    'acme',
+                    '--project',
+                    'vision',
+                    '--output',
+                    str(tmp_path),
+                    '--strict',
+                ]
+            )
+        assert code == 0
+
+    def test_export_all_projects_when_no_project_given(self, tmp_path):
+        with (
+            mock.patch(
+                'pluto.migrate.wandb_export.list_wandb_projects',
+                return_value=['p1', 'p2', 'p3'],
+            ) as lst,
+            mock.patch('pluto.migrate.cli._export_one_project', return_value=0) as w,
+        ):
+            code = run_migrate(
+                [
+                    'wandb',
+                    'export',
+                    '--entity',
+                    'acme',
+                    '--output',
+                    str(tmp_path),
+                    '--workers',
+                    '1',
+                ]
+            )
+        assert code == 0
+        lst.assert_called_once()  # listed all projects under the entity
+        assert {c.args[1] for c in w.call_args_list} == {'p1', 'p2', 'p3'}
+
+    def test_exclude_drops_projects(self, tmp_path):
+        with (
+            mock.patch(
+                'pluto.migrate.wandb_export.list_wandb_projects',
+                return_value=['p1', 'p2', 'p3'],
+            ),
+            mock.patch('pluto.migrate.cli._export_one_project', return_value=0) as w,
+        ):
+            run_migrate(
+                [
+                    'wandb',
+                    'export',
+                    '--entity',
+                    'acme',
+                    '--output',
+                    str(tmp_path),
+                    '--workers',
+                    '1',
+                    '--exclude',
+                    'p2',
+                ]
+            )
+        assert {c.args[1] for c in w.call_args_list} == {'p1', 'p3'}
+
+    def test_single_project_skips_project_listing(self, tmp_path):
+        with (
+            mock.patch('pluto.migrate.wandb_export.list_wandb_projects') as lst,
+            mock.patch('pluto.migrate.cli._export_one_project', return_value=0) as w,
+        ):
+            run_migrate(
+                [
+                    'wandb',
+                    'export',
+                    '--entity',
+                    'acme',
+                    '--project',
+                    'only',
+                    '--output',
+                    str(tmp_path),
+                ]
+            )
+        lst.assert_not_called()  # explicit --project => no account listing
+        assert w.call_args.args[1] == 'only'
+
+    def test_dest_project_rejected_for_multiple_projects(self, tmp_path):
+        with mock.patch(
+            'pluto.migrate.wandb_export.list_wandb_projects',
+            return_value=['p1', 'p2'],
+        ):
+            code = run_migrate(
+                [
+                    'wandb',
+                    'all',
+                    '--entity',
+                    'acme',
+                    '--output',
+                    str(tmp_path),
+                    '--dest-project',
+                    'combined',
+                    '--workers',
+                    '1',
+                ]
+            )
+        assert code == 2  # can't rename many projects into one
+
+    def test_workers_over_project_count_reports_cap(self, tmp_path, capsys):
+        # Two staged (empty) projects; asking for more workers than projects
+        # must announce the cap, not silently print the requested count.
+        for p in ('p1', 'p2'):
+            (tmp_path / 'acme' / p / 'runs').mkdir(parents=True)
+        code = run_migrate(
+            ['wandb', 'load', '--input', str(tmp_path), '--workers', '16']
+        )
+        assert code == 0  # nothing staged inside -> clean no-op
+        out = capsys.readouterr().out
+        assert 'requested 16' in out
+        assert 'capped to 2 projects' in out
+
+    def test_top_level_cli_help_does_not_need_migrate_extras(self):
+        result = subprocess.run(
+            [sys.executable, '-m', 'pluto', 'migrate', '--help'],
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0
+        assert 'wandb' in result.stdout

@@ -312,12 +312,23 @@ class ServerInterface:
             self.client_api.close()
 
     def update_status(self, trace: Union[Any, None] = None) -> None:
-        """Update run status on the server (called at finish)."""
+        """Update run status on the server (called at finish).
+
+        This is the run's terminal state transition — losing it strands the
+        run in RUNNING (the UI then renders it as FAILED with an ever-growing
+        duration). So, unlike fire-and-forget uploads/heartbeats, it retries
+        transient connection resets and raises ``PlutoRequestError`` if it
+        still can't confirm the update, so the caller (e.g. the migration
+        loader) knows the finish was not recorded.
+        """
         self._post_v1(
             self.settings.url_stop,
             self.headers,
             make_compat_status_v1(self.settings, trace),
             client=self.client_api,
+            name='status',
+            raise_on_error=True,
+            retry_connection_errors=True,
         )
 
     def update_tags(self, tags: List[str]) -> None:
@@ -453,6 +464,7 @@ class ServerInterface:
         timeout: Optional[float] = None,
         suppress_httpx_logs: bool = False,
         raise_on_error: bool = False,
+        retry_connection_errors: bool = False,
     ):
         effective_max_retries = (
             max_retries
@@ -511,8 +523,17 @@ class ServerInterface:
             # former carries a server-provided reason worth raising. last_status
             # is threaded down from the last HTTP response so the exception
             # reports the real code (e.g. 500) rather than None.
-            if raise_on_error and error_info.startswith('HTTP '):
-                raise PlutoRequestError(error_info, status_code=last_status)
+            # A persistent server error carries a server-provided reason worth
+            # raising. When retry_connection_errors is set (critical one-shot
+            # requests like the terminal status update), also raise on an
+            # exhausted network failure so the caller can't mistake a dropped
+            # request for success.
+            if raise_on_error and (
+                error_info.startswith('HTTP ') or retry_connection_errors
+            ):
+                raise PlutoRequestError(
+                    error_info or 'request failed', status_code=last_status
+                )
 
             return None
 
@@ -580,16 +601,34 @@ class ServerInterface:
             httpx.RemoteProtocolError,
             httpx.LocalProtocolError,
         ) as e:
-            # Treat connection errors as shutdown signals - don't retry
-            # This prevents hanging during atexit when sockets are being torn down
+            if not retry_connection_errors:
+                # Default: treat connection errors as shutdown signals - don't
+                # retry. This prevents hanging during atexit when sockets are
+                # being torn down (heartbeat / trigger / streaming-upload spam).
+                logger.debug(
+                    '%s: %s: connection error (likely shutdown): %s: %s',
+                    tag,
+                    name,
+                    type(e).__name__,
+                    e,
+                )
+                return None
+            # Critical one-shot request (e.g. the terminal status update): a
+            # keep-alive socket dropped mid-request is transient, NOT a shutdown
+            # signal. Fall through to the retry/backoff path below so a single
+            # reset can't silently strand the run's finished status on the
+            # server (which then shows the run as stuck / FAILED forever).
+            error_info = f'{type(e).__name__}: {str(e)}'
             logger.debug(
-                '%s: %s: connection error (likely shutdown): %s: %s',
+                '%s: %s: attempt %s/%s: connection error from %s: %s: %s',
                 tag,
                 name,
+                retry + 1,
+                effective_max_retries + 1,
+                url,
                 type(e).__name__,
                 e,
             )
-            return None
         except Exception as e:
             # Capture error info for potential failure logging
             error_info = f'{type(e).__name__}: {str(e)}'
@@ -626,6 +665,7 @@ class ServerInterface:
             timeout=timeout,
             suppress_httpx_logs=suppress_httpx_logs,
             raise_on_error=raise_on_error,
+            retry_connection_errors=retry_connection_errors,
         )
 
     def _put_v1(
@@ -661,6 +701,7 @@ class ServerInterface:
         timeout: Optional[float] = None,
         suppress_httpx_logs: bool = False,
         raise_on_error: bool = False,
+        retry_connection_errors: bool = False,
     ):
         # Support both queue and direct content
         if isinstance(q, queue.Queue):
@@ -683,6 +724,7 @@ class ServerInterface:
             timeout=timeout,
             suppress_httpx_logs=suppress_httpx_logs,
             raise_on_error=raise_on_error,
+            retry_connection_errors=retry_connection_errors,
         )
 
         if (

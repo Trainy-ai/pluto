@@ -32,6 +32,11 @@ nvidia-ml-py = ">=11.515.0"
 rich = ">=13.0"
 sentry-sdk = ">=2.0"
 soundfile = ">=0.12"
+# migrate extra: wandb -> pluto historical data migration (pluto migrate wandb)
+wandb = { version = ">=0.16", optional = true }
+pyarrow = { version = ">=15", optional = true }
+# sweep extra: Bayesian search for pluto.sweep(method="bayes")
+optuna = { version = ">=3.0", optional = true }
 
 [tool.poetry.group.dev.dependencies]
 mypy = "^1.10.0"
@@ -50,11 +55,20 @@ torchvision = "*"
 imageio = "^2.37.0"
 moviepy = "^1.0.3"
 omegaconf = "^2.3"
+pyarrow = ">=15"  # pluto.migrate tests
+optuna = ">=3.0"  # pluto.sweep bayes tests
 
 
 [tool.poetry.extras]
 full = [
   "nvidia-ml-py",
+]
+migrate = [
+  "wandb",
+  "pyarrow",
+]
+sweep = [
+  "optuna",
 ]
 
 [tool.poetry.scripts]

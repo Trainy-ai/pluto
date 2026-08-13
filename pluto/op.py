@@ -1,6 +1,7 @@
 import atexit
 import builtins
 import logging
+import math
 import os
 import queue
 import signal
@@ -46,6 +47,12 @@ from .util import (
 
 logger = logging.getLogger(f'{__name__.split(".")[0]}')
 tag = 'Operation'
+
+# A single string-metric value longer than this is a stray blob (a whole log
+# line, serialized object, etc.), not a categorical state label, so it is not
+# sent. There is no cardinality/distinct-value guard: every string value is
+# logged, regardless of how many distinct values the series has.
+STRING_SERIES_MAX_LEN = 200
 
 
 def _is_distributed_environment() -> bool:
@@ -327,7 +334,16 @@ MetaFiles = Dict[str, List[str]]
 LoggedNumbers = Dict[str, Any]
 LoggedData = Dict[str, List[Data]]
 LoggedFiles = Dict[str, List[File]]
-QueueItem = Tuple[Dict[str, Any], Optional[int]]
+QueueItem = Tuple[Dict[str, Any], Optional[int], Optional[float]]
+
+
+class RunExistsError(RuntimeError):
+    """A run with the given externalId already exists (init without resume).
+
+    Typed so callers that intentionally reuse external ids (e.g.
+    pluto.migrate re-loading after a crash) can catch the collision and
+    retry with ``resume=True`` instead of string-matching the message.
+    """
 
 
 class OpMonitor:
@@ -374,16 +390,19 @@ class OpMonitor:
     def _worker_monitor(self, stop):
         while not stop():
             try:
-                # Collect system metrics
-                sys_metrics = make_compat_monitor_v1(self.op.settings._sys.monitor())
-                timestamp_ms = int(time.time() * 1000)
-
-                # Send system metrics via sync process if enabled
-                if self.op._sync_manager is not None:
-                    self.op._sync_manager.enqueue_system_metrics(
-                        metrics=sys_metrics,
-                        timestamp_ms=timestamp_ms,
+                if not self.op.settings.disable_system_metrics:
+                    # Collect system metrics
+                    sys_metrics = make_compat_monitor_v1(
+                        self.op.settings._sys.monitor()
                     )
+                    timestamp_ms = int(time.time() * 1000)
+
+                    # Send system metrics via sync process if enabled
+                    if self.op._sync_manager is not None:
+                        self.op._sync_manager.enqueue_system_metrics(
+                            metrics=sys_metrics,
+                            timestamp_ms=timestamp_ms,
+                        )
 
                 # Send heartbeat/trigger to server
                 # Use short timeout and no retries: if it fails, the next
@@ -457,7 +476,7 @@ class Op:
                         make_compat_start_v1(
                             self.config,
                             self.settings,
-                            self.settings._sys.get_info(),
+                            self._start_info(),
                             self.tags,
                         ),
                         client=tmp_iface.client_api,
@@ -502,7 +521,7 @@ class Op:
                     )
                 else:
                     external_id = self.settings._external_id
-                    raise RuntimeError(
+                    raise RunExistsError(
                         f"Run with externalId '{external_id}' already exists. "
                         f'This often happens when random.seed() or '
                         f'L.seed_everything() makes run IDs deterministic. '
@@ -551,13 +570,40 @@ class Op:
             else None
         )
         self._step = 0
+        # Latest numeric value logged per key (last write wins). Lets a sweep
+        # agent read a run's objective metric without a server round-trip.
+        self._latest_metrics: Dict[str, float] = {}
+        # String-metric keys already warned about (over-long value) — so the
+        # per-value length warning fires at most once per key.
+        self._string_series_warned: set = set()
         self._queue: queue.Queue[QueueItem] = queue.Queue()
         self._finished = False
         self._finish_lock = threading.Lock()
+        # Set by _teardown() when the terminal status update could not be
+        # confirmed on the server (after retries). Callers that must know the
+        # run was actually finalized — notably the migration loader — check
+        # this instead of trusting finish() to have succeeded silently.
+        self._status_update_error: Union[Exception, None] = None
         # (log-key, exc-type) pairs already surfaced at error from a dropped log
         # item, so a per-step failure is shouted once then drops to debug.
         self._dropped_item_warned: set = set()
         atexit.register(self.finish)
+
+    def _start_info(self) -> Dict[str, Any]:
+        """System info for the run-create payload.
+
+        Suppressed under disable_system_metrics so a backfill host's
+        hardware isn't recorded as the imported run's systemMetadata.
+        Migration/backfill may instead supply the original run's own
+        systemMetadata via ``compat['systemMetadata']`` to preserve the
+        historical repro context (host/git/python/gpu).
+        """
+        override = self.settings.compat.get('systemMetadata')
+        if override is not None:
+            return override
+        if self.settings.disable_system_metrics:
+            return {}
+        return self.settings._sys.get_info()
 
     def _init_sync_manager(self) -> None:
         """Initialize the sync process manager."""
@@ -591,6 +637,7 @@ class Op:
             'sync_process_retry_backoff': self.settings.sync_process_retry_backoff,
             'sync_process_batch_size': self.settings.sync_process_batch_size,
             'sync_process_file_batch_size': self.settings.sync_process_file_batch_size,
+            'disable_system_metrics': self.settings.disable_system_metrics,
         }
 
         self._sync_manager = SyncProcessManager(
@@ -664,7 +711,7 @@ class Op:
         self._monitor.start()
 
         # Register system metric names with server (required for dashboard display)
-        if self._iface:
+        if self._iface and not self.settings.disable_system_metrics:
             sys_metric_names = list(
                 make_compat_monitor_v1(self.settings._sys.monitor()).keys()
             )
@@ -693,12 +740,20 @@ class Op:
         data: Dict[str, Any],
         step: Union[int, None] = None,
         commit: Union[bool, None] = None,
+        timestamp: Optional[float] = None,
     ) -> None:
-        """Log run data"""
+        """Log run data.
+
+        ``timestamp`` is the wall-clock time of the data points in epoch
+        seconds (``time.time()`` style) and defaults to now. The server
+        stores it as-is, so backfill/migration tooling can preserve
+        historical times. Invalid values fall back to now with a warning.
+        """
+        timestamp = self._validate_timestamp(timestamp)
         # Use sync process if enabled (default: uploads data to server)
         if self._sync_manager is not None:
             try:
-                self._log_via_sync(data=data, step=step)
+                self._log_via_sync(data=data, step=step, timestamp=timestamp)
             except sqlite3.OperationalError as e:
                 # Never let a transient SQLite error crash the user's training.
                 # The data for this step is lost, but training continues.
@@ -706,23 +761,40 @@ class Op:
                     '%s: dropping log data due to database error: %s', tag, e
                 )
         elif self.settings.mode == 'perf':
-            self._queue.put((data, step), block=False)
+            self._queue.put((data, step, timestamp), block=False)
         else:
             # Legacy offline mode (sync_process_enabled=False)
             # Data stored locally in SQLite only, not uploaded to server
-            self._log(data=data, step=step)
+            self._log(data=data, step=step, t=timestamp)
+
+    def _validate_timestamp(self, timestamp: Optional[float]) -> Optional[float]:
+        """Return a usable explicit timestamp or None (meaning "now")."""
+        if timestamp is None:
+            return None
+        if (
+            not isinstance(timestamp, (int, float))
+            or isinstance(timestamp, bool)
+            or not math.isfinite(timestamp)
+            or timestamp <= 0
+        ):
+            logger.warning(
+                f'{tag}: ignoring invalid timestamp {timestamp!r}; using current time'
+            )
+            return None
+        return float(timestamp)
 
     def _log_via_sync(
         self,
         data: Dict[str, Any],
         step: Optional[int] = None,
+        timestamp: Optional[float] = None,
     ) -> None:
         """Log data via sync process (writes to SQLite, picked up by sync)."""
         if self._sync_manager is None:
             return
 
         self._step = self._step + 1 if step is None else step
-        timestamp_ms = int(time.time() * 1000)
+        timestamp_ms = int((timestamp if timestamp is not None else time.time()) * 1000)
 
         metrics: Dict[str, Any] = {}
         new_metric_names: List[str] = []
@@ -755,10 +827,62 @@ class Op:
 
         if metrics:
             self._sync_manager.enqueue_metrics(metrics, timestamp_ms, self._step)
+            # Cache the latest numeric value per key so a sweep agent (bayes) can
+            # read the objective back after the run without a server round-trip.
+            # Lazy-init: logging is best-effort and must never crash, and some
+            # call sites build a bare Op (Op.__new__) that skips __init__.
+            if not hasattr(self, '_latest_metrics'):
+                self._latest_metrics = {}
+            self._latest_metrics.update(metrics)
 
         # Register new metric/file names with server (required for dashboard display)
         if (new_metric_names or new_file_meta) and self._iface:
             self._iface._update_meta(num=new_metric_names, df=dict(new_file_meta))
+
+    def _log_console(self, lines: List[Tuple[str, str, float, int]]) -> None:
+        """Enqueue console lines with explicit timestamps (backfill path).
+
+        ``lines`` are ``(message, log_type, timestamp_seconds, line_number)``
+        tuples with ``log_type`` in ``{'INFO', 'ERROR'}``. Used by
+        ``pluto.migrate`` loaders to replay another platform's console
+        output with the original wall-clock times; live console capture
+        goes through ``pluto.log.ConsoleHandler`` instead.
+        """
+        if self._sync_manager is None:
+            return
+        self._sync_manager.enqueue_console_batch(
+            [
+                (message, log_type, int(ts * 1000), line_number)
+                for message, log_type, ts, line_number in lines
+            ]
+        )
+
+    def _log_metrics_batch(
+        self, groups: List[Tuple[Dict[str, Any], int, float]]
+    ) -> None:
+        """Enqueue many numeric metric groups in one transaction (backfill path).
+
+        ``groups`` are ``(metrics, step, timestamp_seconds)`` tuples with
+        numeric values only. Used by ``pluto.migrate`` loaders, where one
+        SQLite transaction per step would dominate replay time; live
+        training goes through :meth:`log`.
+        """
+        if self._sync_manager is None or not groups:
+            return
+        new_metric_names: List[str] = []
+        new_file_meta: Dict[str, List[str]] = defaultdict(list)
+        items: List[Tuple[Dict[str, Any], int, int]] = []
+        for metrics, step, timestamp in groups:
+            clean: Dict[str, Any] = {}
+            for key, value in metrics.items():
+                key = get_char(key)
+                self._register_meta_sync(key, value, new_metric_names, new_file_meta)
+                clean[key] = value
+            self._step = step
+            items.append((clean, int(timestamp * 1000), step))
+        self._sync_manager.enqueue_metrics_batch(items)
+        if new_metric_names and self._iface:
+            self._iface._update_meta(num=new_metric_names)
 
     def _warn_dropped_item(self, key: str, value: Any, exc: Exception) -> None:
         """Report a log item dropped due to an unexpected error.
@@ -814,6 +938,10 @@ class Op:
 
         if isinstance(value, (File, Data)):
             new_file_meta[value.__class__.__name__].append(key)
+        elif isinstance(value, str):
+            # A string metric is a string-series (mlop_data); register it under
+            # the DATA log type so the server indexes it like the migration does.
+            new_file_meta['DATA'].append(key)
         elif self._is_numeric_value(value):
             new_metric_names.append(key)
 
@@ -845,6 +973,40 @@ class Op:
                 timestamp_ms=timestamp_ms,
                 step=self._step,
             )
+        elif isinstance(value, str):
+            # A bare string value is a categorical "string metric" (e.g.
+            # phase='warmup'): route it to the string-series data path.
+            self._enqueue_string_series_sync(key, value, timestamp_ms)
+
+    def _enqueue_string_series_sync(
+        self, key: str, value: str, timestamp_ms: int
+    ) -> None:
+        """Route a string metric value to the string-series data path.
+
+        A string logged across steps (e.g. ``phase='warmup'``) is a categorical
+        state series, stored in ``mlop_data`` as ``dataType='string-series'`` and
+        rendered as a state timeline. Every value is sent regardless of the
+        series' cardinality; only a single over-long value (a stray blob, not a
+        state label) is skipped, with a one-time warning per key.
+        """
+        if self._sync_manager is None:
+            return
+        if len(value) > STRING_SERIES_MAX_LEN:
+            if key not in self._string_series_warned:
+                self._string_series_warned.add(key)
+                logger.warning(
+                    f'{tag}: string metric {key!r} value skipped — '
+                    f'{len(value)} chars (> {STRING_SERIES_MAX_LEN}); string '
+                    'metrics are short state labels, not free-form text.'
+                )
+            return
+        self._sync_manager.enqueue_data(
+            log_name=key,
+            data_type='string-series',
+            data_dict=value,  # raw string; the sync sends string-series un-wrapped
+            timestamp_ms=timestamp_ms,
+            step=self._step,
+        )
 
     def _enqueue_file_sync(
         self,
@@ -874,12 +1036,16 @@ class Op:
                 local_path=file_obj._path,
                 file_name=file_obj._name,
                 file_ext=file_obj._ext,
-                file_type=file_obj._type,
+                # A file may override its upload fileType (e.g. a mask PNG →
+                # "mask"); otherwise the server derives it from the extension.
+                file_type=getattr(file_obj, '_upload_file_type', None)
+                or file_obj._type,
                 file_size=file_obj._stat.st_size,
                 log_name=log_name,
                 timestamp_ms=timestamp_ms,
                 step=self._step,
                 caption=file_obj._caption,
+                annotations=getattr(file_obj, '_annotations', None),
                 sample_index=sample_index,
             )
             logger.debug(
@@ -889,6 +1055,12 @@ class Op:
             logger.warning(
                 f'{tag}: Cannot enqueue file for sync - path is None after load'
             )
+
+        # Upload any annotation sub-files (segmentation-mask PNGs) in the same
+        # log group; they carry _upload_file_type="mask" and are referenced from
+        # the parent image's annotations by fileName.
+        for extra in getattr(file_obj, '_annotation_files', None) or []:
+            self._enqueue_file_sync(log_name, extra, timestamp_ms, sample_index)
 
     def finish(self, code: Union[int, None] = None) -> None:
         """Finish logging and mark the run as a terminal status on the server.
@@ -956,6 +1128,13 @@ class Op:
         # because all ranks must progress together for collective operations
         is_distributed = _is_distributed_environment()
 
+        # Reset per teardown. status_confirmed tracks whether the terminal
+        # status update actually landed on the server, so (a) a later teardown
+        # error doesn't wrongly re-mark a finished run FAILED, and (b) the
+        # migration loader can tell a dropped finish from a real one.
+        self._status_update_error = None
+        status_confirmed = False
+
         try:
             # Stop the monitor (system metrics and heartbeats)
             self._monitor.stop(code)
@@ -994,9 +1173,24 @@ class Op:
                 self._sync_manager.close()
                 self._sync_manager = None
 
-            # Update run status on server (only when finishing)
+            # Update run status on server (only when finishing). This is the
+            # run's terminal transition; update_status() retries transient
+            # resets and raises if it can't confirm. Record — but don't abort
+            # teardown on — that failure: the store/HTTP-client cleanup below
+            # still has to run, and the caller inspects _status_update_error.
             if update_status and self._iface:
-                self._iface.update_status()
+                try:
+                    self._iface.update_status()
+                    status_confirmed = True
+                except Exception as status_exc:
+                    self._status_update_error = status_exc
+                    logger.error(
+                        '%s: terminal status update not confirmed after '
+                        'retries: %s: %s',
+                        tag,
+                        type(status_exc).__name__,
+                        status_exc,
+                    )
 
             # Clean up data store if used (legacy mode)
             if self._store:
@@ -1013,26 +1207,33 @@ class Op:
                 logger.debug(f'{tag}: closed (run status unchanged)')
         except (Exception, KeyboardInterrupt) as e:
             _sentry.capture_exception(e)
-            if update_status:
+            # Only report FAILED if we hadn't already confirmed the terminal
+            # status — otherwise a teardown hiccup *after* a successful finish
+            # (e.g. an HTTP-client close error) would flip a COMPLETED run to
+            # FAILED. Guard the report itself too: it can now raise.
+            if update_status and not status_confirmed:
                 self.settings._op_status = signal.SIGINT.value
                 if self._iface:
-                    self._iface._update_status(
-                        self.settings,
-                        trace={
-                            'type': e.__class__.__name__,
-                            'message': str(e),
-                            'frames': [
-                                {
-                                    'filename': frame.filename,
-                                    'lineno': frame.lineno,
-                                    'name': frame.name,
-                                    'line': frame.line,
-                                }
-                                for frame in traceback.extract_tb(e.__traceback__)
-                            ],
-                            'trace': traceback.format_exc(),
-                        },
-                    )
+                    try:
+                        self._iface._update_status(
+                            self.settings,
+                            trace={
+                                'type': e.__class__.__name__,
+                                'message': str(e),
+                                'frames': [
+                                    {
+                                        'filename': frame.filename,
+                                        'lineno': frame.lineno,
+                                        'name': frame.name,
+                                        'line': frame.line,
+                                    }
+                                    for frame in traceback.extract_tb(e.__traceback__)
+                                ],
+                                'trace': traceback.format_exc(),
+                            },
+                        )
+                    except Exception as report_exc:
+                        self._status_update_error = report_exc
             logger.critical('%s: interrupted %s', tag, e)
             # Re-raise user-initiated termination so the process actually
             # exits as the user expects. Post-cleanup (sentry flush,

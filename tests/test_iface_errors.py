@@ -267,6 +267,90 @@ def test_try_network_error_returns_none_not_request_error():
     assert r is None
 
 
+def test_try_connection_reset_default_is_shutdown_signal_no_retry():
+    """By default a dropped keep-alive socket is treated as a shutdown signal:
+    no retry, no raise (so heartbeat/trigger/upload spam doesn't hang atexit)."""
+    iface = _make_iface()
+    calls = {'n': 0}
+
+    def fake_method(url, content=None, headers=None, **kwargs):
+        calls['n'] += 1
+        raise ConnectionResetError('peer reset')
+
+    r = iface._try(
+        fake_method, 'https://x', {}, b'{}', name='trigger', raise_on_error=True
+    )
+    assert r is None
+    assert calls['n'] == 1, 'default: a connection reset is not retried'
+
+
+def test_try_connection_reset_retried_when_flagged_then_recovers():
+    """For critical one-shot requests (retry_connection_errors=True, e.g. the
+    terminal status update) a dropped socket is transient and IS retried, so a
+    later attempt can succeed instead of silently giving up on attempt 1."""
+    iface = _make_iface()
+    calls = {'n': 0}
+
+    def fake_method(url, content=None, headers=None, **kwargs):
+        calls['n'] += 1
+        if calls['n'] < 3:
+            raise ConnectionResetError('peer reset')
+        return _resp(200, json_body={'ok': True})
+
+    r = iface._try(
+        fake_method,
+        'https://x/api/runs/status/update',
+        {},
+        b'{}',
+        name='status',
+        raise_on_error=True,
+        retry_connection_errors=True,
+    )
+    assert r is not None and r.status_code == 200
+    assert calls['n'] == 3, 'a connection reset must be retried when flagged'
+
+
+def test_try_connection_reset_raises_after_retries_when_flagged():
+    """A reset that never clears raises (not None) so the caller can't mistake a
+    dropped terminal-status POST for success."""
+    iface = _make_iface()  # x_file_stream_retry_max = 2
+    calls = {'n': 0}
+
+    def fake_method(url, content=None, headers=None, **kwargs):
+        calls['n'] += 1
+        raise ConnectionResetError('peer reset')
+
+    with pytest.raises(PlutoRequestError):
+        iface._try(
+            fake_method,
+            'https://x/api/runs/status/update',
+            {},
+            b'{}',
+            name='status',
+            raise_on_error=True,
+            retry_connection_errors=True,
+        )
+    assert calls['n'] == 3, 'initial attempt + 2 retries'
+
+
+def test_update_status_retries_reset_and_raises_on_persistent_failure(monkeypatch):
+    """update_status() is the run's terminal transition: it must retry a dropped
+    socket and ultimately raise, never silently swallow it (the finish-strands-
+    run bug). Wires the retry_connection_errors + raise_on_error flags end-to-end."""
+    iface = _make_iface()
+    calls = {'n': 0}
+
+    def fake_post(url, content=None, headers=None, **kwargs):
+        calls['n'] += 1
+        raise ConnectionResetError('peer reset')
+
+    monkeypatch.setattr(iface.client_api, 'post', fake_post)
+
+    with pytest.raises(PlutoRequestError):
+        iface.update_status()
+    assert calls['n'] >= 2, 'update_status must retry the reset before failing'
+
+
 # --- sync-process uploader (pluto/sync/process.py) -------------------------
 
 

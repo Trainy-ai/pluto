@@ -41,6 +41,10 @@ class Settings:
     disable_iface: bool = False
     disable_progress: bool = True
     disable_console: bool = False  # disable file-based logging
+    # Skip sampling/uploading this host's CPU/GPU stats. Used by backfill
+    # tooling (pluto.migrate) so the importing machine's hardware doesn't
+    # show up in migrated runs.
+    disable_system_metrics: bool = False
     sanitize_logs: bool = True  # redact secrets before uploading console logs
     # Capture console at the file-descriptor level (dup2 tee, like wandb's
     # console="redirect") so logging handlers configured before init() are

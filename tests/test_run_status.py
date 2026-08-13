@@ -45,6 +45,44 @@ class TestStatusMap:
         assert STATUS[signal.SIGTERM.value] == 'TERMINATED'
 
 
+class TestStatusPayloadBackfill:
+    """The status-update payload carries a historical terminal-status time
+    for backfilled/migrated runs (pluto.migrate) so the server can keep
+    Duration = end - createdAt correct; normal runs send nothing and the
+    server keeps its now() default.
+    """
+
+    def _settings(self):
+        from pluto.sets import Settings
+
+        s = Settings()
+        s._op_id = 42
+        s._op_status = 0  # COMPLETED
+        return s
+
+    def test_normal_run_sends_null_status_updated(self):
+        import json
+
+        from pluto.api import make_compat_status_v1
+
+        s = self._settings()  # compat defaults to {}
+        payload = json.loads(make_compat_status_v1(s).decode())
+        assert 'statusUpdated' in payload
+        assert payload['statusUpdated'] is None
+
+    def test_backfilled_run_sends_historical_status_updated(self):
+        import json
+
+        from pluto.api import make_compat_status_v1
+
+        s = self._settings()
+        s.compat = {'createdAt': 1600000000000, 'updatedAt': 1600000003600}
+        payload = json.loads(make_compat_status_v1(s).decode())
+        # statusUpdated mirrors the historical updatedAt (terminal time),
+        # not createdAt.
+        assert payload['statusUpdated'] == 1600000003600
+
+
 class TestExcepthook:
     """Test the sys.excepthook integration for FAILED status detection."""
 
@@ -313,6 +351,61 @@ class TestNoopRunStatus:
         # Status should still be FAILED
         assert settings._op_status == 1
         assert STATUS[settings._op_status] == 'FAILED'
+
+
+class TestTerminalStatusResilience:
+    """finish() must not silently swallow a failed terminal status update — it
+    records it on the op so callers (the migration loader) can tell the run was
+    not actually finalized, and a post-status teardown error must not re-flip a
+    confirmed run to FAILED.
+    """
+
+    def test_finish_records_unconfirmed_status_without_crashing(self):
+        from unittest.mock import MagicMock
+
+        from pluto.iface import PlutoRequestError
+        from pluto.op import Op
+        from pluto.sets import Settings
+
+        settings = Settings()
+        settings.mode = 'noop'
+        op = Op(config={}, settings=settings)
+        op.start()
+
+        # Terminal status POST fails after its own retries (raises up to finish).
+        failing_iface = MagicMock()
+        failing_iface.update_status.side_effect = PlutoRequestError(
+            'peer reset', status_code=None
+        )
+        op._iface = failing_iface
+
+        op.finish()  # must NOT raise
+
+        failing_iface.update_status.assert_called_once()
+        assert isinstance(op._status_update_error, PlutoRequestError)
+        # The intended terminal code stands — the failed POST is not re-reported
+        # as FAILED (status_confirmed guard); the run's code stays COMPLETED (0).
+        assert settings._op_status == 0
+
+    def test_finish_confirmed_status_clears_error_flag(self):
+        from unittest.mock import MagicMock
+
+        from pluto.op import Op
+        from pluto.sets import Settings
+
+        settings = Settings()
+        settings.mode = 'noop'
+        op = Op(config={}, settings=settings)
+        op.start()
+
+        ok_iface = MagicMock()  # update_status() succeeds
+        op._iface = ok_iface
+
+        op.finish()
+
+        ok_iface.update_status.assert_called_once()
+        assert op._status_update_error is None
+        assert settings._op_status == 0
 
 
 class TestExcepthookSubprocess:

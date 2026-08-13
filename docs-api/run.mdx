@@ -13,10 +13,16 @@ log(
     data: Dict[str, Any],
     step: Union[int, None] = None,
     commit: Union[bool, None] = None,
+    timestamp: Optional[float] = None,
 ) -> None
 ```
 
-Log run data
+Log run data.
+
+`timestamp` is the wall-clock time of the data points in epoch
+seconds (`time.time()` style) and defaults to now. The server
+stores it as-is, so backfill/migration tooling can preserve
+historical times. Invalid values fall back to now with a warning.
 
 ---
 

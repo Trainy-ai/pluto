@@ -1361,6 +1361,9 @@ def _make_sigterm_op(status=-1, op_id=123):
         _op_status=status,
         url_stop='http://server/api/runs/status/update',
         x_sigterm_status_timeout_seconds=5.0,
+        # make_compat_status_v1 reads compat['updatedAt'] (historical statusUpdated
+        # for backfilled runs); empty for a normal run.
+        compat={},
         # Read when the handler builds its fresh httpx client.
         insecure_disable_ssl=False,
         http_proxy=None,

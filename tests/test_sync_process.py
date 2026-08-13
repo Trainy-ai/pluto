@@ -423,6 +423,39 @@ class TestSyncProcessShutdown:
         elapsed = time.time() - start
         assert elapsed < 60, f'Shutdown took too long: {elapsed}s'
 
+    def test_finish_terminates_sync_subprocess(self):
+        """finish()/stop(wait=True) must TERMINATE the sync subprocess, not just
+        flush its data and leave it running.
+
+        The sync process is a persistent daemon (its loop only breaks on SIGTERM
+        or parent death). If stop() only flushed and returned, one subprocess per
+        run would survive for the life of the caller — a bulk single-invocation
+        migrate load of N runs would then hold N live subprocesses and exhaust
+        memory. See SyncProcessManager.stop() / _terminate_process().
+        """
+        run = pluto.init(
+            project=TESTING_PROJECT_NAME,
+            name=get_task_name(),
+            config={},
+            sync_process_enabled=True,
+        )
+        run.log({'metric': 1})
+
+        proc = run._sync_manager._process
+        assert proc is not None, 'expected a spawned sync subprocess'
+        assert proc.poll() is None, 'sync subprocess should be alive before finish'
+
+        run.finish()
+
+        # stop() terminates + reaps synchronously; give a short grace margin.
+        deadline = time.time() + 10
+        while proc.poll() is None and time.time() < deadline:
+            time.sleep(0.1)
+        assert proc.poll() is not None, (
+            'sync subprocess is still running after finish() — it would '
+            'accumulate one process per run in a bulk load'
+        )
+
     def test_sync_manager_pending_count(self):
         """Test that pending count tracks metrics and files."""
         run = pluto.init(
