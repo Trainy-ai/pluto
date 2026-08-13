@@ -307,3 +307,15 @@ class TestBayes:
         )
         with pytest.raises(ValueError, match='needs count'):
             pluto.agent(sid, lambda: None)
+
+
+def test_bayes_missing_optuna_names_the_real_package(monkeypatch):
+    # When optuna isn't installed, the hint must point at the real distribution
+    # name (pluto-ml) — NOT `pluto`, which is an unrelated package on PyPI, so
+    # following the wrong hint silently installs someone else's package.
+    monkeypatch.setitem(sys.modules, 'optuna', None)  # makes `import optuna` raise
+    with pytest.raises(ImportError) as exc:
+        sw._run_bayes('sid', {}, None, lambda: None, 1, [], 'loss')
+    msg = str(exc.value)
+    assert 'pluto-ml[sweep]' in msg
+    assert 'pluto[sweep]' not in msg

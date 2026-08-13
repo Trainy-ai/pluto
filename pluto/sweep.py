@@ -491,7 +491,7 @@ def _run_bayes(
     except ImportError:
         raise ImportError(
             "sweep method='bayes' needs optuna — install it with "
-            '`pip install optuna` (or `pip install pluto[sweep]`).'
+            '`pip install optuna` (or `pip install "pluto-ml[sweep]"`).'
         )
     if count is None:
         raise ValueError("method='bayes' needs count=<n> in pluto.agent(...)")
