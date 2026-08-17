@@ -10,10 +10,12 @@ These tests pin the log-line half.
 
 from __future__ import annotations
 
+import atexit
 import logging
 import os
 from unittest import mock
 
+import pluto
 from pluto.op import NCCL_ENV_LOG_MAX_CHARS, Op
 from pluto.sets import Settings
 from pluto.sys import MASKED_VALUE
@@ -105,7 +107,14 @@ class TestLogNcclEnv:
         op._monitor = mock.MagicMock()
         op._sync_manager = None
         op._iface = None
-        with mock.patch.dict(os.environ, {'NCCL_DEBUG': 'INFO'}, clear=False):
-            with caplog.at_level(logging.INFO, logger='pluto'):
-                op.start()
+        # start() publishes module-level globals and appends to pluto.ops; put
+        # them back so a later test in this worker sees an untouched module.
+        saved = (pluto.ops, pluto.log, pluto.alert, pluto.watch)
+        try:
+            with mock.patch.dict(os.environ, {'NCCL_DEBUG': 'INFO'}, clear=False):
+                with caplog.at_level(logging.INFO, logger='pluto'):
+                    op.start()
+        finally:
+            atexit.unregister(op.finish)
+            pluto.ops, pluto.log, pluto.alert, pluto.watch = saved
         assert 'NCCL_DEBUG=INFO' in _messages(caplog)
