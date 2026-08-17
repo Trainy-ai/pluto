@@ -17,8 +17,10 @@ These tests pin both behaviors.
 
 from __future__ import annotations
 
+import contextlib
 import io
 import logging
+import sys
 from unittest import mock
 
 import pytest
@@ -285,3 +287,80 @@ class _ListHandler(logging.Handler):
 
     def emit(self, record):
         self.sink.append(record)
+
+
+class TestConsoleSetupGuard:
+    """setup_logger must recognise *pluto's* console config, not any handler.
+
+    The guard used to be `len(console.handlers) > 0`. setup_logger_file sets
+    console.propagate = False, which forces anything capturing log records to
+    attach at that logger rather than at the root — pytest's logging plugin
+    does exactly that from pytest 9 on. So the guard saw pytest's
+    LogCaptureHandlers, decided the console was already configured, and
+    returned before installing the ConsoleHandler wrappers. Every console
+    line for the rest of the process was then silently dropped: no error,
+    just an empty console section on the run.
+    """
+
+    @staticmethod
+    def _settings(tmp_path, name):
+        import os
+
+        from pluto.sets import Settings
+
+        s = Settings()
+        s.dir = str(tmp_path)
+        s.project = 'guard-test'
+        s._op_id = 1234
+        s._op_name = name
+        # Keep the test hermetic: fd capture dup2()s over the real fds 1/2,
+        # which would fight pytest's own capture for the rest of the session.
+        s.x_console_fd_capture = False
+        os.makedirs(s.get_dir(), exist_ok=True)
+        return s
+
+    def _run_setup(self, tmp_path, name, pre_attach=None):
+        """Call setup_logger and report whether the wrappers got installed."""
+        # `from pluto import log` would bind pluto.log the *function*, which
+        # shadows the submodule of the same name.
+        from pluto.log import setup_logger
+
+        settings = self._settings(tmp_path, name)
+        logger = logging.getLogger(f'pluto-guard-{name}')
+        console = logging.getLogger(f'pluto-guard-console-{name}')
+        if pre_attach is not None:
+            console.addHandler(pre_attach)
+
+        saved_out, saved_err = sys.stdout, sys.stderr
+        try:
+            setup_logger(settings, logger, console, mock.MagicMock())
+            return isinstance(sys.stdout, ConsoleHandler), console
+        finally:
+            sys.stdout, sys.stderr = saved_out, saved_err
+            for lg in (logger, console):
+                for h in lg.handlers[:]:
+                    lg.removeHandler(h)
+                    with contextlib.suppress(Exception):
+                        h.close()
+
+    def test_foreign_handler_does_not_skip_setup(self, tmp_path):
+        """A third party's handler must not look like pluto's own config."""
+        foreign = _ListHandler([])  # stands in for pytest's LogCaptureHandler
+        installed, _ = self._run_setup(tmp_path, 'foreign', pre_attach=foreign)
+        assert installed, (
+            'setup_logger skipped setup because another library had attached a '
+            'handler to the console logger; console output would be dropped'
+        )
+
+    def test_pluto_own_handler_still_short_circuits(self, tmp_path):
+        """The guard must still be idempotent for pluto's own handler.
+
+        Without this the wrappers would stack on every init, and each
+        Python-level line would be enqueued once per layer.
+        """
+        from pluto.log import _CONSOLE_HANDLER_FLAG
+
+        flagged = _ListHandler([])
+        setattr(flagged, _CONSOLE_HANDLER_FLAG, True)
+        installed, _ = self._run_setup(tmp_path, 'own', pre_attach=flagged)
+        assert not installed, 'setup_logger re-ran despite pluto already configuring it'
