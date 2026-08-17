@@ -69,6 +69,14 @@ def _poll_metric_names(
     )
 
 
+def _metric_values(project: str, run_id: int, metric: str) -> List[float]:
+    """Values of a single metric series, in server order."""
+    metrics = pq.get_metrics(project, run_id, metric_names=[metric])
+    if hasattr(metrics, 'to_dict'):  # pandas DataFrame
+        return list(metrics['value'].tolist())
+    return [m['value'] for m in metrics]
+
+
 def _poll_max_step(
     project: str,
     run_id: int,
@@ -277,11 +285,14 @@ def test_fork_e2e_log_metrics(parent_run):
     metric_names = _poll_metric_names(FORK_PROJECT, run_id, ['fork/loss'])
     assert 'fork/loss' in metric_names
 
-    metrics = pq.get_metrics(FORK_PROJECT, run_id, metric_names=['fork/loss'])
-    if hasattr(metrics, 'to_dict'):
-        values = metrics['value'].tolist()
-    else:
-        values = [m['value'] for m in metrics]
+    # The name is queryable as soon as the *first* point lands, so reading the
+    # series straight after that races ingest (seen in CI: len(values) == 1).
+    # Poll for the full series the way the parent fixture does with
+    # _poll_max_step; the assertions below still have to hold at the deadline.
+    values = _poll(
+        fn=lambda: _metric_values(FORK_PROJECT, run_id, 'fork/loss'),
+        check=lambda vals: len(vals) >= 5,
+    )
     assert len(values) == 5
     assert values[0] == pytest.approx(0.5, abs=1e-6)
 
