@@ -7,7 +7,13 @@ from unittest.mock import patch
 
 import pytest
 
-from pluto.sys import System
+from pluto.sys import (
+    MASKED_VALUE,
+    NCCL_ENV_KEYS,
+    NCCL_ENV_PREFIXES,
+    System,
+    collect_nccl_env,
+)
 
 
 class TestSystemInfoHelper:
@@ -194,10 +200,34 @@ class TestGetNcclInfo(TestSystemInfoHelper):
             assert result['nccl_env']['NCCL_SOCKET_IFNAME'] == 'eth0'
             assert result['nccl_env']['NCCL_IB_DISABLE'] == '0'
 
+    def test_collects_torch_nccl_and_fabric_env_vars(self):
+        """TORCH_NCCL_*/FI_*/UCX_* and the extra distributed vars ride along."""
+        env = {
+            'TORCH_NCCL_ASYNC_ERROR_HANDLING': '1',
+            'TORCH_NCCL_BLOCKING_WAIT': '0',
+            'FI_PROVIDER': 'efa',
+            'FI_EFA_USE_DEVICE_RDMA': '1',
+            'UCX_TLS': 'rc,cuda_copy',
+            'TORCH_DISTRIBUTED_DEBUG': 'DETAIL',
+            'GLOO_SOCKET_IFNAME': 'eth0',
+        }
+        with patch.dict(os.environ, env, clear=False):
+            sys_obj = self._make_system()
+            nccl_env = sys_obj.get_nccl_info()['nccl_env']
+            for key, value in env.items():
+                assert nccl_env[key] == value
+
+    def test_unrelated_env_vars_not_collected(self):
+        """The scan stays scoped — no wholesale environ dump."""
+        env = {'MY_SECRET_TRAINING_FLAG': 'nope', 'PATH_TO_NCCL': 'also-nope'}
+        with patch.dict(os.environ, env, clear=False):
+            nccl_env = collect_nccl_env()
+            assert 'MY_SECRET_TRAINING_FLAG' not in nccl_env
+            assert 'PATH_TO_NCCL' not in nccl_env
+
     def test_no_nccl_env_when_none_set(self):
-        """nccl_env key absent when no NCCL_* vars exist."""
-        env = {k: v for k, v in os.environ.items() if not k.startswith('NCCL_')}
-        with patch.dict(os.environ, env, clear=True):
+        """nccl_env key absent when no NCCL-relevant vars exist."""
+        with patch.dict(os.environ, _env_without_nccl(), clear=True):
             sys_obj = self._make_system()
             result = sys_obj.get_nccl_info()
             assert 'nccl_env' not in result
@@ -208,6 +238,66 @@ class TestGetNcclInfo(TestSystemInfoHelper):
         result = sys_obj.get_nccl_info()
         if result:
             assert 'nccl' in info
+
+    def test_get_info_carries_nccl_env(self):
+        """The env vars reach the systemMetadata payload sent on run create."""
+        with patch.dict(os.environ, {'NCCL_ALGO': 'Ring'}, clear=False):
+            sys_obj = self._make_system()
+            info = sys_obj.get_info()
+            assert info['nccl']['nccl_env']['NCCL_ALGO'] == 'Ring'
+
+
+def _env_without_nccl():
+    """Current environ minus everything collect_nccl_env() would pick up."""
+    return {
+        k: v
+        for k, v in os.environ.items()
+        if not k.startswith(NCCL_ENV_PREFIXES) and k not in NCCL_ENV_KEYS
+    }
+
+
+class TestCollectNcclEnv:
+    """Tests for the standalone collect_nccl_env() helper."""
+
+    def test_reads_os_environ_by_default(self):
+        with patch.dict(os.environ, {'NCCL_DEBUG': 'WARN'}, clear=False):
+            assert collect_nccl_env()['NCCL_DEBUG'] == 'WARN'
+
+    def test_accepts_an_explicit_mapping(self):
+        assert collect_nccl_env({'NCCL_DEBUG': 'INFO', 'HOME': '/root'}) == {
+            'NCCL_DEBUG': 'INFO'
+        }
+
+    def test_keys_are_sorted(self):
+        env = {'NCCL_SOCKET_IFNAME': 'eth0', 'FI_PROVIDER': 'efa', 'NCCL_ALGO': 'Tree'}
+        assert list(collect_nccl_env(env)) == [
+            'FI_PROVIDER',
+            'NCCL_ALGO',
+            'NCCL_SOCKET_IFNAME',
+        ]
+
+    @pytest.mark.parametrize(
+        'key',
+        [
+            'NCCL_AUTH_TOKEN',
+            'FI_EFA_SECRET',
+            'NCCL_NET_PLUGIN_PASSWORD',
+            'UCX_API_KEY',
+            'NCCL_ACCESS_KEY_ID',
+        ],
+    )
+    def test_credential_bearing_values_are_masked(self, key):
+        result = collect_nccl_env({key: 'hunter2'})
+        assert result[key] == MASKED_VALUE
+        assert 'hunter2' not in str(result)
+
+    def test_masking_is_case_insensitive(self):
+        assert collect_nccl_env({'NCCL_auth_token': 'x'})['NCCL_auth_token'] == (
+            MASKED_VALUE
+        )
+
+    def test_empty_when_nothing_relevant_is_set(self):
+        assert collect_nccl_env({'PATH': '/usr/bin', 'HOME': '/root'}) == {}
 
 
 class TestGetInfinibandInfo(TestSystemInfoHelper):

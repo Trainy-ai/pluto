@@ -18,6 +18,59 @@ from .util import run_cmd, to_human  # TODO: move to server side
 logger = logging.getLogger(f'{__name__.split(".")[0]}')
 tag = 'System'
 
+# Environment variables that shape NCCL behaviour. NCCL_*/TORCH_NCCL_* are
+# NCCL's own knobs and PyTorch's ProcessGroupNCCL wrappers around them; the
+# fabric prefixes cover the transport plugins NCCL dispatches to
+# (libfabric/aws-ofi-nccl on EFA, UCX), which decide whether a job runs over
+# IB/RoCE or silently falls back to TCP.
+NCCL_ENV_PREFIXES = ('NCCL_', 'TORCH_NCCL_', 'FI_', 'OFI_', 'UCX_')
+
+# Vars outside those prefixes that still change collective behaviour, or are
+# needed to make sense of NCCL's own debug output.
+NCCL_ENV_KEYS = (
+    'TORCH_DISTRIBUTED_DEBUG',
+    'TORCH_CPP_LOG_LEVEL',
+    'TORCH_SHOW_CPP_STACKTRACES',
+    'GLOO_SOCKET_IFNAME',
+)
+
+# Substrings marking a value that must not leave the machine verbatim. NCCL_*
+# is not where credentials normally live, but the prefix scan is broad enough
+# that a stray NCCL_..._TOKEN would otherwise be shipped and logged as-is.
+_MASKED_KEY_MARKERS = (
+    'TOKEN',
+    'SECRET',
+    'PASSWORD',
+    'PASSWD',
+    'API_KEY',
+    'APIKEY',
+    'CREDENTIAL',
+    'PRIVATE_KEY',
+    'ACCESS_KEY',
+)
+MASKED_VALUE = '<redacted>'
+
+
+def _is_masked_key(key: str) -> bool:
+    upper = key.upper()
+    return any(marker in upper for marker in _MASKED_KEY_MARKERS)
+
+
+def collect_nccl_env(
+    environ: Optional[Mapping[str, str]] = None,
+) -> Dict[str, str]:
+    """NCCL-relevant environment variables, sorted, credential values masked.
+
+    Read at call time rather than cached at import, so a var exported between
+    interpreter start and ``pluto.init()`` is still picked up.
+    """
+    env: Mapping[str, str] = os.environ if environ is None else environ
+    d: Dict[str, str] = {}
+    for key, value in env.items():
+        if key.startswith(NCCL_ENV_PREFIXES) or key in NCCL_ENV_KEYS:
+            d[key] = MASKED_VALUE if _is_masked_key(key) else value
+    return dict(sorted(d.items()))
+
 
 class System:
     def __init__(self, settings: Settings) -> None:
@@ -468,7 +521,7 @@ class System:
         return d
 
     def get_nccl_info(self) -> Dict[str, Any]:
-        """Collect NCCL version information and NCCL environment variables."""
+        """Collect NCCL versions and the NCCL/fabric environment."""
         d: Dict[str, Any] = {}
 
         # PyTorch NCCL version
@@ -502,11 +555,10 @@ class System:
         except Exception:
             pass
 
-        # NCCL environment variables
-        nccl_env: Dict[str, str] = {}
-        for key, value in os.environ.items():
-            if key.startswith('NCCL_'):
-                nccl_env[key] = value
+        # NCCL environment variables (plus the fabric/plugin vars NCCL
+        # dispatches through) — shipped in systemMetadata on run create, so a
+        # job's collective configuration is queryable per run.
+        nccl_env = collect_nccl_env()
         if nccl_env:
             d['nccl_env'] = nccl_env
 
