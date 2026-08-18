@@ -379,8 +379,34 @@ compile workers. Regression tests:
 ### NCCL environment capture
 
 Distributed failures are almost always configuration failures, so the NCCL
-environment is recorded automatically on every run — see
-`docs/docs/advanced/01-debugging.md` for the user-facing description.
+environment is recorded automatically on every run — no user code change. What
+is captured:
+
+| Matched | Examples |
+|---|---|
+| `NCCL_*` | `NCCL_DEBUG`, `NCCL_SOCKET_IFNAME`, `NCCL_IB_HCA`, `NCCL_ALGO` |
+| `TORCH_NCCL_*` | `TORCH_NCCL_ASYNC_ERROR_HANDLING`, `TORCH_NCCL_BLOCKING_WAIT` |
+| `FI_*`, `OFI_*` | `FI_PROVIDER`, `FI_EFA_USE_DEVICE_RDMA` (libfabric / aws-ofi-nccl) |
+| `UCX_*` | `UCX_TLS`, `UCX_NET_DEVICES` |
+| Exact keys | `TORCH_DISTRIBUTED_DEBUG`, `TORCH_CPP_LOG_LEVEL`, `TORCH_SHOW_CPP_STACKTRACES`, `GLOO_SOCKET_IFNAME` |
+
+Runs are selectable by what they ran with, since `systemMetadata.*` is an
+accepted filter field:
+
+```python
+import pluto.query as pq
+
+runs = pq.list_runs(
+    'my-project',
+    filters={'systemMetadata.nccl.nccl_env.NCCL_ALGO': 'Tree'},
+)
+```
+
+The environment is read at `pluto.init()` time, so vars exported later — e.g.
+by a launcher configuring NCCL right before `init_process_group()` — are not
+recorded. (This section doubles as the user-facing description: the Docusaurus
+site that would have carried it was removed in #145, and the live docs are
+Mintlify, built outside this repo.)
 
 - `collect_nccl_env()` (`pluto/sys.py`) is the single source of truth: it scans
   `NCCL_ENV_PREFIXES` (`NCCL_`, `TORCH_NCCL_`, `FI_`, `OFI_`, `UCX_`) plus the

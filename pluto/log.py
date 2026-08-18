@@ -16,6 +16,24 @@ _stderr = sys.stderr
 # setup_logger_file, stopped in teardown_logger.
 _fd_captures: list = []
 
+# Set on the one handler setup_logger_file attaches to the console logger,
+# so setup_logger can tell "pluto already configured this" from "somebody
+# else attached a handler". It must not test for handlers in general:
+# setup_logger_file sets console.propagate = False, which forces anything
+# capturing log records to attach at this logger rather than at the root.
+# pytest's logging plugin does exactly that (from pytest 9 on), so a bare
+# `len(console.handlers) > 0` check saw *pytest's* LogCaptureHandlers,
+# concluded the console was already set up, and returned before installing
+# the ConsoleHandler wrappers — silently dropping every console line for
+# the rest of the process.
+_CONSOLE_HANDLER_FLAG = '_pluto_console_handler'
+
+
+def _console_is_configured(console) -> bool:
+    """True if setup_logger_file already configured this console logger."""
+    return any(getattr(h, _CONSOLE_HANDLER_FLAG, False) for h in console.handlers)
+
+
 colors = {
     'DEBUG': ANSI.green,
     'INFO': ANSI.cyan,
@@ -187,7 +205,7 @@ def setup_logger(settings, logger, console=None, sync_manager=None) -> None:
         logger.addHandler(stream_handler)
 
     if settings._op_id and not settings.disable_console:
-        if len(console.handlers) > 0:  # full logger
+        if _console_is_configured(console):
             return
         logger, console = setup_logger_file(settings, logger, console, sync_manager)
 
@@ -261,6 +279,7 @@ def setup_logger_file(settings, logger, console, sync_manager=None):
         datefmt='%H:%M:%S',
     )
     file_handler.setFormatter(file_formatter)
+    setattr(file_handler, _CONSOLE_HANDLER_FLAG, True)
     console.addHandler(file_handler)  # TODO: fix slow file writes
 
     sanitizer = None
