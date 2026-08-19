@@ -34,7 +34,7 @@ from .log import flush_console_buffers, setup_logger, teardown_logger
 from .store import DataStore
 from .sync import SyncProcessManager
 from .sync.store import HEALTH_METRIC_KEYS
-from .sys import System
+from .sys import System, collect_nccl_env
 from .util import (
     ANSI,
     deep_merge,
@@ -53,6 +53,11 @@ tag = 'Operation'
 # sent. There is no cardinality/distinct-value guard: every string value is
 # logged, regardless of how many distinct values the series has.
 STRING_SERIES_MAX_LEN = 200
+
+# Cap on the rendered NCCL-environment log line. Hosts with a large fabric
+# configuration (many FI_*/UCX_* vars) would otherwise push a multi-KB line
+# into the console stream; the full set is still sent in systemMetadata.
+NCCL_ENV_LOG_MAX_CHARS = 2048
 
 
 def _is_distributed_environment() -> bool:
@@ -723,6 +728,12 @@ class Op:
         # Print URL where users can view the run
         logger.info(f'{tag}: {self._view_run_message()}')
 
+        # NCCL/fabric configuration of this rank. It also rides along in
+        # systemMetadata, but the log line lands in the run's console output
+        # (uploaded like any other log), which is where anyone debugging a
+        # hung all-reduce or an unexpected TCP fallback looks first.
+        self._log_nccl_env()
+
         # Register excepthook to detect unhandled exceptions and mark runs as FAILED
         _register_excepthook()
 
@@ -734,6 +745,29 @@ class Op:
             pluto.ops = []
         pluto.ops.append(self)
         pluto.log, pluto.alert, pluto.watch = self.log, self.alert, self.watch
+
+    def _log_nccl_env(self) -> None:
+        """Log the NCCL-relevant environment at run start.
+
+        Emitted once per rank, after the logger and sync process are up so the
+        line is captured and uploaded with the rest of the console output.
+        Suppressed under ``disable_system_metrics`` (backfill/migration), where
+        this host's environment says nothing about the run being written.
+        """
+        if self.settings.mode == 'noop' or self.settings.disable_system_metrics:
+            return
+        try:
+            nccl_env = collect_nccl_env()
+        except Exception as e:  # never let diagnostics break a run
+            logger.debug('%s: NCCL environment capture skipped: %s', tag, e)
+            return
+        if not nccl_env:
+            logger.debug('%s: no NCCL environment variables set', tag)
+            return
+        rendered = ', '.join(f'{k}={v}' for k, v in nccl_env.items())
+        if len(rendered) > NCCL_ENV_LOG_MAX_CHARS:
+            rendered = f'{rendered[:NCCL_ENV_LOG_MAX_CHARS]}... (truncated)'
+        logger.info('%s: NCCL environment (%d vars): %s', tag, len(nccl_env), rendered)
 
     def log(
         self,

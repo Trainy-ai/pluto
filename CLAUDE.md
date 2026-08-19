@@ -376,6 +376,61 @@ torchtitan job where capture died ~10 s in, exactly when inductor spun up its
 compile workers. Regression tests:
 `tests/test_fd_capture.py::TestForkedChildCannotDisableParentCapture`.
 
+### NCCL environment capture
+
+Distributed failures are almost always configuration failures, so the NCCL
+environment is recorded automatically on every run — no user code change. What
+is captured:
+
+| Matched | Examples |
+|---|---|
+| `NCCL_*` | `NCCL_DEBUG`, `NCCL_SOCKET_IFNAME`, `NCCL_IB_HCA`, `NCCL_ALGO` |
+| `TORCH_NCCL_*` | `TORCH_NCCL_ASYNC_ERROR_HANDLING`, `TORCH_NCCL_BLOCKING_WAIT` |
+| `FI_*`, `OFI_*` | `FI_PROVIDER`, `FI_EFA_USE_DEVICE_RDMA` (libfabric / aws-ofi-nccl) |
+| `UCX_*` | `UCX_TLS`, `UCX_NET_DEVICES` |
+| Exact keys | `TORCH_DISTRIBUTED_DEBUG`, `TORCH_CPP_LOG_LEVEL`, `TORCH_SHOW_CPP_STACKTRACES`, `GLOO_SOCKET_IFNAME` |
+
+Runs are selectable by what they ran with, since `systemMetadata.*` is an
+accepted filter field:
+
+```python
+import pluto.query as pq
+
+runs = pq.list_runs(
+    'my-project',
+    filters={'systemMetadata.nccl.nccl_env.NCCL_ALGO': 'Tree'},
+)
+```
+
+The environment is read at `pluto.init()` time, so vars exported later — e.g.
+by a launcher configuring NCCL right before `init_process_group()` — are not
+recorded. (This section doubles as the user-facing description: the Docusaurus
+site that would have carried it was removed in #145, and the live docs are
+Mintlify, built outside this repo.)
+
+- `collect_nccl_env()` (`pluto/sys.py`) is the single source of truth: it scans
+  `NCCL_ENV_PREFIXES` (`NCCL_`, `TORCH_NCCL_`, `FI_`, `OFI_`, `UCX_`) plus the
+  exact `NCCL_ENV_KEYS`, sorts, and masks credential-looking keys with
+  `MASKED_VALUE`. Read at call time, never cached at import.
+- **Two sinks, deliberately.** `System.get_nccl_info()` puts it in
+  `systemMetadata.nccl.nccl_env` at run create (queryable via the
+  `systemMetadata.` filter prefix), and `Op._log_nccl_env()` logs one line from
+  `Op.start()`. The log line is not redundant: resuming ranks go through
+  `/api/runs/resume`, whose payload carries **no** system info
+  (`make_compat_resume_v1`), so in multi-node runs the metadata only ever
+  describes the rank that created the run. The console line is per-rank, which
+  is where a misconfigured worker actually shows up.
+- `_log_nccl_env()` is called from `start()`, i.e. after `setup_logger()` and
+  the sync manager are up, so the line is captured and uploaded. It is
+  suppressed under `mode == 'noop'` and `disable_system_metrics` (backfill),
+  swallows collection errors, and truncates at `NCCL_ENV_LOG_MAX_CHARS` —
+  hosts with large `FI_*`/`UCX_*` sets would otherwise push multi-KB lines into
+  the console stream.
+- Helper naming avoids credential words (`_is_masked_key`, not
+  `_is_secret_key`) for the same CodeQL reason documented under "Auth failures"
+  above: `py/clear-text-logging-sensitive-data` classifies a call's result by
+  callee name, and this result *is* logged.
+
 ### Network Filesystems (NFS/Lustre/SMB) and SQLite WAL
 
 The sync DB uses SQLite WAL mode (`pluto/sync/store.py`), which relies on POSIX
