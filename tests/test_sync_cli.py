@@ -193,7 +193,7 @@ class TestRetrySync:
         call_count = 0
 
         def fake_sync_batch(
-            store, uploader, log, max_retries, batch_size, file_batch_size
+            store, uploader, log, max_retries, batch_size, file_batch_size, **kwargs
         ):
             nonlocal call_count
             call_count += 1
@@ -278,7 +278,7 @@ class TestRetrySync:
         call_count = 0
 
         def fake_sync_batch(
-            store, uploader, log, max_retries, batch_size, file_batch_size
+            store, uploader, log, max_retries, batch_size, file_batch_size, **kwargs
         ):
             nonlocal call_count
             call_count += 1
