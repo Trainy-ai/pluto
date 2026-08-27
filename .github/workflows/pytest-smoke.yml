@@ -68,7 +68,8 @@ jobs:
           # from the auth lookup, 5xx, dropped connection, or timeout). Retry
           # ONLY those transport errors (--only-rerun), so a genuine assertion /
           # logic failure still fails immediately and can't be masked.
-          poetry run pytest -n auto -rs -m "not distributed" tests \
+          poetry run pytest -n 16 -rs -m "not distributed" tests \
+            --durations=25 \
             --reruns 2 --reruns-delay 5 \
             --only-rerun "RemoteProtocolError" \
             --only-rerun "ReadTimeout" \
