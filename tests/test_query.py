@@ -21,6 +21,8 @@ def _clean_env(monkeypatch):
         'MLOP_API_TOKEN',
         'PLUTO_URL_API',
         'MLOP_URL_API',
+        'PLUTO_URL_INGEST',
+        'MLOP_URL_INGEST',
     ):
         monkeypatch.delenv(key, raising=False)
 
@@ -843,3 +845,110 @@ class TestModuleFunctions:
 
         assert hasattr(pluto, 'query')
         assert hasattr(pluto.query, 'Client')
+
+
+# ---------------------------------------------------------------------------
+# upload_file — out-of-band artifact upload (no Op, no lifecycle side effects)
+# ---------------------------------------------------------------------------
+
+
+class TestUploadFile:
+    """pluto.query.upload_file attaches one artifact to an existing run
+    via the ingest presign+PUT protocol, without creating an Op or touching
+    the run's lifecycle/metadata (unlike init(resume=True))."""
+
+    def _arm(self, client, mock_response, monkeypatch, tmp_path):
+        """Set up mocks: run lookup, presign POST, S3 PUT. Returns handles."""
+        staged = tmp_path / 'config.yaml'
+        staged.write_text('param: 1\n')
+
+        # Run details lookup (GET) → numeric id + name for ingest headers.
+        client._client.get.return_value = mock_response(
+            200, {'id': 42123, 'name': 'train-run-1'}
+        )
+        # Presign POST → URL mapping in the ingest response shape.
+        client._client.post.return_value = mock_response(
+            200, {'File': [{'config.yaml': 'https://s3.example.com/put-here'}]}
+        )
+        put_calls = {}
+
+        def fake_put(url, content=None, headers=None, **kwargs):
+            put_calls['url'] = url
+            put_calls['content'] = content
+            put_calls['headers'] = headers
+            return httpx.Response(200, request=httpx.Request('PUT', url))
+
+        monkeypatch.setattr(httpx, 'put', fake_put)
+        return staged, put_calls
+
+    def test_happy_path_presign_and_put(
+        self, client, mock_response, monkeypatch, tmp_path
+    ):
+        staged, put_calls = self._arm(client, mock_response, monkeypatch, tmp_path)
+
+        client.upload_file('proj-a', 'P-1', 'hydra/config.yaml', str(staged))
+
+        # Presign request: correct endpoint, run headers, payload shape.
+        args, kwargs = client._client.post.call_args
+        assert args[0].endswith('/files')
+        headers = kwargs['headers']
+        assert headers['X-Run-Id'] == '42123'
+        assert headers['X-Run-Name'] == 'train-run-1'
+        assert headers['X-Project-Name'] == 'proj-a'
+        payload = json.loads(kwargs['content'])
+        (entry,) = payload['files']
+        assert entry['fileName'] == 'config.yaml'
+        assert entry['logName'] == 'hydra/config.yaml'
+        assert entry['fileSize'] == staged.stat().st_size
+        assert entry['sampleIndex'] == 0
+
+        # Bytes PUT to the presigned URL.
+        assert put_calls['url'] == 'https://s3.example.com/put-here'
+        assert put_calls['content'] == b'param: 1\n'
+
+    def test_no_op_created(self, client, mock_response, monkeypatch, tmp_path):
+        import pluto
+
+        staged, _ = self._arm(client, mock_response, monkeypatch, tmp_path)
+        ops_before = list(pluto.ops)
+
+        client.upload_file('proj-a', 42123, 'hydra/config.yaml', str(staged))
+
+        assert list(pluto.ops) == ops_before
+
+    def test_presign_error_surfaces_server_reason(
+        self, client, mock_response, monkeypatch, tmp_path
+    ):
+        staged, _ = self._arm(client, mock_response, monkeypatch, tmp_path)
+        client._client.post.return_value = mock_response(
+            413, {'error': 'payload too large'}
+        )
+
+        with pytest.raises(QueryError, match='payload too large'):
+            client.upload_file('proj-a', 42123, 'hydra/config.yaml', str(staged))
+
+    def test_missing_local_file_raises(self, client):
+        with pytest.raises(QueryError, match='No such file'):
+            client.upload_file(
+                'proj-a', 42123, 'hydra/config.yaml', '/nonexistent/config.yaml'
+            )
+
+    def test_module_level_wrapper(self, monkeypatch, mock_response, tmp_path):
+        import pluto.query as pq
+
+        monkeypatch.setenv('PLUTO_API_KEY', 'test-token-123')
+        pq._default_client = None
+        try:
+            mock_client = MagicMock(spec=Client)
+            with patch.object(pq, 'Client', return_value=mock_client):
+                pq.upload_file('proj-a', 42123, 'hydra/config.yaml', '/tmp/x.yaml')
+            mock_client.upload_file.assert_called_once_with(
+                'proj-a',
+                42123,
+                'hydra/config.yaml',
+                '/tmp/x.yaml',
+                step=None,
+                caption=None,
+            )
+        finally:
+            pq._default_client = None

@@ -1124,6 +1124,13 @@ class Op:
         except Exception:
             pass
 
+        # Switch the HTTP interface to give-up-fast on connection errors:
+        # from here on, sockets may be torn down under us (atexit), so
+        # retrying would hang shutdown. Before this point the same errors
+        # are transient and retried.
+        if self._iface:
+            self._iface.mark_shutting_down()
+
         # In DDP/distributed, don't block waiting for sync - it causes deadlocks
         # because all ranks must progress together for collective operations
         is_distributed = _is_distributed_environment()

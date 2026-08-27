@@ -20,6 +20,7 @@ Usage::
 
 import json
 import logging
+import mimetypes
 import os
 import time
 import warnings
@@ -32,6 +33,7 @@ logger = logging.getLogger(f'{__name__.split(".")[0]}')
 tag = 'Query'
 
 _DEFAULT_URL_API = 'https://pluto-api.trainy.ai'
+_DEFAULT_URL_INGEST = 'https://pluto-ingest.trainy.ai'
 _DEFAULT_TIMEOUT = 30
 _RETRY_MAX = 4
 _RETRY_WAIT_MIN = 0.5
@@ -162,6 +164,7 @@ class Client:
             )
 
         self._url_api = _resolve_url_api(host)
+        self._url_ingest = _resolve_url_ingest(host)
         self._client = httpx.Client(
             http2=True,
             headers={
@@ -563,6 +566,119 @@ class Client:
             params['logName'] = file_name
         return self._get('/api/runs/files', params=params)['files']
 
+    def upload_file(
+        self,
+        project: str,
+        run_id: Union[int, str],
+        log_name: str,
+        path: Union[str, Path],
+        *,
+        step: Optional[int] = None,
+        caption: Optional[str] = None,
+    ) -> None:
+        """Attach one file artifact to an existing run.
+
+        Pure HTTP (presign + PUT via the ingest service): never creates an
+        Op and never touches the run's lifecycle or metadata — unlike
+        ``pluto.init(resume=True)``, which would overwrite the run's
+        ``systemMetadata``, inject this machine's ``sys/*`` metrics, and
+        mark a live run terminal at interpreter exit.
+
+        Also serves as the recovery path for files reported as not uploaded
+        at shutdown (see the sync process warnings).
+
+        Args:
+            project: Project name.
+            run_id: Numeric server ID (``int``) or display ID string
+                (e.g. ``"MMP-1"``).
+            log_name: Log name to attach the file under
+                (e.g. ``"hydra/config.yaml"``).
+            path: Local file to upload.
+            step: Optional step to associate with the file.
+            caption: Optional caption.
+
+        Raises:
+            QueryError: If the file doesn't exist, the presign request is
+                rejected (with the server's reason), or the upload fails.
+        """
+        source = Path(path)
+        if not source.is_file():
+            raise QueryError(f'No such file: {source}')
+
+        # One lookup covers both the numeric id and the run name needed for
+        # the ingest headers.
+        run = self.get_run(project, run_id)
+        numeric_id = int(run['id'])
+        run_name = str(run.get('name', ''))
+
+        file_name = source.name
+        file_ext = source.suffix
+        entry: Dict[str, Any] = {
+            'fileName': file_name,
+            'fileSize': source.stat().st_size,
+            'fileType': file_ext[1:] if file_ext.startswith('.') else file_ext,
+            'time': int(time.time() * 1000),
+            'logName': log_name,
+            'step': step,
+            'sampleIndex': 0,
+        }
+        if caption is not None:
+            entry['caption'] = caption
+
+        headers = {
+            'Authorization': f'Bearer {self._api_token}',
+            'Content-Type': 'application/json',
+            'User-Agent': 'pluto-query',
+            'X-Run-Id': str(numeric_id),
+            'X-Run-Name': run_name,
+            'X-Project-Name': project,
+        }
+        presign_url = f'{self._url_ingest}/files'
+        try:
+            resp = self._client.post(
+                presign_url,
+                content=json.dumps({'files': [entry]}),
+                headers=headers,
+            )
+        except httpx.HTTPError as exc:
+            raise QueryError(
+                f'Presign request to {presign_url} failed: {type(exc).__name__}: {exc}'
+            ) from exc
+        if resp.status_code not in (200, 201):
+            raise QueryError(
+                f'{presign_url} returned {resp.status_code}: {resp.text[:500]}',
+                status_code=resp.status_code,
+            )
+
+        # Response maps file type to a list of {fileName: presignedUrl}.
+        presigned_url = None
+        for type_list in resp.json().values():
+            if isinstance(type_list, list):
+                for mapping in type_list:
+                    if isinstance(mapping, dict) and file_name in mapping:
+                        presigned_url = mapping[file_name]
+        if not presigned_url:
+            raise QueryError(f'No presigned URL returned for "{file_name}"')
+
+        content_type = mimetypes.guess_type(file_name)[0] or 'application/octet-stream'
+        try:
+            put_resp = httpx.put(
+                presigned_url,
+                content=source.read_bytes(),
+                headers={'Content-Type': content_type},
+                timeout=120,
+            )
+        except httpx.HTTPError as exc:
+            raise QueryError(
+                f'Upload of "{file_name}" failed: {type(exc).__name__}: {exc}'
+            ) from exc
+        if put_resp.status_code not in (200, 201):
+            raise QueryError(
+                f'Upload of "{file_name}" failed with '
+                f'{put_resp.status_code}: {put_resp.text[:200]}',
+                status_code=put_resp.status_code,
+            )
+
     def download_file(
         self,
         project: str,
@@ -856,6 +972,21 @@ def download_file(
     return _get_client().download_file(project, run_id, file_name, destination)
 
 
+def upload_file(
+    project: str,
+    run_id: Union[int, str],
+    log_name: str,
+    path: Union[str, Path],
+    *,
+    step: Optional[int] = None,
+    caption: Optional[str] = None,
+) -> None:
+    """Attach one file to an existing run. See :meth:`Client.upload_file`."""
+    return _get_client().upload_file(
+        project, run_id, log_name, path, step=step, caption=caption
+    )
+
+
 def get_logs(
     project: str,
     run_id: Union[int, str],
@@ -942,6 +1073,32 @@ def _resolve_url_api(host: Optional[str] = None) -> str:
         return url.rstrip('/')
 
     return _DEFAULT_URL_API
+
+
+def _resolve_url_ingest(host: Optional[str] = None) -> str:
+    """Resolve the ingest base URL (presigned file uploads)."""
+    if host is not None:
+        if host.startswith('http://') or host.startswith('https://'):
+            # A full URL: can't reliably derive the ingest URL from an app
+            # or API URL, so use it as-is (self-hosted single-endpoint setups).
+            return host.rstrip('/')
+        # Bare host like "10.0.0.1" — same port scheme as Settings.update_host
+        return f'http://{host}:3003'
+
+    url = os.environ.get('PLUTO_URL_INGEST')
+    if url:
+        return url.rstrip('/')
+
+    url = os.environ.get('MLOP_URL_INGEST')
+    if url:
+        warnings.warn(
+            'MLOP_URL_INGEST is deprecated. Use PLUTO_URL_INGEST instead.',
+            DeprecationWarning,
+            stacklevel=3,
+        )
+        return url.rstrip('/')
+
+    return _DEFAULT_URL_INGEST
 
 
 def _to_dataframe(data: Any) -> Any:

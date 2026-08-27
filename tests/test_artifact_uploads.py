@@ -9,6 +9,7 @@ Covered in test_basic.py (not duplicated here):
 - Audio: downloaded from URL
 """
 
+import hashlib
 import importlib.util
 import json
 import os
@@ -18,7 +19,12 @@ import pytest
 from PIL import Image as PILImage
 
 import pluto
-from tests.utils import get_task_name
+from tests.utils import (
+    assert_sync_files_completed,
+    capture_sync_db_path,
+    download_file_with_poll,
+    get_task_name,
+)
 
 try:
     import torch
@@ -45,10 +51,17 @@ TESTING_PROJECT_NAME = 'testing-ci'
 
 @pytest.fixture
 def pluto_run():
-    """Initializes and finishes a pluto run for a test."""
+    """Initializes and finishes a pluto run for a test.
+
+    After finish(), asserts every file the test logged actually uploaded
+    (sync DB rows all COMPLETED) — otherwise these tests are green even
+    when payloads are silently lost.
+    """
     run = pluto.init(project=TESTING_PROJECT_NAME, name=get_task_name(), config={})
     yield run
+    db_path = capture_sync_db_path(run)
     run.finish()
+    assert_sync_files_completed(db_path)
 
 
 class TestArtifactUploads:
@@ -318,3 +331,87 @@ class TestEdgeCases:
             img = PILImage.new('RGB', (16, 16), color=(step * 80, 0, 0))
             image = pluto.Image(img, caption=f'overwrite-{step}')
             pluto_run.log({'same-key/image': image}, step=step)
+
+
+class TestRoundTripVerification:
+    """Upload → finish → query back → verify content actually matches.
+
+    The smoke tests above prove log() doesn't raise; the fixture's sync-DB
+    check proves the payload left the client. These tests close the loop
+    end-to-end: the bytes the server hands back are the bytes we logged.
+    One representative test per file type (images additionally covered by
+    test_e2e.py's pixel checks).
+    """
+
+    def _finished_run(self):
+        run = pluto.init(project=TESTING_PROJECT_NAME, name=get_task_name(), config={})
+        return run, run.settings._op_id
+
+    def test_artifact_bytes_round_trip(self, tmp_path):
+        """Binary artifact downloads back byte-identical."""
+        payload = os.urandom(4096)
+        source = tmp_path / 'weights.bin'
+        source.write_bytes(payload)
+
+        run, run_id = self._finished_run()
+        run.log({'roundtrip/artifact': pluto.Artifact(str(source), caption='rt-bin')})
+        run.finish()
+
+        path = download_file_with_poll(
+            TESTING_PROJECT_NAME, run_id, 'roundtrip/artifact', tmp_path / 'dl'
+        )
+        assert (
+            hashlib.sha256(path.read_bytes()).hexdigest()
+            == hashlib.sha256(payload).hexdigest()
+        ), 'downloaded artifact bytes differ from uploaded bytes'
+
+    def test_file_bytes_round_trip(self, tmp_path):
+        """Generic File downloads back byte-identical."""
+        content = 'col1,col2\n1,2\n3,4\n'
+        source = tmp_path / 'data.csv'
+        source.write_text(content)
+
+        run, run_id = self._finished_run()
+        run.log({'roundtrip/file': pluto.File(str(source), name='rt-csv')})
+        run.finish()
+
+        path = download_file_with_poll(
+            TESTING_PROJECT_NAME, run_id, 'roundtrip/file', tmp_path / 'dl'
+        )
+        assert (
+            path.read_bytes() == content.encode()
+        ), 'downloaded file content differs from uploaded content'
+
+    def test_text_round_trip(self, tmp_path):
+        """Text logged from a string downloads back with identical content."""
+        content = f'round-trip sentinel {get_task_name()}\nline two\n'
+
+        run, run_id = self._finished_run()
+        run.log({'roundtrip/text': pluto.Text(content, caption='rt-text')})
+        run.finish()
+
+        path = download_file_with_poll(
+            TESTING_PROJECT_NAME, run_id, 'roundtrip/text', tmp_path / 'dl'
+        )
+        assert (
+            path.read_text() == content
+        ), f'downloaded text differs: {path.read_text()!r} != {content!r}'
+
+    def test_image_pixels_round_trip(self, tmp_path):
+        """Image downloads back pixel-identical (PNG is lossless)."""
+        source_img = PILImage.new('RGB', (2, 2))
+        pixels = [(255, 0, 0), (0, 255, 0), (0, 0, 255), (255, 255, 0)]
+        source_img.putdata(pixels)
+
+        run, run_id = self._finished_run()
+        run.log({'roundtrip/image': pluto.Image(source_img, caption='rt-img')})
+        run.finish()
+
+        path = download_file_with_poll(
+            TESTING_PROJECT_NAME, run_id, 'roundtrip/image', tmp_path / 'dl'
+        )
+        downloaded = PILImage.open(path).convert('RGB')
+        assert downloaded.size == (2, 2)
+        assert (
+            list(downloaded.getdata()) == pixels
+        ), 'downloaded image pixels differ from uploaded image'

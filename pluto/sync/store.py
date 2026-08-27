@@ -127,7 +127,11 @@ class SyncStatus(IntEnum):
     PENDING = 0  # Not yet synced
     IN_PROGRESS = 1  # Currently being synced
     COMPLETED = 2  # Successfully synced
-    FAILED = 3  # Failed after max retries
+    FAILED = 3  # Transient failure — will be retried (indefinitely, with backoff)
+    # Terminal by classification only (non-retryable 4xx, missing local file).
+    # Never set for transient errors: a retry-count cap here silently converts
+    # a network blip into permanent data loss.
+    ABANDONED = 4
 
 
 class RecordType(IntEnum):
@@ -743,57 +747,76 @@ class SyncStore:
             )
             return cursor.lastrowid or 0
 
+    @staticmethod
+    def _file_record_from_row(row: sqlite3.Row) -> FileRecord:
+        return FileRecord(
+            id=row['id'],
+            run_id=row['run_id'],
+            local_path=row['local_path'],
+            file_name=row['file_name'] or '',
+            file_ext=row['file_ext'] or '',
+            file_type=row['file_type'],
+            file_size=row['file_size'] or 0,
+            log_name=row['log_name'] or '',
+            timestamp_ms=row['timestamp_ms'],
+            step=row['step'],
+            status=SyncStatus(row['status']),
+            retry_count=row['retry_count'],
+            created_at=row['created_at'],
+            last_attempt_at=row['last_attempt_at'],
+            error_message=row['error_message'],
+            presigned_url=row['remote_url'],
+            caption=(row['caption'] if 'caption' in row.keys() else None),
+            annotations=(row['annotations'] if 'annotations' in row.keys() else None),
+            sample_index=(
+                row['sample_index']
+                if 'sample_index' in row.keys() and row['sample_index'] is not None
+                else 0
+            ),
+        )
+
     def get_pending_files(
         self,
         limit: int = 10,
-        max_retries: int = 5,
+        backoff_base: float = 2.0,
+        backoff_cap: float = 60.0,
+        ignore_backoff: bool = False,
     ) -> List[FileRecord]:
-        """Get files pending upload."""
+        """Get files eligible for an upload attempt.
+
+        Transient failures (status FAILED) are retried indefinitely — there
+        is deliberately no retry-count ceiling, only per-row exponential
+        backoff (min(backoff_base**retry_count, backoff_cap), jittered so
+        concurrent processes don't retry in lockstep). ignore_backoff=True
+        (shutdown drain) selects regardless of how recently a row failed.
+        """
+        # Scan past the head of the queue: rows sitting out their backoff
+        # window must not starve newer eligible rows behind them.
+        scan_limit = max(limit * 5, 50)
         with self._lock:
             cursor = self.conn.execute(
                 """
                 SELECT * FROM file_uploads
                 WHERE status IN (?, ?)
-                AND retry_count < ?
                 ORDER BY created_at ASC
                 LIMIT ?
                 """,
-                (int(SyncStatus.PENDING), int(SyncStatus.FAILED), max_retries, limit),
+                (int(SyncStatus.PENDING), int(SyncStatus.FAILED), scan_limit),
             )
+            rows = cursor.fetchall()
 
-            records = []
-            for row in cursor.fetchall():
-                records.append(
-                    FileRecord(
-                        id=row['id'],
-                        run_id=row['run_id'],
-                        local_path=row['local_path'],
-                        file_name=row['file_name'] or '',
-                        file_ext=row['file_ext'] or '',
-                        file_type=row['file_type'],
-                        file_size=row['file_size'] or 0,
-                        log_name=row['log_name'] or '',
-                        timestamp_ms=row['timestamp_ms'],
-                        step=row['step'],
-                        status=SyncStatus(row['status']),
-                        retry_count=row['retry_count'],
-                        created_at=row['created_at'],
-                        last_attempt_at=row['last_attempt_at'],
-                        error_message=row['error_message'],
-                        presigned_url=row['remote_url'],
-                        caption=(row['caption'] if 'caption' in row.keys() else None),
-                        annotations=(
-                            row['annotations'] if 'annotations' in row.keys() else None
-                        ),
-                        sample_index=(
-                            row['sample_index']
-                            if 'sample_index' in row.keys()
-                            and row['sample_index'] is not None
-                            else 0
-                        ),
-                    )
-                )
-            return records
+        now = time.time()
+        records = []
+        for row in rows:
+            if not ignore_backoff and row['retry_count'] and row['last_attempt_at']:
+                delay = min(backoff_base ** row['retry_count'], backoff_cap)
+                delay *= random.uniform(0.8, 1.2)
+                if now - row['last_attempt_at'] < delay:
+                    continue
+            records.append(self._file_record_from_row(row))
+            if len(records) >= limit:
+                break
+        return records
 
     @_retry_on_locked
     def mark_files_in_progress(self, file_ids: List[int]) -> None:
@@ -859,6 +882,52 @@ class SyncStore:
             )
 
     @_retry_on_locked
+    def mark_files_abandoned(
+        self,
+        file_ids: List[int],
+        error_message: str,
+    ) -> None:
+        """Permanently abandon file records (terminal, classified failures only).
+
+        Reserved for errors that retrying can never fix — a non-retryable 4xx
+        or a staged file that no longer exists. Transient failures must use
+        mark_files_failed instead.
+        """
+        if not file_ids:
+            return
+
+        with self._lock:
+            placeholders = ','.join('?' * len(file_ids))
+            params: List[Any] = [int(SyncStatus.ABANDONED), error_message]
+            params.extend(file_ids)
+            self.conn.execute(
+                f"""
+                UPDATE file_uploads
+                SET status = ?,
+                    error_message = ?
+                WHERE id IN ({placeholders})
+                """,
+                params,
+            )
+
+    def get_abandoned_files(self, run_id: Optional[str] = None) -> List[FileRecord]:
+        """Get files permanently abandoned after a terminal failure."""
+        with self._lock:
+            if run_id:
+                cursor = self.conn.execute(
+                    'SELECT * FROM file_uploads WHERE run_id = ? AND status = ? '
+                    'ORDER BY created_at ASC',
+                    (run_id, int(SyncStatus.ABANDONED)),
+                )
+            else:
+                cursor = self.conn.execute(
+                    'SELECT * FROM file_uploads WHERE status = ? '
+                    'ORDER BY created_at ASC',
+                    (int(SyncStatus.ABANDONED),),
+                )
+            return [self._file_record_from_row(row) for row in cursor.fetchall()]
+
+    @_retry_on_locked
     def update_file_presigned_url(self, file_id: int, url: str) -> None:
         """Store presigned URL for a file."""
         with self._lock:
@@ -868,23 +937,33 @@ class SyncStore:
             )
 
     def get_pending_file_count(self, run_id: Optional[str] = None) -> int:
-        """Get count of pending file uploads."""
+        """Get count of file uploads still owed to the server.
+
+        Includes FAILED: a transient failure will be retried, so the payload
+        is still pending. Only COMPLETED (uploaded) and ABANDONED (terminal,
+        reported separately) are excluded.
+        """
+        statuses = (
+            int(SyncStatus.PENDING),
+            int(SyncStatus.IN_PROGRESS),
+            int(SyncStatus.FAILED),
+        )
         with self._lock:
             if run_id:
                 cursor = self.conn.execute(
                     """
                     SELECT COUNT(*) FROM file_uploads
-                    WHERE run_id = ? AND status IN (?, ?)
+                    WHERE run_id = ? AND status IN (?, ?, ?)
                     """,
-                    (run_id, int(SyncStatus.PENDING), int(SyncStatus.IN_PROGRESS)),
+                    (run_id, *statuses),
                 )
             else:
                 cursor = self.conn.execute(
                     """
                     SELECT COUNT(*) FROM file_uploads
-                    WHERE status IN (?, ?)
+                    WHERE status IN (?, ?, ?)
                     """,
-                    (int(SyncStatus.PENDING), int(SyncStatus.IN_PROGRESS)),
+                    statuses,
                 )
             return cursor.fetchone()[0]
 
