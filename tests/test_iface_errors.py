@@ -305,6 +305,27 @@ def test_try_connection_reset_during_shutdown_returns_none_without_retry():
     assert calls['n'] == 1, 'no retries once shutdown has begun'
 
 
+def test_try_httpx_connect_error_during_shutdown_returns_none_without_retry():
+    """httpx transport errors must honor the shutdown fast-path too.
+
+    Regression: the shutdown branch caught the socket exceptions but not
+    httpx.RequestError subclasses like ConnectError, so an unreachable
+    server at atexit re-entered the retry path (~169s of backoff) and
+    hung interpreter shutdown.
+    """
+    iface = _make_iface()
+    iface.mark_shutting_down()
+    calls = {'n': 0}
+
+    def fake_method(url, content=None, headers=None, **kwargs):
+        calls['n'] += 1
+        raise httpx.ConnectError('no route to host')
+
+    r = iface._try(fake_method, 'https://x', {}, b'{}', name='create')
+    assert r is None
+    assert calls['n'] == 1, 'no retries once shutdown has begun'
+
+
 def test_try_connection_reset_retried_when_flagged_even_during_shutdown():
     """For critical one-shot requests (retry_connection_errors=True, e.g. the
     terminal status update) a dropped socket is transient and IS retried — even

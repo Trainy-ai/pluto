@@ -790,32 +790,43 @@ class SyncStore:
         concurrent processes don't retry in lockstep). ignore_backoff=True
         (shutdown drain) selects regardless of how recently a row failed.
         """
-        # Scan past the head of the queue: rows sitting out their backoff
-        # window must not starve newer eligible rows behind them.
-        scan_limit = max(limit * 5, 50)
-        with self._lock:
-            cursor = self.conn.execute(
-                """
-                SELECT * FROM file_uploads
-                WHERE status IN (?, ?)
-                ORDER BY created_at ASC
-                LIMIT ?
-                """,
-                (int(SyncStatus.PENDING), int(SyncStatus.FAILED), scan_limit),
-            )
-            rows = cursor.fetchall()
-
+        # Page through the whole queue in created_at order: rows sitting out
+        # their backoff window at the head must not starve newer eligible
+        # rows behind them, so keep scanning until `limit` eligible rows are
+        # found or the queue is exhausted.
+        page_size = max(limit * 5, 50)
         now = time.time()
-        records = []
-        for row in rows:
-            if not ignore_backoff and row['retry_count'] and row['last_attempt_at']:
-                delay = min(backoff_base ** row['retry_count'], backoff_cap)
-                delay *= random.uniform(0.8, 1.2)
-                if now - row['last_attempt_at'] < delay:
-                    continue
-            records.append(self._file_record_from_row(row))
-            if len(records) >= limit:
+        records: List[FileRecord] = []
+        offset = 0
+        while len(records) < limit:
+            with self._lock:
+                cursor = self.conn.execute(
+                    """
+                    SELECT * FROM file_uploads
+                    WHERE status IN (?, ?)
+                    ORDER BY created_at ASC
+                    LIMIT ? OFFSET ?
+                    """,
+                    (
+                        int(SyncStatus.PENDING),
+                        int(SyncStatus.FAILED),
+                        page_size,
+                        offset,
+                    ),
+                )
+                rows = cursor.fetchall()
+            if not rows:
                 break
+            for row in rows:
+                if not ignore_backoff and row['retry_count'] and row['last_attempt_at']:
+                    delay = min(backoff_base ** row['retry_count'], backoff_cap)
+                    delay *= random.uniform(0.8, 1.2)
+                    if now - row['last_attempt_at'] < delay:
+                        continue
+                records.append(self._file_record_from_row(row))
+                if len(records) >= limit:
+                    break
+            offset += page_size
         return records
 
     @_retry_on_locked

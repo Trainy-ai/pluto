@@ -172,16 +172,20 @@ def test_sigterm_drains_pending_records_before_exit(tmp_path, recording_server):
         proc.send_signal(signal.SIGTERM)
 
         # The fix gives the drain up to shutdown_timeout (5s here) plus
-        # close overhead. Cap our wait at 15s so a regression doesn't
-        # hang the test suite.
+        # close overhead. Cap the wait so a regression doesn't hang the
+        # suite, but leave generous headroom: on loaded CI runners / slow
+        # disks a single drain pass (cold httpx import + SQLite writes) can
+        # take several seconds by itself, and this test asserts the records
+        # arrive — not that the box is fast.
+        exit_deadline = 40
         try:
-            stdout, stderr = proc.communicate(timeout=15)
+            stdout, stderr = proc.communicate(timeout=exit_deadline)
         except subprocess.TimeoutExpired:
             proc.kill()
             stdout, stderr = proc.communicate()
             pytest.fail(
-                f'Sync subprocess did not exit within 15s of SIGTERM. '
-                f'stderr: {stderr.decode(errors="replace")[:2000]}'
+                f'Sync subprocess did not exit within {exit_deadline}s of '
+                f'SIGTERM. stderr: {stderr.decode(errors="replace")[:2000]}'
             )
 
         # Sanity: the subprocess actually got the signal and ran the

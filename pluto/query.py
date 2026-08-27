@@ -662,12 +662,19 @@ class Client:
 
         content_type = mimetypes.guess_type(file_name)[0] or 'application/octet-stream'
         try:
-            put_resp = httpx.put(
-                presigned_url,
-                content=source.read_bytes(),
-                headers={'Content-Type': content_type},
-                timeout=120,
-            )
+            # Stream from disk rather than loading the whole artifact into
+            # memory (checkpoints can be multi-GB). Content-Length is set
+            # explicitly: presigned uploads reject chunked transfer encoding.
+            with source.open('rb') as f:
+                put_resp = httpx.put(
+                    presigned_url,
+                    content=f,
+                    headers={
+                        'Content-Type': content_type,
+                        'Content-Length': str(source.stat().st_size),
+                    },
+                    timeout=120,
+                )
         except httpx.HTTPError as exc:
             raise QueryError(
                 f'Upload of "{file_name}" failed: {type(exc).__name__}: {exc}'

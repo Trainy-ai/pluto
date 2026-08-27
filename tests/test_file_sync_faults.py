@@ -32,14 +32,6 @@ import time
 from pluto.sync.store import SyncStatus, SyncStore
 
 
-def _free_port() -> int:
-    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    s.bind(('127.0.0.1', 0))
-    port = s.getsockname()[1]
-    s.close()
-    return port
-
-
 class _FaultyIngestHandler(http.server.BaseHTTPRequestHandler):
     """Fake ingest + S3 endpoint with an injectable connection-reset fault.
 
@@ -118,8 +110,10 @@ class _FaultyIngestHandler(http.server.BaseHTTPRequestHandler):
 
 def _start_faulty_server(initial_faults: int):
     """Start the fault-injection server. initial_faults < 0 → fault forever."""
-    port = _free_port()
-    server = http.server.ThreadingHTTPServer(('127.0.0.1', port), _FaultyIngestHandler)
+    # Bind port 0 directly — probing for a free port and rebinding races
+    # against parallel xdist workers claiming the same port in between.
+    server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), _FaultyIngestHandler)
+    port = server.server_port
     server.lock = threading.Lock()
     server.faults_remaining = [initial_faults]
     server.uploads = {}

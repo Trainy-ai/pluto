@@ -874,7 +874,10 @@ class TestUploadFile:
 
         def fake_put(url, content=None, headers=None, **kwargs):
             put_calls['url'] = url
-            put_calls['content'] = content
+            # upload_file streams an open file handle, not bytes.
+            put_calls['content'] = (
+                content.read() if hasattr(content, 'read') else content
+            )
             put_calls['headers'] = headers
             return httpx.Response(200, request=httpx.Request('PUT', url))
 
@@ -902,9 +905,11 @@ class TestUploadFile:
         assert entry['fileSize'] == staged.stat().st_size
         assert entry['sampleIndex'] == 0
 
-        # Bytes PUT to the presigned URL.
+        # Bytes streamed to the presigned URL with explicit Content-Length
+        # (presigned uploads reject chunked transfer encoding).
         assert put_calls['url'] == 'https://s3.example.com/put-here'
         assert put_calls['content'] == b'param: 1\n'
+        assert put_calls['headers']['Content-Length'] == str(len(b'param: 1\n'))
 
     def test_no_op_created(self, client, mock_response, monkeypatch, tmp_path):
         import pluto

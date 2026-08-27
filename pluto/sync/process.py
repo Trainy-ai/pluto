@@ -226,28 +226,32 @@ class SyncProcessManager:
         # Normal mode: wait for sync to complete
         timeout = timeout or self.settings.get('sync_process_shutdown_timeout', 30.0)
 
-        completed = False
+        drained = False
         start = time.time()
-        completed = False
         while time.time() - start < timeout:
             # Records AND file uploads: declaring success on the metrics
             # queue alone silently dropped still-pending file payloads.
             pending = self.get_pending_count()
             if pending == 0:
-                self.store.mark_run_synced(self.run_id)
-                logger.info('Sync process completed successfully')
-                completed = True
+                drained = True
                 break
             time.sleep(0.1)
 
-        if not completed:
+        if not drained:
             pending = self.get_pending_count()
             logger.warning(
                 f'Sync process did not complete within {timeout}s, '
                 f'{pending} records pending. Data preserved in {self.db_path}'
             )
 
-        self._report_abandoned_files()
+        # ABANDONED rows are excluded from the pending count (retrying them
+        # is pointless), but they ARE lost data — a drain that ends with
+        # abandoned files must not be reported as success.
+        abandoned = self._report_abandoned_files()
+        completed = drained and not abandoned
+        if completed:
+            self.store.mark_run_synced(self.run_id)
+            logger.info('Sync process completed successfully')
 
         # The data is flushed, but the sync process is a persistent daemon: its
         # main loop only breaks on SIGTERM or when the PARENT dies. If we just
@@ -259,20 +263,25 @@ class SyncProcessManager:
         self._terminate_process(timeout)
         return completed
 
-    def _report_abandoned_files(self) -> None:
-        """Surface permanently-abandoned file uploads at ERROR."""
+    def _report_abandoned_files(self) -> List['FileRecord']:
+        """Surface permanently-abandoned file uploads at ERROR.
+
+        Returns the abandoned records so callers can treat their presence
+        as a failed sync.
+        """
         try:
             abandoned = self.store.get_abandoned_files(self.run_id)
         except Exception:
-            return
+            return []
         if not abandoned:
-            return
+            return []
         names = ', '.join(f'"{f.log_name}"' for f in abandoned[:10])
         logger.error(
             f'{len(abandoned)} file(s) were permanently abandoned after '
             f'terminal upload errors and will NOT appear on the server: '
             f'{names}. See error_message in {self.db_path} for reasons.'
         )
+        return abandoned
 
     def _terminate_process(self, timeout: float) -> None:
         """SIGTERM the sync subprocess and reap it, escalating to SIGKILL.
@@ -976,6 +985,10 @@ def _flush_remaining(
             # drain=True: last chance — select rows regardless of backoff
             # recency. Data that still fails stays safe in SQLite.
             synced = _sync_batch(store, uploader, log, max_retries, drain=True)
+            log.debug(
+                f'Flush pass: synced={synced} pending={get_total_pending()} '
+                f'elapsed={time.time() - start:.2f}s'
+            )
             if synced == 0:
                 if get_total_pending() == 0:
                     report_final_state(
@@ -1081,8 +1094,19 @@ def retry_sync(
                     )
                 return remaining == 0
 
+            # drain=True: this is an operator-invoked recovery loop bounded by
+            # `timeout` — select rows regardless of backoff recency, and keep
+            # trying while anything is still owed rather than giving up after
+            # one failed pass (rows parked in backoff used to look like
+            # "nothing left" and made the CLI quit with files unsent).
             synced = _sync_batch(
-                store, uploader, log, max_retries, batch_size, file_batch_size
+                store,
+                uploader,
+                log,
+                max_retries,
+                batch_size,
+                file_batch_size,
+                drain=True,
             )
             if synced == 0:
                 remaining = store.get_pending_count() + store.get_pending_file_count()
@@ -1090,14 +1114,8 @@ def retry_sync(
                     if verbose:
                         print(f'All {total_synced} records synced successfully.')
                     return True
-                else:
-                    if verbose:
-                        print(
-                            f'Synced {total_synced}, but '
-                            f'{remaining} records failed. '
-                            f'Data preserved in SQLite.'
-                        )
-                    return False
+                time.sleep(1.0)
+                continue
 
             total_synced += synced
             if verbose:
@@ -1428,13 +1446,25 @@ class _SyncUploader:
         try:
             presigned_urls = self._get_presigned_urls(file_records)
         except _TerminalUploadError as e:
-            # The server rejected this exact request — retrying the identical
-            # payload can never succeed.
-            self.log.warning(f'Presign request rejected by server: {e}')
-            for f in file_records:
-                results[f.id] = FileUploadResult(
+            if len(file_records) == 1:
+                # A single-file request the server rejected outright —
+                # retrying the identical payload can never succeed.
+                self.log.warning(f'Presign request rejected by server: {e}')
+                results[file_records[0].id] = FileUploadResult(
                     success=False, terminal=True, error=str(e)
                 )
+                return results
+            # A batch-level rejection doesn't identify WHICH file the server
+            # objected to (one oversized sibling, or the aggregate request).
+            # Abandoning the whole batch would permanently drop innocent
+            # payloads, so isolate: retry each file individually and let only
+            # the actual culprit(s) classify as terminal.
+            self.log.warning(
+                f'Presign rejected for batch of {len(file_records)} file(s), '
+                f'retrying individually to isolate: {e}'
+            )
+            for f in file_records:
+                results.update(self.upload_files_batch([f]))
             return results
         except Exception as e:
             self.log.warning(f'Failed to get presigned URLs: {e}')

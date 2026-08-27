@@ -608,8 +608,11 @@ class ServerInterface:
             BrokenPipeError,
             ConnectionResetError,
             ConnectionAbortedError,
-            httpx.RemoteProtocolError,
-            httpx.LocalProtocolError,
+            # Covers RemoteProtocolError/LocalProtocolError plus every other
+            # transport failure (ConnectError, timeouts, ...). Without the
+            # full family here, an unreachable server at atexit re-enters the
+            # retry path and hangs interpreter shutdown for minutes.
+            httpx.RequestError,
         ) as e:
             if self._shutting_down and not retry_connection_errors:
                 # During atexit teardown sockets are being torn down under

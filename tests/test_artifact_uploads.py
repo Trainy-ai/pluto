@@ -13,6 +13,7 @@ import hashlib
 import importlib.util
 import json
 import os
+from contextlib import contextmanager
 
 import numpy as np
 import pytest
@@ -343,9 +344,16 @@ class TestRoundTripVerification:
     test_e2e.py's pixel checks).
     """
 
+    @contextmanager
     def _finished_run(self):
+        """Yield (run, run_id); always finish() the run, even if the test
+        body raises — a leaked run keeps its sync process alive and can
+        bleed into later tests."""
         run = pluto.init(project=TESTING_PROJECT_NAME, name=get_task_name(), config={})
-        return run, run.settings._op_id
+        try:
+            yield run, run.settings._op_id
+        finally:
+            run.finish()
 
     def test_artifact_bytes_round_trip(self, tmp_path):
         """Binary artifact downloads back byte-identical."""
@@ -353,9 +361,10 @@ class TestRoundTripVerification:
         source = tmp_path / 'weights.bin'
         source.write_bytes(payload)
 
-        run, run_id = self._finished_run()
-        run.log({'roundtrip/artifact': pluto.Artifact(str(source), caption='rt-bin')})
-        run.finish()
+        with self._finished_run() as (run, run_id):
+            run.log(
+                {'roundtrip/artifact': pluto.Artifact(str(source), caption='rt-bin')}
+            )
 
         path = download_file_with_poll(
             TESTING_PROJECT_NAME, run_id, 'roundtrip/artifact', tmp_path / 'dl'
@@ -371,9 +380,8 @@ class TestRoundTripVerification:
         source = tmp_path / 'data.csv'
         source.write_text(content)
 
-        run, run_id = self._finished_run()
-        run.log({'roundtrip/file': pluto.File(str(source), name='rt-csv')})
-        run.finish()
+        with self._finished_run() as (run, run_id):
+            run.log({'roundtrip/file': pluto.File(str(source), name='rt-csv')})
 
         path = download_file_with_poll(
             TESTING_PROJECT_NAME, run_id, 'roundtrip/file', tmp_path / 'dl'
@@ -386,9 +394,8 @@ class TestRoundTripVerification:
         """Text logged from a string downloads back with identical content."""
         content = f'round-trip sentinel {get_task_name()}\nline two\n'
 
-        run, run_id = self._finished_run()
-        run.log({'roundtrip/text': pluto.Text(content, caption='rt-text')})
-        run.finish()
+        with self._finished_run() as (run, run_id):
+            run.log({'roundtrip/text': pluto.Text(content, caption='rt-text')})
 
         path = download_file_with_poll(
             TESTING_PROJECT_NAME, run_id, 'roundtrip/text', tmp_path / 'dl'
@@ -403,9 +410,8 @@ class TestRoundTripVerification:
         pixels = [(255, 0, 0), (0, 255, 0), (0, 0, 255), (255, 255, 0)]
         source_img.putdata(pixels)
 
-        run, run_id = self._finished_run()
-        run.log({'roundtrip/image': pluto.Image(source_img, caption='rt-img')})
-        run.finish()
+        with self._finished_run() as (run, run_id):
+            run.log({'roundtrip/image': pluto.Image(source_img, caption='rt-img')})
 
         path = download_file_with_poll(
             TESTING_PROJECT_NAME, run_id, 'roundtrip/image', tmp_path / 'dl'
