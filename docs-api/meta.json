@@ -1,7 +1,7 @@
 {
   "version": 1,
   "package": "pluto",
-  "package_version": "0.0.28",
+  "package_version": "0.0.29",
   "public_api": [
     "Artifact",
     "Audio",
