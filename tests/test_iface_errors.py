@@ -267,28 +267,71 @@ def test_try_network_error_returns_none_not_request_error():
     assert r is None
 
 
-def test_try_connection_reset_default_is_shutdown_signal_no_retry():
-    """By default a dropped keep-alive socket is treated as a shutdown signal:
-    no retry, no raise (so heartbeat/trigger/upload spam doesn't hang atexit)."""
+def test_try_connection_reset_before_shutdown_is_retried():
+    """A connection reset during normal operation is transient — retry it.
+
+    Regression test: _try treated every connection error as an atexit
+    shutdown signal and returned None with zero retries. In the field the
+    same exception fires during container startup (seen in production), where
+    giving up silently drops the request.
+    """
     iface = _make_iface()
     calls = {'n': 0}
 
     def fake_method(url, content=None, headers=None, **kwargs):
         calls['n'] += 1
-        raise ConnectionResetError('peer reset')
+        if calls['n'] < 3:
+            raise ConnectionResetError('connection reset by peer')
+        return _resp(200)
 
-    r = iface._try(
-        fake_method, 'https://x', {}, b'{}', name='trigger', raise_on_error=True
-    )
-    assert r is None
-    assert calls['n'] == 1, 'default: a connection reset is not retried'
+    r = iface._try(fake_method, 'https://x', {}, b'{}', name='create')
+    assert r is not None and r.status_code == 200
+    assert calls['n'] == 3, 'connection resets before shutdown must be retried'
 
 
-def test_try_connection_reset_retried_when_flagged_then_recovers():
-    """For critical one-shot requests (retry_connection_errors=True, e.g. the
-    terminal status update) a dropped socket is transient and IS retried, so a
-    later attempt can succeed instead of silently giving up on attempt 1."""
+def test_try_connection_reset_during_shutdown_returns_none_without_retry():
+    """Once shutdown has begun, connection errors must not hang atexit
+    (heartbeat / trigger / streaming-upload spam)."""
     iface = _make_iface()
+    iface.mark_shutting_down()
+    calls = {'n': 0}
+
+    def fake_method(url, content=None, headers=None, **kwargs):
+        calls['n'] += 1
+        raise ConnectionResetError('connection reset by peer')
+
+    r = iface._try(fake_method, 'https://x', {}, b'{}', name='create')
+    assert r is None
+    assert calls['n'] == 1, 'no retries once shutdown has begun'
+
+
+def test_try_httpx_connect_error_during_shutdown_returns_none_without_retry():
+    """httpx transport errors must honor the shutdown fast-path too.
+
+    Regression: the shutdown branch caught the socket exceptions but not
+    httpx.RequestError subclasses like ConnectError, so an unreachable
+    server at atexit re-entered the retry path (~169s of backoff) and
+    hung interpreter shutdown.
+    """
+    iface = _make_iface()
+    iface.mark_shutting_down()
+    calls = {'n': 0}
+
+    def fake_method(url, content=None, headers=None, **kwargs):
+        calls['n'] += 1
+        raise httpx.ConnectError('no route to host')
+
+    r = iface._try(fake_method, 'https://x', {}, b'{}', name='create')
+    assert r is None
+    assert calls['n'] == 1, 'no retries once shutdown has begun'
+
+
+def test_try_connection_reset_retried_when_flagged_even_during_shutdown():
+    """For critical one-shot requests (retry_connection_errors=True, e.g. the
+    terminal status update) a dropped socket is transient and IS retried — even
+    once shutdown has begun, since that's exactly when the status update runs."""
+    iface = _make_iface()
+    iface.mark_shutting_down()
     calls = {'n': 0}
 
     def fake_method(url, content=None, headers=None, **kwargs):
@@ -349,6 +392,36 @@ def test_update_status_retries_reset_and_raises_on_persistent_failure(monkeypatc
     with pytest.raises(PlutoRequestError):
         iface.update_status()
     assert calls['n'] >= 2, 'update_status must retry the reset before failing'
+
+
+def test_log_failed_request_written_at_default_log_level(tmp_path):
+    """Permanent failures must be written to failed_requests.log always.
+
+    Regression test: the write was gated on x_log_level <= DEBUG, which no
+    production configuration uses — so the post-mortem artifact never
+    existed exactly when it was needed.
+    """
+    iface = _make_iface()
+    iface.settings.dir = str(tmp_path)
+    log_dir = iface.settings.get_dir()
+    import os
+
+    os.makedirs(log_dir, exist_ok=True)
+    assert iface.settings.x_log_level > 10  # default config, not DEBUG
+
+    iface._log_failed_request(
+        request_type='file',
+        url='https://x/files',
+        payload_info='1 items',
+        error_info='ConnectionResetError: reset',
+        retry_count=5,
+    )
+
+    log_path = os.path.join(log_dir, 'failed_requests.log')
+    assert os.path.exists(log_path), 'failure log must be written outside DEBUG'
+    with open(log_path) as f:
+        entry = f.read()
+    assert 'ConnectionResetError' in entry
 
 
 # --- sync-process uploader (pluto/sync/process.py) -------------------------

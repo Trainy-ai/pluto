@@ -262,6 +262,11 @@ class ServerInterface:
     def __init__(self, config: dict, settings: Settings) -> None:
         self.config = config
         self.settings = settings
+        # Set at teardown (Op.finish/close). Until then, connection errors are
+        # ordinary transient failures and must be retried — only during real
+        # shutdown do we give up immediately to avoid hanging atexit on
+        # sockets that are being torn down.
+        self._shutting_down = False
 
         # One interface is built per run, so this is the per-run reset for the
         # persistent-401 notice. Without it, a sweep that creates many runs in
@@ -304,8 +309,13 @@ class ServerInterface:
             ),
         )
 
+    def mark_shutting_down(self) -> None:
+        """Switch connection-error handling to give-up-fast (teardown only)."""
+        self._shutting_down = True
+
     def close(self) -> None:
         """Close HTTP clients."""
+        self.mark_shutting_down()
         if self.client:
             self.client.close()
         if self.client_api:
@@ -424,12 +434,12 @@ class ServerInterface:
         error_info: str,
         retry_count: int,
     ) -> None:
-        """Log failed requests to file after all retries exhausted."""
+        """Log failed requests to file after all retries exhausted.
 
-        # Only log failures in DEBUG mode
-        if self.settings.x_log_level > logging.DEBUG:
-            return
-
+        Always written, regardless of log level: this is the post-mortem
+        record of a permanently-failed request, and it is needed precisely
+        in production configurations that don't run at DEBUG.
+        """
         failure_log_path = f'{self.settings.get_dir()}/failed_requests.log'
 
         log_entry = {
@@ -598,26 +608,31 @@ class ServerInterface:
             BrokenPipeError,
             ConnectionResetError,
             ConnectionAbortedError,
-            httpx.RemoteProtocolError,
-            httpx.LocalProtocolError,
+            # Covers RemoteProtocolError/LocalProtocolError plus every other
+            # transport failure (ConnectError, timeouts, ...). Without the
+            # full family here, an unreachable server at atexit re-enters the
+            # retry path and hangs interpreter shutdown for minutes.
+            httpx.RequestError,
         ) as e:
-            if not retry_connection_errors:
-                # Default: treat connection errors as shutdown signals - don't
-                # retry. This prevents hanging during atexit when sockets are
-                # being torn down (heartbeat / trigger / streaming-upload spam).
+            if self._shutting_down and not retry_connection_errors:
+                # During atexit teardown sockets are being torn down under
+                # us — retrying would hang shutdown, so give up immediately
+                # (heartbeat / trigger / streaming-upload spam).
                 logger.debug(
-                    '%s: %s: connection error (likely shutdown): %s: %s',
+                    '%s: %s: connection error during shutdown: %s: %s',
                     tag,
                     name,
                     type(e).__name__,
                     e,
                 )
                 return None
-            # Critical one-shot request (e.g. the terminal status update): a
-            # keep-alive socket dropped mid-request is transient, NOT a shutdown
-            # signal. Fall through to the retry/backoff path below so a single
-            # reset can't silently strand the run's finished status on the
-            # server (which then shows the run as stuck / FAILED forever).
+            # Otherwise a connection error is an ordinary transient network
+            # failure (container startup, LB recycle, keep-alive socket
+            # dropped mid-request) — fall through to the retry/backoff path
+            # like any other error. retry_connection_errors marks critical
+            # one-shot requests (e.g. the terminal status update) that must
+            # retry even during shutdown, so a single reset can't strand the
+            # run's finished status on the server.
             error_info = f'{type(e).__name__}: {str(e)}'
             logger.debug(
                 '%s: %s: attempt %s/%s: connection error from %s: %s: %s',

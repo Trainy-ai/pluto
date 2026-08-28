@@ -129,7 +129,12 @@ class TestConnectionErrorHandling:
         return iface
 
     def test_broken_pipe_no_retry(self):
-        """Test BrokenPipeError causes immediate return, not retry."""
+        """During shutdown, BrokenPipeError causes immediate return, not retry.
+
+        Connection errors are only swallowed once shutdown has begun (the
+        atexit-hang protection); before that they retry like any transient
+        failure — see test_iface_errors.py.
+        """
         from pluto.iface import ServerInterface
         from pluto.sets import Settings
 
@@ -143,6 +148,7 @@ class TestConnectionErrorHandling:
             mock_client_class.return_value = mock_client
 
             iface = ServerInterface({}, settings)
+            iface.mark_shutting_down()
 
             # Mock method that raises BrokenPipeError
             def raise_broken_pipe(*args, **kwargs):
@@ -165,7 +171,12 @@ class TestConnectionErrorHandling:
             assert mock_method.call_count == 1
 
     def test_connection_reset_no_retry(self):
-        """Test ConnectionResetError causes immediate return, not retry."""
+        """During shutdown, ConnectionResetError returns immediately, no retry.
+
+        Connection errors are only swallowed once shutdown has begun (the
+        atexit-hang protection); before that they retry like any transient
+        failure — see test_iface_errors.py.
+        """
         from pluto.iface import ServerInterface
         from pluto.sets import Settings
 
@@ -179,6 +190,7 @@ class TestConnectionErrorHandling:
             mock_client_class.return_value = mock_client
 
             iface = ServerInterface({}, settings)
+            iface.mark_shutting_down()
 
             def raise_connection_reset(*args, **kwargs):
                 raise ConnectionResetError('Connection reset by peer')

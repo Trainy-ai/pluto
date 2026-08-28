@@ -20,7 +20,11 @@ from PIL import Image as PILImage
 import pluto
 from pluto.sync.process import _SyncUploader
 from pluto.sync.store import FileRecord, RecordType, SyncRecord, SyncStatus, SyncStore
-from tests.utils import get_task_name
+from tests.utils import (
+    assert_sync_files_completed,
+    capture_sync_db_path,
+    get_task_name,
+)
 
 TESTING_PROJECT_NAME = 'testing-ci'
 
@@ -268,6 +272,91 @@ class TestSyncStore:
         row = cursor.fetchone()
         assert row[0] == 2
 
+    def _enqueue_one(self, store, name='test', run_id='test-run-1'):
+        return store.enqueue_file(
+            run_id=run_id,
+            local_path=f'/tmp/{name}.png',
+            file_name=name,
+            file_ext='.png',
+            file_type='image/png',
+            file_size=1024,
+            log_name=f'images/{name}',
+            timestamp_ms=int(time.time() * 1000),
+            step=1,
+        )
+
+    def test_failed_files_retried_indefinitely(self, store):
+        """A transiently-failing file must never age out of retry selection.
+
+        Regression test for the silent-loss bug: rows with
+        retry_count >= 5 were permanently excluded from get_pending_files.
+        """
+        store.register_run('test-run-1', 'test-project')
+        file_id = self._enqueue_one(store)
+
+        for i in range(10):
+            store.mark_files_failed([file_id], f'transient error {i}')
+
+        pending = store.get_pending_files(limit=10, ignore_backoff=True)
+        assert [f.id for f in pending] == [file_id]
+        assert pending[0].retry_count == 10
+
+    def test_pending_file_count_includes_failed(self, store):
+        """FAILED means "will retry" — it must count as pending."""
+        store.register_run('test-run-1', 'test-project')
+        file_id = self._enqueue_one(store)
+
+        store.mark_files_failed([file_id], 'transient error')
+
+        assert store.get_pending_file_count() == 1
+        assert store.get_pending_file_count('test-run-1') == 1
+
+    def test_abandoned_files_terminal_and_reported(self, store):
+        """ABANDONED rows leave the retry pipeline but stay queryable."""
+        store.register_run('test-run-1', 'test-project')
+        file_id = self._enqueue_one(store)
+        other_id = self._enqueue_one(store, name='other')
+
+        store.mark_files_abandoned([file_id], 'HTTP 413: payload too large')
+
+        # Out of the retry pipeline and out of the pending count...
+        pending = store.get_pending_files(limit=10, ignore_backoff=True)
+        assert [f.id for f in pending] == [other_id]
+        assert store.get_pending_file_count() == 1
+
+        # ...but reported with the real reason.
+        abandoned = store.get_abandoned_files('test-run-1')
+        assert [f.id for f in abandoned] == [file_id]
+        assert abandoned[0].status == SyncStatus.ABANDONED
+        assert abandoned[0].error_message == 'HTTP 413: payload too large'
+
+    def test_backoff_spaces_retry_selection(self, store):
+        """A just-failed file waits out its backoff window before reselection."""
+        store.register_run('test-run-1', 'test-project')
+        file_id = self._enqueue_one(store)
+
+        # Fail twice: with base 2.0 the delay is ~2**2 = 4s (±jitter).
+        store.mark_files_in_progress([file_id])
+        store.mark_files_failed([file_id], 'transient')
+        store.mark_files_in_progress([file_id])
+        store.mark_files_failed([file_id], 'transient')
+
+        # Just failed → inside the backoff window → not selected.
+        assert store.get_pending_files(limit=10, backoff_base=2.0) == []
+
+        # Same row, but with its last attempt pushed into the past → selected.
+        store.conn.execute(
+            'UPDATE file_uploads SET last_attempt_at = ? WHERE id = ?',
+            (time.time() - 3600, file_id),
+        )
+        pending = store.get_pending_files(limit=10, backoff_base=2.0)
+        assert [f.id for f in pending] == [file_id]
+
+        # ignore_backoff (shutdown drain) selects it regardless of recency.
+        assert [
+            f.id for f in store.get_pending_files(limit=10, ignore_backoff=True)
+        ] == [file_id]
+
     def test_pending_file_count(self, store):
         """Test pending file count is accurate."""
         store.register_run('test-run-1', 'test-project')
@@ -297,7 +386,12 @@ class TestSyncProcessIntegration:
 
     @pytest.fixture
     def sync_enabled_run(self):
-        """Create a pluto run with sync process enabled."""
+        """Create a pluto run with sync process enabled.
+
+        After finish(), asserts every logged file actually uploaded (all
+        sync-DB file rows COMPLETED) — without this, these tests pass even
+        when payloads are silently lost.
+        """
         run = pluto.init(
             project=TESTING_PROJECT_NAME,
             name=get_task_name(),
@@ -305,7 +399,9 @@ class TestSyncProcessIntegration:
             sync_process_enabled=True,
         )
         yield run
+        db_path = capture_sync_db_path(run)
         run.finish()
+        assert_sync_files_completed(db_path)
 
     def test_image_upload_via_sync(self, sync_enabled_run, tmp_path):
         """Test image uploads work via sync process."""
@@ -1314,6 +1410,490 @@ class TestSyncUploaderErrorHandling:
         msg = str(excinfo.value)
         assert 'The server says: API key has expired.' in msg
         assert 'most likely' not in msg, 'do not hedge when the server told us'
+
+
+class TestFileUploadOutcomes:
+    """Classification of file-upload failures: transient vs terminal."""
+
+    @pytest.fixture
+    def uploader(self):
+        settings = {
+            '_auth': 'test-token',
+            '_op_id': 12345,
+            '_op_name': 'test-run',
+            'project': 'test-project',
+            'url_file': 'https://test.example.com/files',
+            'sync_process_retry_backoff': 0.01,
+        }
+        return _SyncUploader(settings, logging.getLogger('test'))
+
+    def _record(self, file_id=1, local_path='/tmp/test.png'):
+        return FileRecord(
+            id=file_id,
+            run_id='test-run',
+            local_path=local_path,
+            file_name='test',
+            file_ext='.png',
+            file_type='image/png',
+            file_size=4,
+            log_name='images/test',
+            timestamp_ms=1705600000000,
+            step=1,
+            status=SyncStatus.PENDING,
+            retry_count=0,
+            created_at=time.time(),
+            last_attempt_at=None,
+            error_message=None,
+            presigned_url=None,
+        )
+
+    def test_presign_connection_error_is_transient(self, uploader):
+        """A connection error on presign is transient — retry must continue."""
+        import httpx
+
+        mock_client = MagicMock()
+        mock_client.post.side_effect = httpx.RemoteProtocolError(
+            'Server disconnected without sending a response.'
+        )
+        uploader._client = mock_client
+
+        record = self._record()
+        results = uploader.upload_files_batch([record])
+
+        outcome = results[record.id]
+        assert outcome.success is False
+        assert outcome.terminal is False
+        assert 'disconnected' in outcome.error
+
+    def test_presign_nonretryable_4xx_is_terminal(self, uploader):
+        """A non-retryable 4xx on presign is terminal — retrying can't fix it."""
+        import httpx
+
+        mock_client = MagicMock()
+        mock_client.post.return_value = httpx.Response(
+            413,
+            json={'error': 'payload too large'},
+            request=httpx.Request('POST', 'https://test.example.com/files'),
+        )
+        uploader._client = mock_client
+
+        record = self._record()
+        results = uploader.upload_files_batch([record])
+
+        outcome = results[record.id]
+        assert outcome.success is False
+        assert outcome.terminal is True
+        assert 'payload too large' in outcome.error
+
+    def test_presign_5xx_is_transient(self, uploader):
+        """A 5xx on presign is transient — the server may recover."""
+        import httpx
+
+        mock_client = MagicMock()
+        mock_client.post.return_value = httpx.Response(
+            503,
+            text='service unavailable',
+            request=httpx.Request('POST', 'https://test.example.com/files'),
+        )
+        uploader._client = mock_client
+
+        record = self._record()
+        results = uploader.upload_files_batch([record])
+
+        outcome = results[record.id]
+        assert outcome.success is False
+        assert outcome.terminal is False
+
+    def test_missing_local_file_is_terminal(self, uploader, tmp_path):
+        """A staged file deleted from disk can never upload — terminal."""
+        import httpx
+
+        mock_client = MagicMock()
+        mock_client.post.return_value = httpx.Response(
+            200,
+            json={'File': [{'test.png': 'https://s3.example.com/test.png'}]},
+            request=httpx.Request('POST', 'https://test.example.com/files'),
+        )
+        uploader._client = mock_client
+        uploader._storage_client = MagicMock()
+
+        record = self._record(local_path=str(tmp_path / 'gone.png'))
+        results = uploader.upload_files_batch([record])
+
+        outcome = results[record.id]
+        assert outcome.success is False
+        assert outcome.terminal is True
+        uploader._storage_client.put.assert_not_called()
+
+    def test_s3_5xx_is_transient(self, uploader, tmp_path):
+        """An S3-side failure is transient — presign is refetched next round."""
+        import httpx
+
+        staged = tmp_path / 'test.png'
+        staged.write_bytes(b'data')
+
+        mock_client = MagicMock()
+        mock_client.post.return_value = httpx.Response(
+            200,
+            json={'File': [{'test.png': 'https://s3.example.com/test.png'}]},
+            request=httpx.Request('POST', 'https://test.example.com/files'),
+        )
+        uploader._client = mock_client
+        storage = MagicMock()
+        storage.put.return_value = httpx.Response(
+            500,
+            text='internal error',
+            request=httpx.Request('PUT', 'https://s3.example.com/test.png'),
+        )
+        uploader._storage_client = storage
+        uploader.set_urgent_mode(True)  # 1 attempt, no sleep — fast test
+
+        record = self._record(local_path=str(staged))
+        results = uploader.upload_files_batch([record])
+
+        outcome = results[record.id]
+        assert outcome.success is False
+        assert outcome.terminal is False
+
+
+class TestSyncFilesBatchStatusHandling:
+    """_sync_files_batch must persist real errors and abandon loudly."""
+
+    @pytest.fixture
+    def store(self, tmp_path):
+        db_path = tmp_path / 'test_sync.db'
+        store = SyncStore(str(db_path))
+        store.register_run('test-run-1', 'test-project')
+        yield store
+        store.close()
+
+    def _enqueue(self, store, name='test'):
+        return store.enqueue_file(
+            run_id='test-run-1',
+            local_path=f'/tmp/{name}.png',
+            file_name=name,
+            file_ext='.png',
+            file_type='image/png',
+            file_size=1024,
+            log_name=f'images/{name}',
+            timestamp_ms=int(time.time() * 1000),
+            step=1,
+        )
+
+    def test_transient_failure_keeps_row_retryable_with_real_error(self, store, caplog):
+        from pluto.sync.process import FileUploadResult, _sync_files_batch
+
+        file_id = self._enqueue(store)
+        uploader = MagicMock()
+        uploader.upload_files_batch.return_value = {
+            file_id: FileUploadResult(
+                success=False, terminal=False, error='connection reset by peer'
+            )
+        }
+
+        with caplog.at_level(logging.WARNING, logger='test-sync'):
+            _sync_files_batch(
+                store, uploader, logging.getLogger('test-sync'), batch_size=10
+            )
+
+        # Still owed to the server, with the actual error persisted.
+        assert store.get_pending_file_count() == 1
+        row = store.conn.execute(
+            'SELECT status, error_message FROM file_uploads WHERE id = ?',
+            (file_id,),
+        ).fetchone()
+        assert SyncStatus(row[0]) == SyncStatus.FAILED
+        assert row[1] == 'connection reset by peer'
+
+    def test_terminal_failure_abandons_loudly(self, store, caplog):
+        from pluto.sync.process import FileUploadResult, _sync_files_batch
+
+        file_id = self._enqueue(store)
+        uploader = MagicMock()
+        uploader.upload_files_batch.return_value = {
+            file_id: FileUploadResult(
+                success=False, terminal=True, error='HTTP 413: payload too large'
+            )
+        }
+
+        with caplog.at_level(logging.ERROR, logger='test-sync'):
+            _sync_files_batch(
+                store, uploader, logging.getLogger('test-sync'), batch_size=10
+            )
+
+        # Terminal: out of the pipeline, but queryable and reported at ERROR.
+        assert store.get_pending_file_count() == 0
+        abandoned = store.get_abandoned_files('test-run-1')
+        assert [f.id for f in abandoned] == [file_id]
+        assert abandoned[0].error_message == 'HTTP 413: payload too large'
+        error_logs = [r for r in caplog.records if r.levelno >= logging.ERROR]
+        assert error_logs, 'terminal loss must be logged at ERROR'
+        assert any('images/test' in r.getMessage() for r in error_logs)
+
+    def test_long_failing_file_escalates_to_warning(self, store, caplog):
+        from pluto.sync.process import FileUploadResult, _sync_files_batch
+
+        file_id = self._enqueue(store)
+        # Simulate a file that has been failing for a while.
+        store.conn.execute(
+            'UPDATE file_uploads SET created_at = ?, retry_count = 5 WHERE id = ?',
+            (time.time() - 300, file_id),
+        )
+        uploader = MagicMock()
+        uploader.upload_files_batch.return_value = {
+            file_id: FileUploadResult(success=False, terminal=False, error='reset')
+        }
+
+        with caplog.at_level(logging.WARNING, logger='test-sync'):
+            _sync_files_batch(
+                store, uploader, logging.getLogger('test-sync'), batch_size=10
+            )
+
+        warnings = [r.getMessage() for r in caplog.records]
+        assert any(
+            'still retrying' in m and 'images/test' in m for m in warnings
+        ), warnings
+
+
+class TestReviewFindings:
+    """Regression tests for review findings on the file-durability change."""
+
+    def _enqueue(self, store, name='test', run_id='test-run-1', **kw):
+        return store.enqueue_file(
+            run_id=run_id,
+            local_path=kw.get('local_path', f'/tmp/{name}.png'),
+            file_name=name,
+            file_ext='.png',
+            file_type='image/png',
+            file_size=1024,
+            log_name=f'images/{name}',
+            timestamp_ms=int(time.time() * 1000),
+            step=1,
+        )
+
+    def test_retry_sync_keeps_retrying_files_in_backoff(self, tmp_path):
+        """`pluto sync` must retry within its timeout, not quit on one failure.
+
+        Regression: after one failed pass the rows sat inside their backoff
+        window, get_pending_files returned nothing, and retry_sync returned
+        False with files still owed — the documented recovery path gave up.
+        """
+        from pluto.sync.process import FileUploadResult, retry_sync
+
+        db_path = str(tmp_path / 'sync.db')
+        store = SyncStore(db_path)
+        store.register_run('run-x', 'project-x', op_id=1)
+        self._enqueue(store, run_id='run-x')
+        store.close()
+
+        calls = {'n': 0}
+
+        class FlakyUploader:
+            def __init__(self, settings_dict, log):
+                pass
+
+            def upload_files_batch(self, records):
+                calls['n'] += 1
+                ok = calls['n'] >= 3  # fail twice, then recover
+                return {
+                    r.id: FileUploadResult(
+                        success=ok, terminal=False, error='' if ok else 'reset'
+                    )
+                    for r in records
+                }
+
+            def close(self):
+                pass
+
+        with patch('pluto.sync.process._SyncUploader', FlakyUploader):
+            ok = retry_sync(db_path, {'sync_process_retry_backoff': 2.0}, timeout=30)
+
+        assert ok is True, 'recovery must keep retrying until the fault clears'
+        assert calls['n'] >= 3
+
+    def test_presign_terminal_4xx_isolates_culprit_file(self, tmp_path):
+        """A batch-level 4xx must not abandon innocent files in the batch.
+
+        Regression: one rejected file (or aggregate 413) marked the whole
+        batch ABANDONED — unrecoverable. The uploader must isolate by
+        retrying files individually so only the real culprit is terminal.
+        """
+        import httpx
+
+        from pluto.sync.process import _SyncUploader
+
+        uploader = _SyncUploader(
+            {'url_file': 'https://x/files', 'sync_process_retry_backoff': 0.01},
+            logging.getLogger('test'),
+        )
+
+        good = tmp_path / 'good.png'
+        good.write_bytes(b'ok')
+        bad = tmp_path / 'bad.png'
+        bad.write_bytes(b'too big')
+
+        def fake_post(url, content=None, headers=None, **kwargs):
+            files = json.loads(content)['files']
+            names = [f['fileName'] for f in files]
+            if 'bad.png' in names:
+                return httpx.Response(
+                    413,
+                    json={'error': 'payload too large'},
+                    request=httpx.Request('POST', url),
+                )
+            return httpx.Response(
+                200,
+                json={'File': [{n: f'https://s3/{n}'} for n in names]},
+                request=httpx.Request('POST', url),
+            )
+
+        mock_client = MagicMock()
+        mock_client.post.side_effect = fake_post
+        uploader._client = mock_client
+        storage = MagicMock()
+        storage.put.return_value = httpx.Response(
+            200, request=httpx.Request('PUT', 'https://s3/x')
+        )
+        uploader._storage_client = storage
+
+        records = [
+            FileRecord(
+                id=i,
+                run_id='r',
+                local_path=str(p),
+                file_name=p.stem,
+                file_ext='.png',
+                file_type='image/png',
+                file_size=2,
+                log_name=f'images/{p.stem}',
+                timestamp_ms=1705600000000,
+                step=1,
+                status=SyncStatus.PENDING,
+                retry_count=0,
+                created_at=time.time(),
+                last_attempt_at=None,
+                error_message=None,
+                presigned_url=None,
+            )
+            for i, p in enumerate([good, bad], start=1)
+        ]
+
+        results = uploader.upload_files_batch(records)
+
+        assert results[1].success is True, 'innocent file must still upload'
+        assert results[2].success is False and results[2].terminal is True
+        assert 'payload too large' in results[2].error
+
+    def test_stop_returns_failure_when_files_abandoned(self, tmp_path):
+        """stop() must not report success while payloads were abandoned."""
+        from pluto.sync.process import SyncProcessManager
+
+        manager = SyncProcessManager(
+            run_id='run-x',
+            project='project-x',
+            settings_dict={'sync_process_shutdown_timeout': 0.5},
+            db_path=str(tmp_path / 'sync.db'),
+        )
+        manager._started = True
+        file_id = self._enqueue(manager.store, run_id='run-x')
+        manager.store.mark_files_abandoned([file_id], 'HTTP 413: payload too large')
+
+        assert manager.stop(timeout=0.5, wait=True) is False
+        manager.close()
+
+    def test_backoff_rows_do_not_starve_newer_pending(self, store=None, tmp_path=None):
+        """PENDING work behind a wall of backoff-parked failures must still run."""
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as d:
+            store = SyncStore(f'{d}/sync.db')
+            store.register_run('test-run-1', 'test-project')
+            # 60 old rows, all failed recently → all inside their backoff window
+            # and all ahead of the fresh row in created_at order.
+            old_ids = [self._enqueue(store, name=f'old{i}') for i in range(60)]
+            store.conn.execute(
+                'UPDATE file_uploads SET retry_count = 3, last_attempt_at = ?',
+                (time.time(),),
+            )
+            fresh_id = self._enqueue(store, name='fresh')
+
+            pending = store.get_pending_files(limit=10, backoff_base=2.0)
+            assert fresh_id in [f.id for f in pending], (
+                'a new file must not be starved by backoff-parked rows '
+                f'(selected: {[f.id for f in pending]}, old rows: {len(old_ids)})'
+            )
+            store.close()
+
+
+class TestManagerStopWaitsForFiles:
+    """SyncProcessManager.stop() must not declare success with files pending.
+
+    Regression test: stop() polled the metrics queue only, so finish()
+    reported 'completed successfully' while file payloads sat unsent.
+    """
+
+    def _manager(self, tmp_path):
+        from pluto.sync.process import SyncProcessManager
+
+        return SyncProcessManager(
+            run_id='run-x',
+            project='project-x',
+            settings_dict={'sync_process_shutdown_timeout': 0.5},
+            db_path=str(tmp_path / 'sync.db'),
+        )
+
+    def test_stop_times_out_on_pending_file(self, tmp_path):
+        manager = self._manager(tmp_path)
+        manager._started = True  # no subprocess: nothing will drain the queue
+        manager.store.enqueue_file(
+            run_id='run-x',
+            local_path='/tmp/test.png',
+            file_name='test',
+            file_ext='.png',
+            file_type='image/png',
+            file_size=1024,
+            log_name='images/test',
+            timestamp_ms=int(time.time() * 1000),
+        )
+
+        assert manager.stop(timeout=0.5, wait=True) is False
+        manager.close()
+
+    def test_stop_times_out_on_transiently_failed_file(self, tmp_path):
+        manager = self._manager(tmp_path)
+        manager._started = True
+        file_id = manager.store.enqueue_file(
+            run_id='run-x',
+            local_path='/tmp/test.png',
+            file_name='test',
+            file_ext='.png',
+            file_type='image/png',
+            file_size=1024,
+            log_name='images/test',
+            timestamp_ms=int(time.time() * 1000),
+        )
+        manager.store.mark_files_failed([file_id], 'transient')
+
+        assert manager.stop(timeout=0.5, wait=True) is False
+        manager.close()
+
+    def test_stop_succeeds_when_all_uploaded(self, tmp_path):
+        manager = self._manager(tmp_path)
+        manager._started = True
+        file_id = manager.store.enqueue_file(
+            run_id='run-x',
+            local_path='/tmp/test.png',
+            file_name='test',
+            file_ext='.png',
+            file_type='image/png',
+            file_size=1024,
+            log_name='images/test',
+            timestamp_ms=int(time.time() * 1000),
+        )
+        manager.store.mark_files_completed([file_id])
+
+        assert manager.stop(timeout=0.5, wait=True) is True
+        manager.close()
 
 
 class TestDistributedEnvironmentDetection:

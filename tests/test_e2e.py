@@ -26,7 +26,7 @@ from PIL import Image as PILImage
 
 import pluto
 import pluto.query as pq
-from tests.utils import get_task_name
+from tests.utils import download_file_with_poll, get_task_name
 
 TESTING_PROJECT_NAME = 'testing-ci'
 
@@ -357,13 +357,13 @@ def test_e2e_image_upload(tmp_path):
         'red-square' in name for name in file_names
     ), f"Image 'red-square' not found in server files: {file_names}"
 
-    # Download and verify actual image content
-    try:
-        path = pq.download_file(
-            TESTING_PROJECT_NAME, run_id, 'e2e/test-image', destination=tmp_path
-        )
-    except pq.QueryError:
-        pytest.skip('File not yet available for download (eventual consistency)')
+    # Download and verify actual image content. Polls for eventual
+    # consistency but FAILS on timeout: after finish() succeeded, a file
+    # that never becomes downloadable is a lost payload, and
+    # the old skip-on-QueryError here masked exactly that.
+    path = download_file_with_poll(
+        TESTING_PROJECT_NAME, run_id, 'e2e/test-image', destination=tmp_path
+    )
     downloaded = PILImage.open(path)
     assert downloaded.size == (4, 4), f'Expected 4x4, got {downloaded.size}'
     r, g, b = downloaded.convert('RGB').getpixel((0, 0))
@@ -379,12 +379,9 @@ def test_e2e_image_download(tmp_path):
     run.log({'e2e/download-img': pluto.Image(pil_img, caption='blue')})
     run.finish()
 
-    try:
-        path = pq.download_file(
-            TESTING_PROJECT_NAME, run_id, 'e2e/download-img', destination=tmp_path
-        )
-    except pq.QueryError:
-        pytest.skip('File not yet available for download (eventual consistency)')
+    path = download_file_with_poll(
+        TESTING_PROJECT_NAME, run_id, 'e2e/download-img', destination=tmp_path
+    )
     assert path.exists()
     assert path.stat().st_size > 0
 
