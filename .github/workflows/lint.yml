@@ -35,5 +35,5 @@ jobs:
 
       - name: Running ruff
         run: |
-          poetry run ruff check --diff pluto mlop tests
-          poetry run ruff format --diff pluto mlop tests
+          poetry run ruff check --diff pluto mlop tests _pluto_wandb_hook.py
+          poetry run ruff format --diff pluto mlop tests _pluto_wandb_hook.py

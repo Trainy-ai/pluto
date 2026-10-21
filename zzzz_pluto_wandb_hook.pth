@@ -1,1 +1,1 @@
-import pluto._wandb_hook; pluto._wandb_hook.install()
+import _pluto_wandb_hook; _pluto_wandb_hook.install()

@@ -82,6 +82,7 @@ jobs:
             --only-rerun "returned 5[0-9][0-9]" \
             --cov=pluto \
             --cov=mlop \
+            --cov=_pluto_wandb_hook \
             --cov-report=lcov:coverage.lcov \
             --cov-report=term
 

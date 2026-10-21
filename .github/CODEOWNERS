@@ -19,5 +19,7 @@
 /pyproject.toml                 @asaiacai @ryanhayame
 /poetry.lock                    @asaiacai @ryanhayame
 
-# .pth file: executes code on Python startup, so treat as security-sensitive
+# .pth file and the module it imports: execute on every Python startup, so
+# treat as security-sensitive
 /zzzz_pluto_wandb_hook.pth      @asaiacai @ryanhayame
+/_pluto_wandb_hook.py           @asaiacai @ryanhayame

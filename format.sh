@@ -9,10 +9,10 @@ echo "mypy ver $MYPY_VERSION"
 
 # Run ruff
 echo 'pluto ruff:'
-poetry run ruff check --fix pluto mlop tests
-poetry run ruff format pluto mlop tests
+poetry run ruff check --fix pluto mlop tests _pluto_wandb_hook.py
+poetry run ruff format pluto mlop tests _pluto_wandb_hook.py
 
 
 # Run mypy
 echo 'pluto mypy:'
-poetry run mypy pluto
+poetry run mypy pluto _pluto_wandb_hook.py

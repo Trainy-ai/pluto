@@ -16,7 +16,7 @@ tlogger = logging.getLogger('auth')
 tag = 'Authentication'
 
 # Marker file written after a successful `pluto login`. The wandb compat
-# layer's import hook (pluto/_wandb_hook.py) checks for this so a user who
+# layer's import hook (_pluto_wandb_hook.py) checks for this so a user who
 # has only run `pluto login` (no PLUTO_API_KEY env var) still gets dual-
 # logging activated. Stat-only check; never read.
 LOGIN_MARKER_PATH = os.path.expanduser('~/.pluto/.login_ok')

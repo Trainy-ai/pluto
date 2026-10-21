@@ -37,4 +37,4 @@ jobs:
         run: |
           set -euxo pipefail
           poetry run python3 -m pip install types-PyYAML
-          poetry run mypy pluto
+          poetry run mypy pluto _pluto_wandb_hook.py

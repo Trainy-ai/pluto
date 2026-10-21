@@ -5,6 +5,13 @@ Loaded via a .pth file at Python startup. Registers a sys.meta_path finder
 that, when `import wandb` is executed, loads the real wandb package and then
 monkey-patches it to dual-log to Pluto.
 
+This is a top-level module, not `pluto._wandb_hook`, because the .pth runs on
+every interpreter start in the env. Importing any `pluto.*` submodule runs
+`pluto/__init__.py` first, which pulls in httpx, numpy, Pillow, keyring, etc.
+— ~250ms per process and code from all of them executing at startup. Keep
+this module stdlib-only; `pluto` is imported only when `import wandb` runs and
+credentials are present (see `_patch_or_hint`).
+
 Activation:
     The hook itself installs unconditionally when pluto-ml is on the path —
     installing the package is the user's opt-in signal. Whether the
@@ -28,7 +35,8 @@ import logging
 import os
 import sys
 
-logger = logging.getLogger(__name__)
+# Keep the pre-move name so records still propagate through the `pluto` logger.
+logger = logging.getLogger('pluto._wandb_hook')
 
 _hook_installed = False
 _hint_emitted = False
