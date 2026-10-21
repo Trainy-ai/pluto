@@ -94,6 +94,11 @@ class WandbRunWrapper:
         self._pluto = pluto_module
         self._wandb_disabled = wandb_disabled
         self._fallback_step = 0  # Used when wandb is disabled (_step won't increment)
+        # Metric name / glob -> declared step_metric (custom x-axis), from
+        # define_metric(). wandb keys each metric on its step_metric's value
+        # rather than the monotonic internal _step; mirror that for Pluto so
+        # the two agree on the x-axis (see _pluto_step_from_step_metric).
+        self._step_metrics: Dict[str, str] = {}
         self._closed = False
         self._close_lock = threading.Lock()
         # Keys we've already warned about being unforwardable to Pluto, so a
@@ -238,11 +243,16 @@ class WandbRunWrapper:
         # - Disabled mode: wandb._step never increments, use our own counter
         if step is not None:
             actual_step = step
-        elif self._wandb_disabled:
-            actual_step = self._fallback_step
-            self._fallback_step += 1
         else:
-            actual_step = getattr(self._wandb_run, '_step', None)
+            # Prefer a declared step_metric (custom x-axis) so Pluto matches
+            # wandb; fall back to wandb's _step (or the disabled-mode counter).
+            actual_step = self._pluto_step_from_step_metric(data)
+            if actual_step is None:
+                if self._wandb_disabled:
+                    actual_step = self._fallback_step
+                    self._fallback_step += 1
+                else:
+                    actual_step = getattr(self._wandb_run, '_step', None)
 
         result = self._wandb_run.log(data, step=step, commit=commit, **kwargs)
 
@@ -402,8 +412,55 @@ class WandbRunWrapper:
         return self._wandb_run.finish(exit_code=exit_code, quiet=quiet)
 
     def define_metric(self, *args, **kwargs):
-        """Forward to wandb (no Pluto equivalent)."""
+        """Forward to wandb, and record the metric's declared step_metric.
+
+        wandb keys each metric's chart on its step_metric (a custom x-axis
+        such as "global_step") rather than wandb's internal monotonic _step.
+        We record name -> step_metric here so log() can key the same metric
+        on that value in Pluto; without it Pluto plots everything against
+        _step and disagrees with wandb for every metric that defines one.
+        """
+        try:
+            name = kwargs.get('name', args[0] if args else None)
+            step_metric = kwargs.get('step_metric', args[1] if len(args) > 1 else None)
+            if name is not None and step_metric is not None:
+                self._step_metrics[str(name)] = str(step_metric)
+        except Exception:
+            # Recording the mapping must never break the wandb passthrough.
+            pass
         return self._wandb_run.define_metric(*args, **kwargs)
+
+    def _pluto_step_from_step_metric(self, data):
+        """Resolve the Pluto step from a declared step_metric when possible.
+
+        If metrics in this log() call declared a step_metric via
+        define_metric(), and that step metric's value is present in the same
+        call, return it as the step -- mirroring how wandb keys each metric on
+        its step_metric rather than the monotonic internal _step. Returns None
+        when no single unambiguous step_metric applies, so the caller falls
+        back to _step (normal mode) or the disabled-mode counter.
+        """
+        if not self._step_metrics:
+            return None
+        try:
+            import fnmatch
+
+            applicable = set()
+            for key in data:
+                for pattern, step_metric in self._step_metrics.items():
+                    if (
+                        key == pattern or fnmatch.fnmatchcase(key, pattern)
+                    ) and step_metric in data:
+                        applicable.add(step_metric)
+            if len(applicable) != 1:
+                return None
+            value = data[next(iter(applicable))]
+            value = value.item() if hasattr(value, 'item') else value
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                return None
+            return int(value)
+        except Exception:
+            return None
 
     def watch(self, *args, **kwargs):
         """Forward to wandb (Pluto watch is separate)."""

@@ -505,3 +505,57 @@ def test_wandb_media_without_caption(type_name):
     factory = getattr(pluto_module, type_name)
     factory.assert_called_once()
     assert factory.call_args.kwargs.get('caption') is None
+
+
+# ---------------------------------------------------------------------------
+# define_metric step_metric (custom x-axis) regression.
+#
+# wandb keys each metric's chart on its declared step_metric (e.g.
+# "global_step" / "trainer/global_step") rather than wandb's internal
+# monotonic _step. The shim previously ignored define_metric and always
+# keyed Pluto on _step, so metrics landed on the wrong x-axis (verified in
+# the field: train/loss logged against global_step 0,100,... came back on
+# Pluto steps 0,1,...). These pin the fix.
+# ---------------------------------------------------------------------------
+
+
+def test_define_metric_keys_pluto_on_declared_step_metric():
+    """define_metric(step_metric=...) -> Pluto step is the step_metric value."""
+    wrapper, pluto_run = _make_wrapper()  # wandb_run._step == 7
+    wrapper.define_metric('train/loss', step_metric='global_step')
+    wrapper.log({'global_step': 300, 'train/loss': 0.5})
+
+    assert pluto_run.log.called
+    # Must be the declared x-axis value (300), NOT wandb's internal _step (7).
+    assert pluto_run.log.call_args.kwargs.get('step') == 300
+
+
+def test_define_metric_wildcard_step_metric_applies_to_all():
+    """A '*' step_metric applies to every metric logged in the call."""
+    wrapper, pluto_run = _make_wrapper()
+    wrapper.define_metric('*', step_metric='global_step')
+    wrapper.log({'global_step': 1280, 'loss': 1.0, 'lr': 0.001})
+    assert pluto_run.log.call_args.kwargs.get('step') == 1280
+
+
+def test_log_without_step_metric_falls_back_to_wandb_step():
+    """No define_metric -> Pluto step stays wandb's _step (unchanged)."""
+    wrapper, pluto_run = _make_wrapper()  # _step == 7
+    wrapper.log({'loss': 0.1})
+    assert pluto_run.log.call_args.kwargs.get('step') == 7
+
+
+def test_explicit_step_overrides_step_metric():
+    """An explicit step= wins over a declared step_metric."""
+    wrapper, pluto_run = _make_wrapper()
+    wrapper.define_metric('*', step_metric='global_step')
+    wrapper.log({'global_step': 500, 'loss': 0.2}, step=11)
+    assert pluto_run.log.call_args.kwargs.get('step') == 11
+
+
+def test_step_metric_absent_from_call_falls_back():
+    """step_metric declared but not present in the call -> fall back to _step."""
+    wrapper, pluto_run = _make_wrapper()  # _step == 7
+    wrapper.define_metric('train/loss', step_metric='global_step')
+    wrapper.log({'train/loss': 0.5})  # no global_step in this call
+    assert pluto_run.log.call_args.kwargs.get('step') == 7
