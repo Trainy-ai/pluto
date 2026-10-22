@@ -1184,7 +1184,7 @@ def apply_wandb_patches(wandb_module):
     Apply dual-logging monkey-patches to the wandb module.
 
     This is the main entry point called by either:
-    - The .pth import hook (_wandb_hook.py)
+    - The .pth import hook (_pluto_wandb_hook.py)
     - Direct import of this module (import pluto.compat.wandb)
 
     Args:

@@ -2,7 +2,7 @@
 Integration tests for the .pth-based wandb auto-activation hook.
 
 Each test runs in a fresh subprocess so we exercise the real Python startup
-path: site.py → zzzz_pluto_wandb_hook.pth → pluto._wandb_hook.install() →
+path: site.py → zzzz_pluto_wandb_hook.pth → _pluto_wandb_hook.install() →
 finder on sys.meta_path → import wandb → apply_wandb_patches.
 
 These tests caught nothing in CI before they existed: the unit tests in
@@ -181,5 +181,19 @@ def test_login_marker_satisfies_credential_check(fake_wandb, empty_home):
     result = _run_subprocess(code, {'HOME': empty_home, 'PYTHONPATH': fake_wandb})
     assert 'PATCHED' in result.stdout, (
         f'login marker should activate patches. stdout={result.stdout!r} '
+        f'stderr={result.stderr!r}'
+    )
+
+
+def test_pth_does_not_import_pluto_at_startup(empty_home):
+    """The .pth fires on every interpreter start; it must not drag in the
+    `pluto` package (and its httpx/numpy/... imports) until wandb is used."""
+    code = (
+        'import sys; '
+        "print(sorted(m for m in sys.modules if m.split('.')[0] == 'pluto'))"
+    )
+    result = _run_subprocess(code, {'HOME': empty_home})
+    assert result.stdout.strip() == '[]', (
+        f'pluto imported at startup. stdout={result.stdout!r} '
         f'stderr={result.stderr!r}'
     )

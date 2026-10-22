@@ -431,6 +431,19 @@ Mintlify, built outside this repo.)
   above: `py/clear-text-logging-sensitive-data` classifies a call's result by
   callee name, and this result *is* logged.
 
+### wandb `.pth` hook: keep the startup path stdlib-only
+
+`zzzz_pluto_wandb_hook.pth` runs on **every** interpreter start in an env with
+pluto-ml installed (`pip`, `python -c 1`, everything), so whatever it imports
+is loaded into every Python process. It therefore imports the top-level
+`_pluto_wandb_hook` module, not `pluto._wandb_hook`: any `pluto.*` import runs
+`pluto/__init__.py` first, which pulls in httpx, numpy, Pillow, keyring, etc.
+(~250ms per process, and a compromised dependency would run at startup rather
+than on `import pluto`). `pluto` is loaded only when `import wandb` runs and
+credentials are present. Guarded by
+`tests/test_wandb_hook_unit.py::TestStartupFootprint` and
+`tests/test_wandb_pth_integration.py::test_pth_does_not_import_pluto_at_startup`.
+
 ### Network Filesystems (NFS/Lustre/SMB) and SQLite WAL
 
 The sync DB uses SQLite WAL mode (`pluto/sync/store.py`), which relies on POSIX

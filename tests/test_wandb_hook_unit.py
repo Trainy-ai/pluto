@@ -1,5 +1,5 @@
 """
-Unit tests for pluto._wandb_hook helpers.
+Unit tests for _pluto_wandb_hook helpers.
 
 These run in-process (no subprocess) so the lines actually get instrumented
 by pytest-cov. The integration tests in test_wandb_pth_integration.py
@@ -9,13 +9,14 @@ discoverability hint, and finder/loader plumbing in isolation.
 
 import logging
 import os
+import subprocess
 import sys
 from types import ModuleType, SimpleNamespace
 from unittest import mock
 
 import pytest
 
-from pluto import _wandb_hook
+import _pluto_wandb_hook as _wandb_hook
 
 
 @pytest.fixture(autouse=True)
@@ -344,3 +345,26 @@ class TestUninstall:
         )
         assert _wandb_hook._hook_installed is False
         assert _wandb_hook._hint_emitted is False
+
+
+class TestStartupFootprint:
+    def test_install_imports_only_stdlib(self):
+        """The .pth runs this on every interpreter start, so it must not load
+        `pluto` (or anything outside the stdlib). -S keeps site-packages off
+        sys.path, so a third-party import fails here instead of passing."""
+        hook_dir = os.path.dirname(_wandb_hook.__file__)
+        code = (
+            'import sys; before = set(sys.modules); '
+            f'sys.path.insert(0, {hook_dir!r}); '
+            'import _pluto_wandb_hook; _pluto_wandb_hook.install(); '
+            'new = {m.split(".")[0] for m in set(sys.modules) - before}; '
+            'print(sorted(new - set(sys.stdlib_module_names)))'
+        )
+        result = subprocess.run(
+            [sys.executable, '-S', '-c', code],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip() == "['_pluto_wandb_hook']"

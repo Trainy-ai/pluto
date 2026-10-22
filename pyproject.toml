@@ -5,6 +5,7 @@ description = "Pluto ML - Machine Learning Operations Framework"
 packages = [
     {include = "pluto"},
     {include = "mlop"},
+    {include = "_pluto_wandb_hook.py"},
     {include = "zzzz_pluto_wandb_hook.pth"},
 ]
 authors = [
