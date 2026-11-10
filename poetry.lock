@@ -341,7 +341,7 @@ files = [
     {file = "colorama-0.4.6-py2.py3-none-any.whl", hash = "sha256:4f1d9991f5acc0ca119f9d443620b77f9d6b33703e51011c16baf57afb285fc6"},
     {file = "colorama-0.4.6.tar.gz", hash = "sha256:08695f5cb7ed6e0531a20572697297273c47b8cae5a63ffc6d6ed5c201be6e44"},
 ]
-markers = {main = "platform_system == \"Windows\" and (extra == \"migrate\" or extra == \"sweep\") or sys_platform == \"win32\" and extra == \"sweep\""}
+markers = {main = "platform_system == \"Windows\" and (extra == \"sweep\" or extra == \"migrate\") or sys_platform == \"win32\" and extra == \"sweep\""}
 
 [[package]]
 name = "colorlog"
@@ -1499,23 +1499,22 @@ files = [
 
 [[package]]
 name = "mako"
-version = "1.3.12"
+version = "1.4.2"
 description = "A super-fast templating language that borrows the best ideas from the existing templating languages."
 optional = false
-python-versions = ">=3.8"
+python-versions = ">=3.10"
 groups = ["main", "dev"]
 files = [
-    {file = "mako-1.3.12-py3-none-any.whl", hash = "sha256:8f61569480282dbf557145ce441e4ba888be453c30989f879f0d652e39f53ea9"},
-    {file = "mako-1.3.12.tar.gz", hash = "sha256:9f778e93289bd410bb35daadeb4fc66d95a746f0b75777b942088b7fd7af550a"},
+    {file = "mako-1.4.2-py3-none-any.whl", hash = "sha256:e70a2a4308952b33a21208bfd6725da79fae5a8c224578f8cfdeb60e5ace03df"},
+    {file = "mako-1.4.2.tar.gz", hash = "sha256:7227a060ee3af55a493af61d73d6beef13044b81dba9586736c13945f09464ce"},
 ]
-markers = {main = "extra == \"sweep\""}
 
 [package.dependencies]
-MarkupSafe = ">=0.9.2"
+MarkupSafe = ">=2.0"
 
 [package.extras]
 babel = ["Babel"]
-lingua = ["lingua"]
+lingua = ["lingua (>=4.16)"]
 testing = ["pytest"]
 
 [[package]]
@@ -1640,7 +1639,6 @@ files = [
     {file = "markupsafe-3.0.3-cp39-cp39-win_arm64.whl", hash = "sha256:38664109c14ffc9e7437e86b4dceb442b0096dfe3541d7864d9cbe1da4cf36c8"},
     {file = "markupsafe-3.0.3.tar.gz", hash = "sha256:722695808f4b6457b320fdc131280796bdceb04ab50fe1795cd540799ebe1698"},
 ]
-markers = {main = "extra == \"sweep\""}
 
 [[package]]
 name = "matplotlib"
@@ -2258,7 +2256,7 @@ files = [
     {file = "packaging-25.0-py3-none-any.whl", hash = "sha256:29572ef2b1f17581046b3a2227d5c611fb25ec70ca1ba8554b24b0e69331a484"},
     {file = "packaging-25.0.tar.gz", hash = "sha256:d443872c98d677bf60f6a1f2f8c1cb748e8fe762d2bf9d3148b5599295b0fc4f"},
 ]
-markers = {main = "extra == \"migrate\" or extra == \"sweep\""}
+markers = {main = "extra == \"sweep\" or extra == \"migrate\""}
 
 [[package]]
 name = "pathspec"
@@ -2883,7 +2881,7 @@ files = [
     {file = "pyyaml-6.0.3-cp39-cp39-win_amd64.whl", hash = "sha256:2e71d11abed7344e42a8849600193d15b6def118602c4c176f748e4583246007"},
     {file = "pyyaml-6.0.3.tar.gz", hash = "sha256:d76623373421df22fb4cf8817020cbb7ef15c725b9d5e45f17e189bfc384190f"},
 ]
-markers = {main = "extra == \"migrate\" or extra == \"sweep\""}
+markers = {main = "extra == \"sweep\" or extra == \"migrate\""}
 
 [[package]]
 name = "requests"
@@ -3433,7 +3431,7 @@ files = [
     {file = "typing_extensions-4.16.0-py3-none-any.whl", hash = "sha256:481caa481374e813c1b176ada14e97f1f67a4539ce9cfeb3f350d78d6370c2e8"},
     {file = "typing_extensions-4.16.0.tar.gz", hash = "sha256:dc983d19a509c94dba722ee6abd33940f7c05a89e243c47e907eb4db6f1a43e5"},
 ]
-markers = {main = "python_version < \"3.15\" or extra == \"migrate\" or extra == \"sweep\""}
+markers = {main = "python_version < \"3.15\" or extra == \"sweep\" or extra == \"migrate\""}
 
 [[package]]
 name = "typing-inspection"
