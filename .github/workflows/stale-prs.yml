@@ -1,0 +1,42 @@
+name: Close stale PRs
+
+# Labels PRs `stale` after 23 days without activity, then closes them 7 days
+# later (30 days total) unless someone comments, pushes, or reviews. Any
+# activity removes the label and resets the clock. Issues are left alone.
+# Add the `keep-open` label to exempt a PR.
+
+on:
+  schedule:
+    - cron: "17 14 * * *" # daily, 14:17 UTC
+  workflow_dispatch:
+
+permissions:
+  actions: write # persist the action's state cache between runs
+  issues: write # PR labels are issue labels
+  pull-requests: write
+
+concurrency:
+  group: stale-prs
+  cancel-in-progress: false
+
+jobs:
+  stale:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/stale@v11
+        with:
+          days-before-issue-stale: -1
+          days-before-issue-close: -1
+          days-before-pr-stale: 23
+          days-before-pr-close: 7
+          stale-pr-label: stale
+          exempt-pr-labels: keep-open
+          remove-pr-stale-when-updated: true
+          operations-per-run: 300
+          stale-pr-message: >
+            This PR has had no activity for 23 days. It will be closed in 7 days
+            unless there is new activity (a comment, push, or review). Add the
+            `keep-open` label to exempt it.
+          close-pr-message: >
+            Closing after 30 days without activity. Reopen it if the work is
+            still relevant.
